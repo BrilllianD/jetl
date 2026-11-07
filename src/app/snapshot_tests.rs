@@ -793,6 +793,35 @@ async fn editor_breakpoints() {
 }
 
 #[tokio::test]
+async fn editor_breakpoint_kinds() {
+    use crate::editor::buffer::BreakpointSpec;
+    let mut fx = stable_app("breakpoint-kinds");
+    let app = &mut fx.app;
+    load(app, "notes.log", PLAIN);
+    let cond = BreakpointSpec { condition: Some("i == 3".into()), log_message: None };
+    let log = BreakpointSpec { condition: None, log_message: Some("i={i}".into()) };
+    let both = BreakpointSpec { condition: Some("i == 3".into()), log_message: Some("i={i}".into()) };
+    let b = app.editor.active_buffer_mut().unwrap();
+    for (line, state, spec) in [
+        (0, BpState::Verified, BreakpointSpec::default()),
+        (1, BpState::Verified, cond.clone()),
+        (2, BpState::Pending, cond),
+        (3, BpState::Verified, log.clone()),
+        (4, BpState::Failed, log),
+        (5, BpState::Idle, both),
+    ] {
+        b.breakpoints.insert(line, BreakpointMark { state, spec, ..Default::default() });
+    }
+    let term = draw_editor(app, 40, 8);
+    let mut marks = vec![
+        Mark::style('B', "breakpoint", app.theme.breakpoint),
+        Mark::style('U', "unverified breakpoint", app.theme.breakpoint_unverified),
+    ];
+    marks.extend(editor_marks(&app.theme));
+    assert_snapshot!("editor_breakpoint_kinds", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn editor_breakpoint_over_bookmark() {
     let mut fx = stable_app("breakpoint-over-bookmark");
     let app = &mut fx.app;
@@ -979,6 +1008,22 @@ async fn bookmark_digit_dialog() {
     let term = draw_app(app, 80, 24);
     let marks = [Mark::style('B', "selected button", app.theme.list_selected)];
     assert_snapshot!("bookmark_digit_dialog", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn debug_edit_breakpoint_dialog() {
+    use crate::editor::buffer::BreakpointSpec;
+    let mut fx = stable_app("edit-breakpoint-dialog");
+    let app = &mut fx.app;
+    load(app, "notes.log", PLAIN);
+    moves(app, Motion::Down, 2);
+    let b = app.editor.active_buffer_mut().unwrap();
+    let spec = BreakpointSpec { condition: Some("i == 3".into()), log_message: None };
+    b.breakpoints.insert(2, BreakpointMark { spec, ..Default::default() });
+    app.perform(crate::actions::Action::Debug(crate::actions::DebugAction::EditBreakpoint));
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::style('B', "selected button", app.theme.list_selected)];
+    assert_snapshot!("debug_edit_breakpoint_dialog", snapshot(&term, &marks, None));
 }
 
 #[tokio::test]
@@ -1803,7 +1848,11 @@ async fn recovery_dialog() {
         &[(Some("src/main.rs"), "main.rs", "fn main() {}\n"), (None, "scratch", "note\n")],
     );
     let (generation, root) = (app.workspace.generation, app.workspace.root.clone());
-    app.handle_msg(AppMsg::SessionLoaded { generation, session: crate::workspace::Session { root, ..Default::default() }, files: vec![] });
+    app.handle_msg(AppMsg::SessionLoaded {
+        generation,
+        session: Box::new(crate::workspace::Session { root, ..Default::default() }),
+        files: vec![],
+    });
     let term = draw_app(app, 80, 24);
     let marks = [Mark::style('B', "selected button", app.theme.list_selected)];
     assert_snapshot!("recovery_dialog", snapshot(&term, &marks, None));

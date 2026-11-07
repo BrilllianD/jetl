@@ -336,6 +336,10 @@ impl App {
             (DialogId::DebugArtifact { seq }, DialogResult::Choice(i)) => self.debug_artifact_chosen(seq, Some(i)),
             (DialogId::DebugArtifact { seq }, DialogResult::Cancel) => self.debug_artifact_chosen(seq, None),
             (DialogId::DebugEvaluate, DialogResult::TextChecked(text, add)) => self.debug_evaluate(text, add),
+            (DialogId::DebugBreakpoint { path, line }, DialogResult::Choice(i)) => self.debug_breakpoint_field(path, line, i == 1),
+            (DialogId::DebugBreakpointText { path, line, log }, DialogResult::Text(t)) => {
+                self.debug_set_breakpoint_text(path, line, log, &t)
+            }
             (_, DialogResult::Cancel) => {}
             (
                 id @ (DialogId::WorktreeCreateKind

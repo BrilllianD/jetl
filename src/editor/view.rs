@@ -12,7 +12,7 @@ use ropey::Rope;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use super::buffer::{BpState, Buffer};
+use super::buffer::Buffer;
 use super::fold::Fold;
 use super::inlay::Inlay;
 use super::rows::{Row, Rows};
@@ -709,10 +709,7 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
             if on_execution {
                 screen.set_string(gx + digits as u16, y, "▶", theme.debug_execution_arrow);
             } else if let Some((_, mark)) = buf.breakpoints.range(span.clone()).next() {
-                let (glyph, style) = match mark.state {
-                    BpState::Idle | BpState::Verified => ("●", theme.breakpoint),
-                    BpState::Pending | BpState::Failed => ("○", theme.breakpoint_unverified),
-                };
+                let (glyph, style) = super::breakpoints::breakpoint_glyph(mark.state, &mark.spec, theme);
                 screen.set_string(gx + digits as u16, y, glyph, style);
             } else {
                 // A numbered bookmark shows its digit (on a fold's header the

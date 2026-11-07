@@ -47,7 +47,7 @@ impl App {
                     tracing::debug!("dropping stale worktree list");
                 }
             }
-            AppMsg::SessionLoaded { generation, session, files } => self.session_loaded(generation, session, files),
+            AppMsg::SessionLoaded { generation, session, files } => self.session_loaded(generation, *session, files),
             AppMsg::BranchSetLoaded { generation, seq, set, files } => self.branch_set_loaded(generation, seq, set, files),
             AppMsg::TreeLoaded { generation, seq, dirs } => {
                 if generation == self.workspace.generation {

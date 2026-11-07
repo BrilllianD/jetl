@@ -293,7 +293,11 @@ pub(crate) mod tests {
         let root = app.workspace.root.clone();
         let files = rels.iter().map(|r| SessionFile { path: root.join(r), ..Default::default() }).collect();
         let bytes = rels.iter().map(|r| std::fs::read(root.join(r))).collect();
-        AppMsg::SessionLoaded { generation: app.workspace.generation, session: Session { root, files, ..Default::default() }, files: bytes }
+        AppMsg::SessionLoaded {
+            generation: app.workspace.generation,
+            session: Box::new(Session { root, files, ..Default::default() }),
+            files: bytes,
+        }
     }
 
     fn answer(app: &mut App, want: DialogId, res: DialogResult) {

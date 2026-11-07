@@ -276,7 +276,7 @@ mod tests {
     use super::*;
     use crate::dap::DapBody;
     use crate::dap::fake::{self, FakeAdapter, Order};
-    use crate::dap::session::{DapTag, Phase, ResumeKind, SourceBreakpoints, TagKind};
+    use crate::dap::session::{DapTag, Phase, ResumeKind, SourceBreakpoint, SourceBreakpoints, TagKind};
 
     const GEN: u64 = 3;
     const SESSION: SessionId = SessionId(7);
@@ -297,7 +297,12 @@ mod tests {
             launch: json!({"program": "/p"}),
             breakpoints: breakpoints
                 .iter()
-                .map(|(p, l)| (PathBuf::from(p), SourceBreakpoints { lines: l.to_vec(), modified: false }))
+                .map(|(p, l)| {
+                    (
+                        PathBuf::from(p),
+                        SourceBreakpoints { breakpoints: l.iter().map(|l| SourceBreakpoint::at(*l)).collect(), modified: false },
+                    )
+                })
                 .collect::<BTreeMap<_, _>>(),
         }
     }
@@ -477,7 +482,7 @@ mod tests {
         let answer = until(&mut rx, |b| matches!(b, DapBody::Response { .. })).await.pop().unwrap();
         assert_eq!(answer, DapBody::Response { tag, result: Ok(json!({"threads": [{"id": 1, "name": "t"}]})) });
 
-        client.send(Command::SetBreakpoints { source: PathBuf::from("/x.c"), lines: vec![4], modified: false });
+        client.send(Command::SetBreakpoints { source: PathBuf::from("/x.c"), breakpoints: vec![SourceBreakpoint::at(4)], modified: false });
         let bps = adapter.recv("setBreakpoints").await;
         assert_eq!(bps["arguments"]["breakpoints"], json!([{"line": 5}]));
         assert_eq!(bps["arguments"]["source"]["path"], "/x.c");

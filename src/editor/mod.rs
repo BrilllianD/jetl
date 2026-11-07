@@ -54,7 +54,7 @@ use crate::config::theme::Theme;
 use crate::config::{Autosave, Config, FileIcons};
 use crate::event::{Effect, Level, Mouse};
 use crate::ui::dialog::{Dialog, DialogId};
-use buffer::{Buffer, BufferId, CaseChange, LineOrder};
+use buffer::{BreakpointMark, Buffer, BufferId, CaseChange, LineOrder};
 use find::{LastSearch, refresh_search, render_find_bar};
 use groups::{GroupId, TabGroup};
 use nav::{NavPos, NavRing};
@@ -192,9 +192,9 @@ pub struct Editor {
     /// Bookmarks of files without a tab: path to line and digit, as in
     /// `Buffer::bookmarks` (see `bookmarks.rs`).
     closed_bookmarks: std::collections::BTreeMap<PathBuf, std::collections::BTreeMap<usize, Option<u8>>>,
-    /// Breakpoint lines of files without a tab (see `breakpoints.rs`); only
-    /// lines, a breakpoint's state is never kept.
-    closed_breakpoints: std::collections::BTreeMap<PathBuf, std::collections::BTreeSet<usize>>,
+    /// Breakpoint lines and their specs of files without a tab (see `breakpoints.rs`); a breakpoint's state is
+    /// never kept.
+    closed_breakpoints: std::collections::BTreeMap<PathBuf, std::collections::BTreeMap<usize, buffer::BreakpointSpec>>,
     /// Where a paused debug session is, drawn in every view of that file.
     execution_point: Option<ExecutionPoint>,
     /// The line of a stack frame chosen in the Debug window, drawn in every view of that file.
@@ -427,9 +427,9 @@ impl Editor {
                 *slot = digit;
             }
         }
-        for line in parked_breakpoints {
-            // Lines past the end land on the last one, as bookmarks do.
-            buf.breakpoints.entry(line.min(last)).or_default();
+        for (line, spec) in parked_breakpoints {
+            // Lines past the end land on the last one, as bookmarks do; the first of two keeps its spec.
+            buf.breakpoints.entry(line.min(last)).or_insert_with(|| BreakpointMark { spec, ..Default::default() });
         }
         adopt_path(&mut buf, path, setup, self.tab_width);
         if let Some(le) = le {

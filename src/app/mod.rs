@@ -2069,9 +2069,9 @@ pub(crate) mod tests {
         let path = app.workspace.root.join("a.txt");
         let file = crate::workspace::SessionFile { path, ..Default::default() };
         let session = crate::workspace::Session { root: app.workspace.root.clone(), files: vec![file], ..Default::default() };
-        app.handle_msg(AppMsg::SessionLoaded { generation: g - 1, session: session.clone(), files: vec![Ok(b"x".to_vec())] });
+        app.handle_msg(AppMsg::SessionLoaded { generation: g - 1, session: Box::new(session.clone()), files: vec![Ok(b"x".to_vec())] });
         assert!(app.editor.buffers.is_empty());
-        app.handle_msg(AppMsg::SessionLoaded { generation: g, session, files: vec![Ok(b"x".to_vec())] });
+        app.handle_msg(AppMsg::SessionLoaded { generation: g, session: Box::new(session), files: vec![Ok(b"x".to_vec())] });
         assert_eq!(app.editor.buffers.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2085,7 +2085,7 @@ pub(crate) mod tests {
         let session = crate::workspace::Session { root, files: vec![file(&a), file(&b)], active: Some(0), ..Default::default() };
         let g = app.workspace.generation;
         let text = || Ok(b"zero\none\ntwo\nthree\n".to_vec());
-        app.handle_msg(AppMsg::SessionLoaded { generation: g, session, files: vec![text(), text()] });
+        app.handle_msg(AppMsg::SessionLoaded { generation: g, session: Box::new(session), files: vec![text(), text()] });
         assert_eq!(app.editor.buffers.len(), 2);
         let active = app.editor.active_buffer().unwrap();
         assert_eq!(active.path.as_ref(), Some(&b));
@@ -2093,7 +2093,7 @@ pub(crate) mod tests {
         assert!(app.pending_open.is_none());
         // A later session for the same root (a switch back) skips open tabs.
         let again = crate::workspace::Session { root: app.workspace.root.clone(), files: vec![file(&b)], ..Default::default() };
-        app.handle_msg(AppMsg::SessionLoaded { generation: g, session: again, files: vec![text()] });
+        app.handle_msg(AppMsg::SessionLoaded { generation: g, session: Box::new(again), files: vec![text()] });
         assert_eq!(app.editor.buffers.len(), 2);
         assert_eq!(app.editor.active_buffer().unwrap().cursor_line_col(), (2, 1));
         let _ = std::fs::remove_dir_all(&dir);

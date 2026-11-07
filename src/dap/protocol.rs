@@ -143,6 +143,10 @@ pub struct Capabilities {
     pub support_terminate_debuggee: bool,
     #[serde(deserialize_with = "nullable")]
     pub exception_breakpoint_filters: Vec<ExceptionFilter>,
+    #[serde(deserialize_with = "nullable")]
+    pub supports_conditional_breakpoints: bool,
+    #[serde(deserialize_with = "nullable")]
+    pub supports_log_points: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
@@ -464,6 +468,16 @@ mod tests {
                 ExceptionFilter { filter: "b".into(), label: "B".into(), default: false },
             ]
         );
+    }
+
+    #[test]
+    fn capabilities_read_conditions_and_log_points() {
+        let c: Capabilities = body_of("t", json!({"supportsConditionalBreakpoints": true, "supportsLogPoints": true}));
+        assert!(c.supports_conditional_breakpoints && c.supports_log_points);
+        let c: Capabilities = body_of("t", json!({"supportsConditionalBreakpoints": null, "supportsLogPoints": null}));
+        assert!(!c.supports_conditional_breakpoints && !c.supports_log_points);
+        let c: Capabilities = body_of("t", json!({}));
+        assert!(!c.supports_conditional_breakpoints && !c.supports_log_points);
     }
 
     #[test]

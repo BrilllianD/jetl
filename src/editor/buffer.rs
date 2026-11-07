@@ -134,8 +134,30 @@ pub enum BpState {
     Failed,
 }
 
+/// What the user set on a breakpoint besides its line: sent in `setBreakpoints` and saved with the session, never
+/// adapter state. Neither field is `Some("")` or holds a control character; both `None` is a plain breakpoint, and a
+/// log message means it does not stop.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BreakpointSpec {
+    pub condition: Option<String>,
+    pub log_message: Option<String>,
+}
+
+impl BreakpointSpec {
+    /// User or session text as a field: trimmed, `None` when blank. The caller refuses a control character first.
+    pub fn text(text: &str) -> Option<String> {
+        let t = text.trim();
+        (!t.is_empty()).then(|| t.to_string())
+    }
+
+    pub fn is_plain(&self) -> bool {
+        self.condition.is_none() && self.log_message.is_none()
+    }
+}
+
 /// A breakpoint on a line. The key in `Buffer::breakpoints` is the line the
 /// user chose: an adapter's other line goes into `adapter_line`, never onto the key.
+/// The `spec` is the user's and is saved with the session; the rest is adapter state, never saved.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BreakpointMark {
     pub state: BpState,
@@ -144,6 +166,14 @@ pub struct BreakpointMark {
     /// The line the adapter reports, 0-based, when it differs from the key.
     pub adapter_line: Option<usize>,
     pub message: Option<String>,
+    pub spec: BreakpointSpec,
+}
+
+impl BreakpointMark {
+    /// Back to what no session has told, keeping the line's spec.
+    pub fn forget_state(&mut self) {
+        *self = BreakpointMark { spec: std::mem::take(&mut self.spec), ..Default::default() };
+    }
 }
 
 #[derive(Debug)]
@@ -1641,6 +1671,15 @@ impl Buffer {
     pub fn set_breakpoints(&mut self, lines: &[usize]) {
         let n = self.rope.len_lines();
         self.breakpoints = lines.iter().copied().filter(|l| *l < n).map(|l| (l, BreakpointMark::default())).collect();
+    }
+
+    /// The specs of a loaded session onto the marks already there; a line with no mark is skipped.
+    pub fn restore_breakpoint_specs(&mut self, specs: &[(usize, BreakpointSpec)]) {
+        for (line, spec) in specs {
+            if let Some(m) = self.breakpoints.get_mut(line) {
+                m.spec = spec.clone();
+            }
+        }
     }
 
     /// The line of the bookmark with mnemonic `digit`.
@@ -3226,6 +3265,53 @@ g()
         buf.backspace();
         assert_eq!(bps(&buf), vec![2]);
         assert_eq!((buf.breakpoints[&2].state, buf.breakpoints[&2].id), (BpState::Verified, Some(7)));
+    }
+
+    #[test]
+    fn a_spec_follows_its_line() {
+        let mut buf = b("a\nb\nc\nd\n");
+        let spec = |c: &str| BreakpointSpec { condition: Some(c.into()), log_message: None };
+        buf.breakpoints.insert(2, BreakpointMark { spec: spec("i == 2"), ..Default::default() });
+        buf.breakpoints.insert(3, BreakpointMark { spec: spec("i == 3"), ..Default::default() });
+        buf.goto_line(0, 0);
+        buf.insert("x\n", TxKind::Other);
+        assert_eq!(bps(&buf), vec![3, 4]);
+        assert_eq!(buf.breakpoints[&3].spec, spec("i == 2"));
+        assert_eq!(buf.breakpoints[&4].spec, spec("i == 3"));
+        // Joining line 4 onto line 3 keeps the lower line's mark and its spec.
+        buf.goto_line(4, 0);
+        buf.backspace();
+        assert_eq!(bps(&buf), vec![3]);
+        assert_eq!(buf.breakpoints[&3].spec, spec("i == 2"));
+    }
+
+    #[test]
+    fn forget_state_keeps_the_spec() {
+        let spec = BreakpointSpec { condition: Some("i == 2".into()), log_message: Some("i={i}".into()) };
+        let mut m =
+            BreakpointMark { state: BpState::Failed, id: Some(3), adapter_line: Some(4), message: Some("no".into()), spec: spec.clone() };
+        m.forget_state();
+        assert_eq!(m, BreakpointMark { spec, ..Default::default() });
+    }
+
+    #[test]
+    fn spec_text_trims_and_blanks() {
+        assert_eq!(BreakpointSpec::text("  i == 3 "), Some("i == 3".to_string()));
+        assert_eq!(BreakpointSpec::text("   "), None);
+        assert_eq!(BreakpointSpec::text(""), None);
+        assert!(BreakpointSpec::default().is_plain());
+        assert!(!BreakpointSpec { condition: Some("x".into()), log_message: None }.is_plain());
+        assert!(!BreakpointSpec { condition: None, log_message: Some("x".into()) }.is_plain());
+    }
+
+    #[test]
+    fn restore_specs_skips_a_line_with_no_mark() {
+        let mut buf = b("a\nb\nc\n");
+        buf.set_breakpoints(&[1]);
+        let spec = BreakpointSpec { condition: Some("c".into()), log_message: None };
+        buf.restore_breakpoint_specs(&[(1, spec.clone()), (2, spec.clone())]);
+        assert_eq!(bps(&buf), vec![1]);
+        assert_eq!(buf.breakpoints[&1].spec, spec);
     }
 
     #[test]

@@ -47,7 +47,7 @@ pub enum AppMsg {
     /// `session.files[i]`), tagged with the workspace generation.
     SessionLoaded {
         generation: u64,
-        session: crate::workspace::Session,
+        session: Box<crate::workspace::Session>,
         files: Vec<std::io::Result<Vec<u8>>>,
     },
     /// The files of a branch's editor set (`files[i]` belongs to

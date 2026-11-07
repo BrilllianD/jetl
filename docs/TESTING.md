@@ -1120,6 +1120,74 @@ only that the empty list goes out, before a resume. What gdb cannot show, and th
 start orders; a closed file's lines dropped, and a rename; `sourceModified` having an effect (gdb ignores it); a
 root switch.
 
+### Scenario: conditional and log breakpoints
+
+Needs `gdb` 14 or newer (written against 17.2) and `gcc`. At 80x24 and at 120x40, with the directories, config and
+log of the previous scenario, plus `-iex "set debug dap-log-file <path>"` in the adapter's command so that `dap.log`
+holds the wire. Copy `dap.log` after each session, since gdb rewrites it. Fixture `/tmp/jetl-dap-demo`: `loop.c`
+
+    #include <stdio.h>
+    int main(void) {
+        int sum = 0;
+        for (int i = 0; i < 5; i++) {
+            sum += i;
+        }
+        printf("sum=%d\n", sum);
+        return 0;
+    }
+
+built with `gcc -g -O0 -o loop loop.c`, and a config `loop` with `command = ["./loop"]` and `[debug.loop]` with
+`adapter = "gdb"` and `launch = { program = "${workspaceFolder}/loop" }` in `.jetl/run.toml`; pick it with
+Alt+Shift+F9. Line 5 is `sum += i;` and line 7 the `printf`. Start `jetl loop.c` only when `pgrep -x loop` and
+`pgrep -f '[g]db -q -i=dap'` print nothing. The Debug window shows on Alt+F5, and Alt+Left and Alt+Right change its
+tab; the editor needs Esc to take the keys back. Alt+Shift+F8 reaches jetl through tmux as `\e[19;4~`.
+
+1. Negative control: Ctrl+G, `5`, Alt+Shift+F8 with no mark: an Info toast, `No breakpoint on line 5: Ctrl+F8 sets
+   one`. Ctrl+F8, then Alt+Shift+F8: a choice dialog with `Condition: none` and `Log message: none (it stops)`. Enter
+   on `Condition`, type `i == 3`, Enter: `5◉`.
+2. Shift+F9: the program stops once, at line 5, and the Variables tab shows `i = 3`. `dap.log` has `{"condition":
+   "i == 3", "line": 5}` in the `setBreakpoints`, and the stop is one `stopped` event. F9: `Debug session ended, exit
+   code 0`, and the Console holds `sum=10`.
+3. Alt+Shift+F8, `Condition`, Ctrl+A, Backspace, Enter: `5●`. Alt+Shift+F8, `Log message`, type `i={i} sum={sum}`,
+   Enter: `5■`. Shift+F9: no stop, exit code 0. The Console holds `i=0 sum=0`, `i=1 sum=0`, `i=2 sum=1`, `i=3
+   sum=3`, `i=4 sum=6`, each on its own line, then `sum=10`. `dap.log` has `"logMessage": "i={i} sum={sum}\n"`: gdb
+   prints a log message exactly as given, so jetl adds the line end under gdb (without it the five lines would glue
+   together).
+4. Condition `i > 2` on the log point as well, Shift+F9: gdb accepts the pair (`"verified": false, "reason":
+   "pending"` at the start, `true` after), the glyph stays `5■`, and there is no failure line. gdb ignores the
+   condition on a log point: all five lines `i=0 sum=0` to `i=4 sum=6` are logged and the program does not stop.
+   A conditional log point does not work under gdb, and jetl does not pretend it does. Clear the log message, set
+   the condition `i == 3`: `5◉`.
+5. A refused condition. Ctrl+G, `7`, Ctrl+F8, Alt+Shift+F8, `Condition`, `nosuch > 1`: `7◉`. Shift+F9: the answer to
+   the start request is `pending` for both, and gdb accepts the bad condition without a word (a breakpoint set
+   before the program loads is not checked): `7◉` stays, and the program stops at 5 (`i = 3`), since 7 is not
+   reached. While paused, Ctrl+G, `7`, Alt+Shift+F8, `Condition`, `nosuch > 2`: one `setBreakpoints` goes out at once
+   (`jetl.log` `dap: sending breakpoints of /tmp/jetl-dap-demo/loop.c` and `dap: specs of ...` the same instant, no
+   tick), the answer for line 7 is `{"verified": false, "reason": "failed", "message": "No symbol \"nosuch\" in
+   current context."}`, the glyph is `7◎` and the Console's line is `Breakpoint loop.c:7 failed: No symbol "nosuch"
+   in current context.`. Then condition `sum > 0`: `7◉`, and F9 stops at 7 (`hitBreakpointIds`). The new answer has
+   a new id for line 7 (`3`, not `2`): gdb deleted the breakpoint it refused, so there was nothing to reuse. A
+   condition changed on a live breakpoint keeps the id (gdb removes `condition` before its reuse key).
+6. Edits move a spec: while paused at 7, Ctrl+G, `1`, Enter (a blank line above, unsaved). The marks read `6` and `8`,
+   with `i == 3` and `sum > 0`, and the new lines go out at once with `"sourceModified": true`. gdb reads the saved
+   file, where line 6 is `}`, so it answers `No symbol "i" in current context.` for it and the glyph is `6◎`, and
+   `8◉`; this is the file on disk, not a jetl fault. Ctrl+Z: `5◉` and `7◉` again, answered. Ctrl+F2.
+7. Persistence. Shift+F9, stop at 5, Alt+F8 `sum` with `Add to watches` ticked (Alt+C), the same for `i`, Esc: the
+   Variables tab has the rows `sum = 3` and `i = 3` above Locals. Ctrl+F2, Ctrl+W, Ctrl+Q: exit 0, empty stderr, and
+   the session file has `closed_breakpoints` with `"specs": [{"line": 4, "condition": "i == 3"}, {"line": 6,
+   "condition": "sum > 0"}]` beside `lines`, `"watches": ["sum", "i"]`, and no `Verified` or `Pending`. Start `jetl
+   loop.c`: `5◉` and `7◉`. Shift+F9 stops at 5 with `i = 3`, `"condition": "i == 3"` and `"condition": "sum > 0"` in
+   the first `setBreakpoints`, and the two watch rows above the scopes. Ctrl+F2, Ctrl+Q: with loop.c open the file
+   carries `breakpoint_specs`.
+8. Old file: apply `jq 'del(.watches) | del(.closed_breakpoints[]?.specs) | del(.files[]?.breakpoint_specs)'` to that
+   session file and start: plain `5●` and `7●`, no watch, exit 0, empty stderr.
+9. Every session: exit 0, empty stderr; no `gdb`, `loop` or tmux server is left.
+
+What only the fake adapter shows (the unit tests prove it; gdb declares both capabilities): the adapter that does not
+declare `supportsConditionalBreakpoints` or `supportsLogPoints` gets the entry with no condition or log message, and
+the Console says once that those breakpoints stop every time; an adapter that is not gdb gets the log message
+without the added line end.
+
 ### Scenario: stepping and the execution point
 
 Needs `gdb` 14 or newer and `gcc`. At 80x24 and at 120x40, with the directories, config and log of the previous

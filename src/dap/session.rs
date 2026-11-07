@@ -40,10 +40,24 @@ pub struct SessionSpec {
     pub breakpoints: BTreeMap<PathBuf, SourceBreakpoints>,
 }
 
-/// 0-based lines, as jetl holds them.
+/// One `setBreakpoints` entry: the 0-based line as jetl holds it, and what is sent with it. No field is `Some("")`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SourceBreakpoint {
+    pub line: usize,
+    pub condition: Option<String>,
+    pub log_message: Option<String>,
+}
+
+impl SourceBreakpoint {
+    pub fn at(line: usize) -> Self {
+        Self { line, ..Self::default() }
+    }
+}
+
+/// The entries of one source, lines ascending, one per line.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SourceBreakpoints {
-    pub lines: Vec<usize>,
+    pub breakpoints: Vec<SourceBreakpoint>,
     pub modified: bool,
 }
 
@@ -77,7 +91,7 @@ pub enum Action {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
-    SetBreakpoints { source: PathBuf, lines: Vec<usize>, modified: bool },
+    SetBreakpoints { source: PathBuf, breakpoints: Vec<SourceBreakpoint>, modified: bool },
     Request { command: String, arguments: Value, tag: DapTag },
     Resume { kind: ResumeKind, thread: i64 },
     Pause { thread: i64 },
@@ -215,6 +229,8 @@ pub struct Session {
     /// Expired in `seq` order, deterministic.
     pending: BTreeMap<i64, Pending>,
     newest_breakpoints: BTreeMap<PathBuf, i64>,
+    /// The warning that a condition or log message was left out has been shown.
+    spec_warned: bool,
     /// The newest stop's event, given again when a refused resume returns to it.
     last_stop: StoppedEvent,
 }
@@ -237,6 +253,7 @@ impl Session {
             stop: None,
             pending: BTreeMap::new(),
             newest_breakpoints: BTreeMap::new(),
+            spec_warned: false,
             last_stop: StoppedEvent::default(),
         }
     }
@@ -326,7 +343,7 @@ impl Session {
     fn configure(&mut self, now: Instant, out: &mut Vec<Action>) {
         self.configured = true;
         for (path, sb) in std::mem::take(&mut self.spec.breakpoints) {
-            self.send_set_breakpoints(path, sb.lines, sb.modified, now, out);
+            self.send_set_breakpoints(path, sb.breakpoints, sb.modified, now, out);
         }
         let capable = self.caps.supports_configuration_done_request;
         if !self.caps.exception_breakpoint_filters.is_empty() || !capable {
@@ -342,12 +359,47 @@ impl Session {
         }
     }
 
-    fn send_set_breakpoints(&mut self, source: PathBuf, lines: Vec<usize>, modified: bool, now: Instant, out: &mut Vec<Action>) {
+    fn send_set_breakpoints(
+        &mut self,
+        source: PathBuf,
+        breakpoints: Vec<SourceBreakpoint>,
+        modified: bool,
+        now: Instant,
+        out: &mut Vec<Action>,
+    ) {
         let name = source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let breakpoints: Vec<Value> = lines.iter().map(|l| json!({ "line": l + 1 })).collect();
+        let mut left_out = false;
+        let entries: Vec<Value> = breakpoints
+            .iter()
+            .map(|b| {
+                let mut e = json!({ "line": b.line + 1 });
+                if let Some(c) = &b.condition {
+                    if self.caps.supports_conditional_breakpoints {
+                        e["condition"] = json!(c);
+                    } else {
+                        left_out = true;
+                    }
+                }
+                if let Some(m) = &b.log_message {
+                    if self.caps.supports_log_points {
+                        e["logMessage"] = json!(m);
+                    } else {
+                        left_out = true;
+                    }
+                }
+                e
+            })
+            .collect();
+        if left_out && !self.spec_warned {
+            self.spec_warned = true;
+            out.push(Action::Emit(DapBody::Error(
+                "The debug adapter does not support breakpoint conditions or log messages: those breakpoints stop every time".into(),
+            )));
+        }
+        let lines: Vec<usize> = breakpoints.iter().map(|b| b.line).collect();
         let args = json!({
             "source": { "name": name, "path": source.to_string_lossy() },
-            "breakpoints": breakpoints,
+            "breakpoints": entries,
             "sourceModified": modified,
         });
         let kind = PendingKind::SetBreakpoints { source: source.clone(), requested: lines };
@@ -542,14 +594,14 @@ impl Session {
 
     fn on_command(&mut self, c: Command, now: Instant, out: &mut Vec<Action>) {
         match c {
-            Command::SetBreakpoints { source, lines, modified } => {
+            Command::SetBreakpoints { source, breakpoints, modified } => {
                 if self.phase == Phase::Stopping {
                     return;
                 }
                 if self.configured {
-                    self.send_set_breakpoints(source, lines, modified, now, out);
+                    self.send_set_breakpoints(source, breakpoints, modified, now, out);
                 } else {
-                    self.spec.breakpoints.insert(source, SourceBreakpoints { lines, modified });
+                    self.spec.breakpoints.insert(source, SourceBreakpoints { breakpoints, modified });
                 }
             }
             Command::Request { command, arguments, tag } => {
@@ -664,6 +716,74 @@ mod tests {
         })
     }
 
+    fn at(lines: &[usize]) -> Vec<SourceBreakpoint> {
+        lines.iter().map(|l| SourceBreakpoint::at(*l)).collect()
+    }
+
+    fn spec_caps(conditions: bool, log_points: bool) -> Value {
+        let mut c = caps();
+        c["supportsConditionalBreakpoints"] = json!(conditions);
+        c["supportsLogPoints"] = json!(log_points);
+        c
+    }
+
+    fn with_specs() -> Vec<SourceBreakpoint> {
+        vec![
+            SourceBreakpoint { line: 2, condition: Some("i == 3".into()), log_message: None },
+            SourceBreakpoint { line: 4, condition: None, log_message: Some("i={i}".into()) },
+        ]
+    }
+
+    const NO_SPEC_SUPPORT: &str =
+        "The debug adapter does not support breakpoint conditions or log messages: those breakpoints stop every time";
+
+    #[test]
+    fn a_spec_goes_on_the_wire_when_declared() {
+        let mut h = H::new(&[]);
+        h.answer("initialize", spec_caps(true, true));
+        h.initialized();
+        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), breakpoints: with_specs(), modified: false });
+        assert_eq!(
+            h.requests("setBreakpoints")[0]["arguments"]["breakpoints"],
+            json!([{"line": 3, "condition": "i == 3"}, {"line": 5, "logMessage": "i={i}"}])
+        );
+        assert!(h.errors().is_empty());
+        h.answer("setBreakpoints", json!({"breakpoints": [{"verified": true}, {"verified": true}]}));
+        let Some(DapBody::Breakpoints { requested, .. }) = h.emitted.iter().find(|b| matches!(b, DapBody::Breakpoints { .. })) else {
+            panic!("no answer emitted")
+        };
+        assert_eq!(requested, &vec![2, 4]);
+    }
+
+    #[test]
+    fn an_undeclared_spec_is_left_out_and_said_once() {
+        let mut h = H::new(&[]);
+        h.answer("initialize", spec_caps(false, false));
+        h.initialized();
+        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), breakpoints: with_specs(), modified: false });
+        assert_eq!(h.requests("setBreakpoints")[0]["arguments"]["breakpoints"], json!([{"line": 3}, {"line": 5}]));
+        assert_eq!(h.errors(), vec![NO_SPEC_SUPPORT.to_string()]);
+        h.cmd(Command::SetBreakpoints { source: "/b.c".into(), breakpoints: with_specs(), modified: false });
+        assert_eq!(h.requests("setBreakpoints")[1]["arguments"]["breakpoints"], json!([{"line": 3}, {"line": 5}]));
+        assert_eq!(h.errors().len(), 1, "said once per session");
+        // One capability declared: only the other field is left out.
+        let mut h = H::new(&[]);
+        h.answer("initialize", spec_caps(true, false));
+        h.initialized();
+        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), breakpoints: with_specs(), modified: false });
+        assert_eq!(h.requests("setBreakpoints")[0]["arguments"]["breakpoints"], json!([{"line": 3, "condition": "i == 3"}, {"line": 5}]));
+        assert_eq!(h.errors(), vec![NO_SPEC_SUPPORT.to_string()]);
+    }
+
+    #[test]
+    fn a_plain_entry_has_only_its_line() {
+        let mut h = H::new(&[("/a.c", &[1, 6])]);
+        h.answer("initialize", spec_caps(true, true));
+        h.initialized();
+        assert_eq!(h.requests("setBreakpoints")[0]["arguments"]["breakpoints"], json!([{"line": 2}, {"line": 7}]));
+        assert!(h.errors().is_empty(), "nothing was left out");
+    }
+
     const MS: Duration = Duration::from_millis(1);
     const HOUR: Duration = Duration::from_secs(3600);
 
@@ -686,7 +806,7 @@ mod tests {
                 launch: json!({"program": "/p"}),
                 breakpoints: breakpoints
                     .iter()
-                    .map(|(p, l)| (PathBuf::from(p), SourceBreakpoints { lines: l.to_vec(), modified: false }))
+                    .map(|(p, l)| (PathBuf::from(p), SourceBreakpoints { breakpoints: at(l), modified: false }))
                     .collect(),
             };
             let mut h = H { s: Session::new(spec, now), now, sent: vec![], emitted: vec![], last: vec![], answered: BTreeSet::new() };
@@ -943,7 +1063,7 @@ mod tests {
     #[test]
     fn nothing_else_sent_before_the_initialize_response() {
         let mut h = H::new(BPS);
-        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), lines: vec![1], modified: false });
+        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), breakpoints: at(&[1]), modified: false });
         request(&mut h, "threads", 0);
         h.cmd(Command::Resume { kind: ResumeKind::Next, thread: 1 });
         h.cmd(Command::Pause { thread: 1 });
@@ -1542,11 +1662,11 @@ mod tests {
     fn set_breakpoints_before_initialized_replaces_the_snapshot() {
         let mut h = H::new(BPS);
         h.answer("initialize", caps());
-        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), lines: vec![7], modified: false });
+        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), breakpoints: at(&[7]), modified: false });
         assert!(h.last.is_empty());
-        h.cmd(Command::SetBreakpoints { source: "/c.c".into(), lines: vec![1], modified: false });
+        h.cmd(Command::SetBreakpoints { source: "/c.c".into(), breakpoints: at(&[1]), modified: false });
         assert!(h.last.is_empty());
-        h.cmd(Command::SetBreakpoints { source: "/b.c".into(), lines: vec![], modified: true });
+        h.cmd(Command::SetBreakpoints { source: "/b.c".into(), breakpoints: at(&[]), modified: true });
         assert!(h.last.is_empty());
         assert_eq!(h.commands(), ["initialize", "launch"]);
         h.event("initialized", json!({}));
@@ -1565,14 +1685,14 @@ mod tests {
     fn set_breakpoints_after_initialized_sends_at_once() {
         let mut h = starting();
         h.initialized();
-        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), lines: vec![2, 4], modified: false });
+        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), breakpoints: at(&[2, 4]), modified: false });
         assert_eq!(h.last.len(), 1);
         let Action::Send(o) = &h.last[0] else { panic!("no send") };
         assert_eq!(
             o.to_json()["arguments"],
             json!({"source": {"name": "a.c", "path": "/a.c"}, "breakpoints": [{"line": 3}, {"line": 5}], "sourceModified": false})
         );
-        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), lines: vec![2, 4], modified: true });
+        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), breakpoints: at(&[2, 4]), modified: true });
         assert_eq!(h.requests("setBreakpoints")[1]["arguments"]["sourceModified"], json!(true));
     }
 
@@ -1580,15 +1700,15 @@ mod tests {
     fn empty_list_is_sent() {
         let mut h = starting();
         h.initialized();
-        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), lines: vec![], modified: false });
+        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), breakpoints: at(&[]), modified: false });
         assert_eq!(h.requests("setBreakpoints")[0]["arguments"]["breakpoints"], json!([]));
     }
 
     fn two_for_a() -> H {
         let mut h = starting();
         h.initialized();
-        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), lines: vec![1], modified: false });
-        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), lines: vec![2, 3], modified: false });
+        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), breakpoints: at(&[1]), modified: false });
+        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), breakpoints: at(&[2, 3]), modified: false });
         h.take_emitted();
         h
     }
@@ -1627,8 +1747,8 @@ mod tests {
     fn newest_tracking_is_per_source() {
         let mut h = starting();
         h.initialized();
-        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), lines: vec![1], modified: false });
-        h.cmd(Command::SetBreakpoints { source: "/b.c".into(), lines: vec![1], modified: false });
+        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), breakpoints: at(&[1]), modified: false });
+        h.cmd(Command::SetBreakpoints { source: "/b.c".into(), breakpoints: at(&[1]), modified: false });
         h.take_emitted();
         h.answer("setBreakpoints", json!({"breakpoints": [{"verified": true}]}));
         h.answer("setBreakpoints", json!({"breakpoints": [{"verified": true}]}));
@@ -1650,7 +1770,7 @@ mod tests {
     fn breakpoint_result_is_passed_as_on_the_wire() {
         let mut h = starting();
         h.initialized();
-        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), lines: vec![2], modified: false });
+        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), breakpoints: at(&[2]), modified: false });
         h.answer("setBreakpoints", json!({"breakpoints": [{"id": 1, "verified": true, "line": 3}]}));
         let got = breakpoint_emits(&h);
         assert_eq!(got[0].0, [2]);
@@ -2209,7 +2329,7 @@ mod tests {
         let mut h = running();
         h.cmd(Command::Stop);
         let n = h.sent.len();
-        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), lines: vec![1], modified: false });
+        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), breakpoints: at(&[1]), modified: false });
         assert!(h.last.is_empty());
         assert_eq!(h.sent.len(), n);
     }
@@ -2218,7 +2338,7 @@ mod tests {
     fn set_breakpoints_answer_in_stopping_is_dropped() {
         for ok in [true, false] {
             let mut h = configuring();
-            h.cmd(Command::SetBreakpoints { source: "/a.c".into(), lines: vec![1], modified: false });
+            h.cmd(Command::SetBreakpoints { source: "/a.c".into(), breakpoints: at(&[1]), modified: false });
             h.take_emitted();
             h.cmd(Command::Stop);
             if ok {
@@ -2235,7 +2355,7 @@ mod tests {
     fn set_breakpoints_between_initialized_and_the_initialize_response_goes_with_the_configuration() {
         let mut h = H::new(&[]);
         h.event("initialized", json!({}));
-        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), lines: vec![4], modified: false });
+        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), breakpoints: at(&[4]), modified: false });
         assert!(h.last.is_empty());
         assert_eq!(h.commands(), ["initialize"]);
         h.answer("initialize", caps());

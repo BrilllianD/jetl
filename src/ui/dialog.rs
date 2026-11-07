@@ -174,6 +174,17 @@ pub enum DialogId {
     },
     /// Debug > Evaluate Expression: the expression; the check adds it to the watches.
     DebugEvaluate,
+    /// Edit Breakpoint: choose the condition or the log message of the breakpoint on `line` (0-based) of `path`.
+    DebugBreakpoint {
+        path: std::path::PathBuf,
+        line: usize,
+    },
+    /// The condition (`log` false) or log message (`log` true) of that breakpoint, as text.
+    DebugBreakpointText {
+        path: std::path::PathBuf,
+        line: usize,
+        log: bool,
+    },
     /// Git > Resolve Conflicts: item `i` is conflicted path `rels[i]`
     /// (relative to the work tree).
     ResolveConflictPick(Vec<String>),

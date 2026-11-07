@@ -1,14 +1,19 @@
 //! Breakpoints across buffers and the marks of closed files, stored like
-//! bookmarks: a line's mark lives in `Buffer::breakpoints` and follows edits;
-//! when a file's last tab closes its lines wait in `Editor::closed_breakpoints`
-//! and go back into the buffer when the file opens again.
+//! bookmarks: a line's mark lives in `Buffer::breakpoints` and follows edits,
+//! and it carries its `BreakpointSpec` (condition, log message), so the spec
+//! follows too; when a file's last tab closes its lines and specs wait in
+//! `Editor::closed_breakpoints` and go back into the buffer when the file
+//! opens again.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use ratatui::style::Style;
+
 use super::Editor;
-use super::buffer::{BreakpointMark, Buffer};
+use super::buffer::{BpState, BreakpointMark, BreakpointSpec, Buffer};
 use crate::app::Ctx;
+use crate::config::theme::Theme;
 use crate::event::Level;
 
 /// The line a paused debug session is on; 0-based, as the marks.
@@ -28,6 +33,23 @@ pub(super) fn refusal(in_merge: bool, b: &Buffer) -> Option<&'static str> {
         Some("A breakpoint needs a file: this tab has none")
     } else {
         None
+    }
+}
+
+/// The gutter glyph of a breakpoint and its style; also what a list of breakpoints shows. A plain one is a disc, a
+/// conditional one a bullseye, a log point (with or without a condition) a square; filled while idle or verified,
+/// hollow while pending or failed.
+pub fn breakpoint_glyph(state: BpState, spec: &BreakpointSpec, theme: &Theme) -> (&'static str, Style) {
+    let (filled, hollow) = if spec.log_message.is_some() {
+        ("■", "□")
+    } else if spec.condition.is_some() {
+        ("◉", "◎")
+    } else {
+        ("●", "○")
+    };
+    match state {
+        BpState::Idle | BpState::Verified => (filled, theme.breakpoint),
+        BpState::Pending | BpState::Failed => (hollow, theme.breakpoint_unverified),
     }
 }
 
@@ -63,17 +85,17 @@ impl Editor {
         }
     }
 
-    /// The breakpoint lines of every file: closed files, with open buffers
+    /// The breakpoints of every file with their specs, lines ascending: closed files, with open buffers
     /// that have a path and a mark over them. A file with no mark is absent.
-    pub fn all_breakpoints(&self) -> BTreeMap<PathBuf, Vec<usize>> {
-        let mut out: BTreeMap<PathBuf, Vec<usize>> =
-            self.closed_breakpoints.iter().map(|(p, l)| (p.clone(), l.iter().copied().collect())).collect();
+    pub fn all_breakpoints(&self) -> BTreeMap<PathBuf, Vec<(usize, BreakpointSpec)>> {
+        let mut out: BTreeMap<PathBuf, Vec<(usize, BreakpointSpec)>> =
+            self.closed_breakpoints.iter().map(|(p, l)| (p.clone(), l.iter().map(|(l, s)| (*l, s.clone())).collect())).collect();
         for b in &self.buffers {
             let Some(path) = &b.path else { continue };
             if b.breakpoints.is_empty() {
                 out.remove(path);
             } else {
-                out.insert(path.clone(), b.breakpoints.keys().copied().collect());
+                out.insert(path.clone(), b.breakpoints.iter().map(|(l, m)| (*l, m.spec.clone())).collect());
             }
         }
         out
@@ -92,11 +114,11 @@ impl Editor {
         })
     }
 
-    /// Every mark back to its default state, keeping its line.
+    /// Every mark back to its default state, keeping its line and spec.
     pub fn reset_breakpoint_states(&mut self) {
         for b in &mut self.buffers {
             for mark in b.breakpoints.values_mut() {
-                *mark = BreakpointMark::default();
+                mark.forget_state();
             }
         }
     }
@@ -108,30 +130,73 @@ impl Editor {
         if b.breakpoints.is_empty() {
             self.closed_breakpoints.remove(path);
         } else {
-            self.closed_breakpoints.insert(path.clone(), b.breakpoints.keys().copied().collect());
+            self.closed_breakpoints.insert(path.clone(), b.breakpoints.iter().map(|(l, m)| (*l, m.spec.clone())).collect());
         }
     }
 
-    /// The lines parked for `path`, taken out of the closed list (the file is opening).
-    pub(super) fn unpark_breakpoints(&mut self, path: &Path) -> BTreeSet<usize> {
+    /// The lines and specs parked for `path`, taken out of the closed list (the file is opening).
+    pub(super) fn unpark_breakpoints(&mut self, path: &Path) -> BTreeMap<usize, BreakpointSpec> {
         self.closed_breakpoints.remove(path).unwrap_or_default()
+    }
+
+    /// The breakpoints of closed files with their specs, by path, lines ascending.
+    pub fn closed_breakpoint_marks(&self) -> Vec<(PathBuf, Vec<(usize, BreakpointSpec)>)> {
+        self.closed_breakpoints.iter().map(|(p, l)| (p.clone(), l.iter().map(|(l, s)| (*l, s.clone())).collect())).collect()
+    }
+
+    /// Replace the breakpoints of closed files with these (a session loaded, or the root changed); an open file is
+    /// skipped, and two entries of one path merge, the first spec of a line winning.
+    pub fn restore_closed_breakpoint_marks(&mut self, files: &[(PathBuf, Vec<(usize, BreakpointSpec)>)]) {
+        self.closed_breakpoints.clear();
+        for (path, marks) in files {
+            if marks.is_empty() || self.index_of(path).is_some() {
+                continue;
+            }
+            let slot = self.closed_breakpoints.entry(path.clone()).or_default();
+            for (line, spec) in marks {
+                slot.entry(*line).or_insert_with(|| spec.clone());
+            }
+        }
     }
 
     /// The breakpoint lines of closed files, by path, lines sorted.
     pub fn closed_breakpoints(&self) -> Vec<(PathBuf, Vec<usize>)> {
-        self.closed_breakpoints.iter().map(|(p, l)| (p.clone(), l.iter().copied().collect())).collect()
+        self.closed_breakpoints.iter().map(|(p, l)| (p.clone(), l.keys().copied().collect())).collect()
     }
 
-    /// Replace the breakpoints of closed files (a session loaded, or the
-    /// root changed). A file that is open is skipped.
+    /// Replace the breakpoints of closed files, all plain (see `restore_closed_breakpoint_marks`).
     pub fn restore_closed_breakpoints(&mut self, files: &[(PathBuf, Vec<usize>)]) {
-        self.closed_breakpoints.clear();
-        for (path, lines) in files {
-            if lines.is_empty() || self.index_of(path).is_some() {
-                continue;
-            }
-            self.closed_breakpoints.entry(path.clone()).or_default().extend(lines.iter().copied());
+        let marks: Vec<_> =
+            files.iter().map(|(p, lines)| (p.clone(), lines.iter().map(|l| (*l, BreakpointSpec::default())).collect())).collect();
+        self.restore_closed_breakpoint_marks(&marks);
+    }
+
+    /// The spec of the breakpoint on `line` of `path`, open or closed; `None` when there is none.
+    pub fn breakpoint_spec(&self, path: &Path, line: usize) -> Option<BreakpointSpec> {
+        match self.index_of(path) {
+            Some(i) => self.buffers[i].breakpoints.get(&line).map(|m| m.spec.clone()),
+            None => self.closed_breakpoints.get(path)?.get(&line).cloned(),
         }
+    }
+
+    /// Sets it, open or closed; false, and nothing changes, when there is no breakpoint there.
+    pub fn set_breakpoint_spec(&mut self, path: &Path, line: usize, spec: BreakpointSpec) -> bool {
+        let slot = match self.index_of(path) {
+            Some(i) => self.buffers[i].breakpoints.get_mut(&line).map(|m| &mut m.spec),
+            None => self.closed_breakpoints.get_mut(path).and_then(|l| l.get_mut(&line)),
+        };
+        slot.map(|s| *s = spec).is_some()
+    }
+
+    /// The active tab's file and primary caret line, or why it takes no breakpoint (`refusal`'s hint, or
+    /// "No file is open" without a tab).
+    pub fn breakpoint_target(&self) -> Result<(PathBuf, usize), &'static str> {
+        let b = self.active_buffer().ok_or("No file is open")?;
+        if let Some(hint) = refusal(self.merge.is_some(), b) {
+            return Err(hint);
+        }
+        let path = b.path.clone().ok_or("A breakpoint needs a file: this tab has none")?;
+        Ok((path, b.rope.char_to_line(b.view.sel().head)))
     }
 }
 
@@ -147,7 +212,7 @@ mod tests {
     use crate::app::tests::{load, test_app};
     use crate::config::Config;
     use crate::config::theme::Theme;
-    use crate::editor::buffer::BpState;
+    use crate::editor::buffer::{BpState, BreakpointSpec};
     use crate::editor::gutter::{GutterMark, MarkKind};
     use crate::editor::selection::Selection;
     use crate::event::{Effect, Mouse};
@@ -367,6 +432,157 @@ mod tests {
         assert!(ed.closed_breakpoints().is_empty());
     }
 
+    fn cond(t: &str) -> BreakpointSpec {
+        BreakpointSpec { condition: Some(t.into()), log_message: None }
+    }
+
+    fn log(t: &str) -> BreakpointSpec {
+        BreakpointSpec { condition: None, log_message: Some(t.into()) }
+    }
+
+    #[test]
+    fn a_spec_survives_close_reopen_close_all_and_a_rename() {
+        let theme = Theme::default();
+        let mut ed = Editor::new(&Config::default());
+        let a = PathBuf::from("/tmp/a.log");
+        ed.open_text(a.clone(), "a0\na1\na2\na3\n", false, &theme);
+        ed.active_buffer_mut().unwrap().set_breakpoints(&[1, 3]);
+        assert!(ed.set_breakpoint_spec(&a, 1, cond("i == 1")));
+        assert!(ed.set_breakpoint_spec(&a, 3, log("i={i}")));
+        ed.force_close(ed.index_of(&a).unwrap());
+        assert_eq!(ed.closed_breakpoint_marks(), vec![(a.clone(), vec![(1, cond("i == 1")), (3, log("i={i}"))])]);
+        // Reopened shorter: line 3 lands on the last line, 2, with its spec.
+        ed.open_text(a.clone(), "a0\na1\na2", false, &theme);
+        let b = ed.active_buffer().unwrap();
+        assert_eq!((b.breakpoints[&1].spec.clone(), b.breakpoints[&2].spec.clone()), (cond("i == 1"), log("i={i}")));
+        assert_eq!((b.breakpoints[&1].state, b.breakpoints[&1].id), (BpState::Idle, None));
+        ed.force_close_all();
+        assert_eq!(ed.closed_breakpoint_marks(), vec![(a.clone(), vec![(1, cond("i == 1")), (2, log("i={i}"))])]);
+        let moved = PathBuf::from("/tmp/b.log");
+        ed.retarget(&a, &moved, &theme);
+        assert_eq!(ed.breakpoint_spec(&moved, 1), Some(cond("i == 1")));
+        assert_eq!(ed.breakpoint_spec(&a, 1), None);
+        ed.close_under(&moved);
+        assert!(ed.closed_breakpoint_marks().is_empty());
+    }
+
+    #[test]
+    fn specs_live_in_open_and_closed_files() {
+        let theme = Theme::default();
+        let mut ed = Editor::new(&Config::default());
+        let a = PathBuf::from("/tmp/a.log");
+        ed.open_text(a.clone(), "a0\na1\na2\n", false, &theme);
+        ed.active_buffer_mut().unwrap().set_breakpoints(&[1]);
+        assert_eq!(ed.breakpoint_spec(&a, 1), Some(BreakpointSpec::default()));
+        assert!(!ed.set_breakpoint_spec(&a, 2, cond("x")), "no mark there");
+        assert_eq!(ed.breakpoint_spec(&a, 2), None);
+        assert!(ed.set_breakpoint_spec(&a, 1, cond("i == 1")));
+        ed.force_close(ed.index_of(&a).unwrap());
+        assert_eq!(ed.breakpoint_spec(&a, 1), Some(cond("i == 1")), "closed file");
+        assert!(ed.set_breakpoint_spec(&a, 1, log("hit")));
+        assert!(!ed.set_breakpoint_spec(&a, 0, log("hit")), "no mark in the closed file");
+        assert_eq!(ed.breakpoint_spec(&a, 0), None);
+        ed.open_text(a.clone(), "a0\na1\na2\n", false, &theme);
+        assert_eq!(ed.active_buffer().unwrap().breakpoints[&1].spec, log("hit"));
+        assert_eq!(ed.breakpoint_spec(&PathBuf::from("/tmp/none.log"), 0), None);
+    }
+
+    #[test]
+    fn all_breakpoints_carries_specs() {
+        let theme = Theme::default();
+        let mut ed = Editor::new(&Config::default());
+        let (a, c) = (PathBuf::from("/tmp/a.log"), PathBuf::from("/tmp/c.log"));
+        ed.open_text(c.clone(), "c0\nc1\nc2\n", false, &theme);
+        ed.active_buffer_mut().unwrap().set_breakpoints(&[2, 0]);
+        ed.set_breakpoint_spec(&c, 2, log("m"));
+        ed.force_close(ed.index_of(&c).unwrap());
+        ed.open_text(a.clone(), "a0\na1\na2\n", false, &theme);
+        ed.active_buffer_mut().unwrap().set_breakpoints(&[1]);
+        ed.set_breakpoint_spec(&a, 1, cond("k"));
+        let plain = BreakpointSpec::default();
+        assert_eq!(
+            ed.all_breakpoints(),
+            [(a.clone(), vec![(1, cond("k"))]), (c.clone(), vec![(0, plain), (2, log("m"))])].into_iter().collect()
+        );
+    }
+
+    #[test]
+    fn reset_keeps_specs() {
+        let theme = Theme::default();
+        let mut ed = Editor::new(&Config::default());
+        let a = PathBuf::from("/tmp/a.log");
+        ed.open_text(a.clone(), "a0\na1\na2\n", false, &theme);
+        ed.active_buffer_mut().unwrap().set_breakpoints(&[0, 2]);
+        ed.set_breakpoint_spec(&a, 2, cond("i"));
+        let m = ed.breakpoint_marks_mut(&a).unwrap().get_mut(&2).unwrap();
+        m.state = BpState::Verified;
+        m.id = Some(4);
+        ed.reset_breakpoint_states();
+        let b = ed.active_buffer().unwrap();
+        assert_eq!(b.breakpoints[&2], BreakpointMark { spec: cond("i"), ..Default::default() });
+    }
+
+    #[test]
+    fn closed_marks_replace_and_skip_open_files() {
+        let theme = Theme::default();
+        let mut ed = Editor::new(&Config::default());
+        let (open, shut) = (PathBuf::from("/tmp/open.log"), PathBuf::from("/tmp/shut.log"));
+        ed.open_text(open.clone(), "o\n", false, &theme);
+        ed.restore_closed_breakpoint_marks(&[
+            (open.clone(), vec![(0, cond("x"))]),
+            (shut.clone(), vec![(3, cond("a")), (1, log("b"))]),
+            (shut.clone(), vec![(1, cond("ignored"))]),
+            (PathBuf::from("/tmp/empty.log"), vec![]),
+        ]);
+        assert_eq!(ed.closed_breakpoint_marks(), vec![(shut.clone(), vec![(1, log("b")), (3, cond("a"))])]);
+        ed.restore_closed_breakpoint_marks(&[]);
+        assert!(ed.closed_breakpoint_marks().is_empty());
+    }
+
+    #[test]
+    fn breakpoint_target_follows_the_primary_caret_and_refuses() {
+        let mut ed = editor("l0\nl1\nl2\nl3\n");
+        let b = ed.active_buffer_mut().unwrap();
+        let p = b.rope.line_to_char(2);
+        b.view.sels.push(Selection::point(p), false);
+        let head = b.view.sel().head;
+        let line = b.rope.char_to_line(head);
+        assert_eq!(ed.breakpoint_target(), Ok((PathBuf::from("/tmp/a.log"), line)));
+        let b = ed.active_buffer_mut().unwrap();
+        b.goto_line(3, 0);
+        assert_eq!(ed.breakpoint_target(), Ok((PathBuf::from("/tmp/a.log"), 3)));
+        assert_eq!(Editor::new(&Config::default()).breakpoint_target(), Err("No file is open"));
+        let theme = Theme::default();
+        for which in 0..3 {
+            let mut ed = editor("src\n");
+            match which {
+                0 => drop(ed.open_untitled("x")),
+                1 => drop(ed.open_patch("p", Vec::new(), "x\n")),
+                _ => {
+                    let source = ed.active_buffer().unwrap().id;
+                    ed.open_markdown_preview(source, Rendered { text: "a\nb".into(), spans: Vec::new() }, &theme);
+                }
+            }
+            let hint = refusal(false, ed.active_buffer().unwrap()).expect("refuses");
+            assert_eq!(ed.breakpoint_target(), Err(hint), "tab {which}");
+        }
+    }
+
+    #[test]
+    fn glyphs_tell_the_kind_and_the_state() {
+        let theme = Theme::default();
+        let both = BreakpointSpec { condition: Some("c".into()), log_message: Some("m".into()) };
+        let kinds = [(BreakpointSpec::default(), "●", "○"), (cond("c"), "◉", "◎"), (log("m"), "■", "□"), (both, "■", "□")];
+        for (spec, filled, hollow) in kinds {
+            for state in [BpState::Idle, BpState::Verified] {
+                assert_eq!(breakpoint_glyph(state, &spec, &theme), (filled, theme.breakpoint), "{spec:?} {state:?}");
+            }
+            for state in [BpState::Pending, BpState::Failed] {
+                assert_eq!(breakpoint_glyph(state, &spec, &theme), (hollow, theme.breakpoint_unverified), "{spec:?} {state:?}");
+            }
+        }
+    }
+
     #[test]
     fn an_open_buffer_with_no_marks_wins_over_lines_parked_for_its_path() {
         let parked = PathBuf::from("/tmp/parked.log");
@@ -391,10 +607,11 @@ mod tests {
         ed.active_buffer_mut().unwrap().set_breakpoints(&[1]);
         ed.open_untitled("u");
         ed.active_buffer_mut().unwrap().breakpoints.insert(0, BreakpointMark::default());
-        assert_eq!(ed.all_breakpoints(), [(a.clone(), vec![1]), (c.clone(), vec![0, 2])].into_iter().collect());
+        let plain = |lines: &[usize]| lines.iter().map(|l| (*l, BreakpointSpec::default())).collect::<Vec<_>>();
+        assert_eq!(ed.all_breakpoints(), [(a.clone(), plain(&[1])), (c.clone(), plain(&[0, 2]))].into_iter().collect());
         let i = ed.index_of(&a).unwrap();
         ed.buffers[i].toggle_breakpoint_at(1);
-        assert_eq!(ed.all_breakpoints(), [(c, vec![0, 2])].into_iter().collect());
+        assert_eq!(ed.all_breakpoints(), [(c, plain(&[0, 2]))].into_iter().collect());
     }
 
     #[test]

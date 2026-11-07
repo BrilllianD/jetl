@@ -280,6 +280,7 @@
 "shift-f11" = "editor.show_bookmarks"
 "ctrl-f11" = "editor.toggle_numbered_bookmark"
 "ctrl-f8" = "debug.toggle_breakpoint"
+"alt-shift-f8" = "debug.edit_breakpoint"
 "ctrl-alt-z" = "editor.revert_change"
 # Git blame is View > Git Blame (Ctrl+Alt+B is Implementation(s), as in JetBrains).
 # Reformat Code runs the [format] command for the file's language, else asks

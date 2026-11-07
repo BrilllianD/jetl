@@ -239,6 +239,20 @@ impl DebugPanel {
         &self.watches
     }
 
+    /// The watches of a loaded session, replacing the list: blank ones, ones with a control character, repeats and
+    /// those past `MAX_WATCHES` are dropped. Their roots appear at the next `bump`; called at session load, when no
+    /// session is live (a root switch has retired it and cleared the panel).
+    pub fn set_watches(&mut self, expressions: &[String]) {
+        let mut kept: Vec<String> = Vec::new();
+        for e in expressions {
+            let e = e.trim();
+            if !e.is_empty() && !e.chars().any(char::is_control) && !kept.iter().any(|k| k == e) && kept.len() < MAX_WATCHES {
+                kept.push(e.to_owned());
+            }
+        }
+        self.watches = kept;
+    }
+
     /// Adds a watch and selects its row on the Variables tab, which becomes the tab shown. An expression already
     /// watched is selected instead. False, and nothing changes, when `MAX_WATCHES` are there.
     pub fn add_watch(&mut self, expression: &str) -> bool {
@@ -2765,6 +2779,31 @@ mod tests {
         p.clear();
         assert!(p.watches().is_empty());
         assert_eq!(p.var_count(), 0);
+    }
+
+    #[test]
+    fn set_watches_cleans_and_caps() {
+        let mut p = DebugPanel::default();
+        let mut list: Vec<String> = vec!["  a ".into(), "".into(), "   ".into(), "b\nc".into(), "a".into(), "a".into(), "d\u{1b}".into()];
+        list.extend((0..MAX_WATCHES + 1).map(|i| format!("w{i}")));
+        p.set_watches(&list);
+        assert_eq!(p.watches().len(), MAX_WATCHES);
+        assert_eq!(p.watches()[..3], ["a", "w0", "w1"]);
+        assert_eq!(p.watches().last().map(String::as_str), Some("w30"));
+        p.set_watches(&["x".to_string()]);
+        assert_eq!(p.watches(), ["x"], "the list is replaced");
+    }
+
+    #[test]
+    fn set_watches_then_a_stop_asks_them() {
+        let mut p = started();
+        p.set_watches(&["sum".to_string(), "p.x".to_string()]);
+        p.set_tab(DebugTab::Variables);
+        stopped_in(&mut p, "add");
+        show_locals(&mut p);
+        let asks = p.take_watch_asks();
+        assert_eq!(asks.iter().map(|a| a.expression.as_str()).collect::<Vec<_>>(), ["sum", "p.x"]);
+        assert_eq!(p.var_count(), 3, "two pending watch rows and the scope");
     }
 
     #[test]

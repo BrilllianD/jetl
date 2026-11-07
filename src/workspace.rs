@@ -17,6 +17,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::app::App;
+use crate::editor::buffer::BreakpointSpec;
 use crate::editor::split::{Axis, SplitNode};
 use crate::event::{AppMsg, Level};
 use crate::git::panel::GitTab;
@@ -81,9 +82,12 @@ pub struct Session {
     /// sessions stay readable by builds that know only numbered ones).
     #[serde(default)]
     pub closed_plain_bookmarks: Vec<SessionClosedFile>,
-    /// Breakpoint lines of files without a tab; never their state.
+    /// Breakpoint lines of files without a tab, with their specs in `specs`; never their state.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub closed_breakpoints: Vec<SessionClosedFile>,
+    /// The debugger's watch expressions, in the order they were added; per root, never per branch set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub watches: Vec<String>,
     /// The Run window's selected configuration, by name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_config: Option<String>,
@@ -177,6 +181,55 @@ pub struct SessionClosedFile {
     pub path: PathBuf,
     /// Bookmarked or breakpoint lines, 0-based.
     pub lines: Vec<usize>,
+    /// The condition or log message of some of the breakpoint `lines`; always empty for bookmarks.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub specs: Vec<SessionBreakpointSpec>,
+}
+
+/// The condition or log message of the breakpoint on a line; a text key is left out when there is none.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionBreakpointSpec {
+    /// 0-based.
+    pub line: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_message: Option<String>,
+}
+
+/// The non-plain specs among `marks`, in the order given (lines ascending).
+fn session_specs<'a>(marks: impl Iterator<Item = (usize, &'a BreakpointSpec)>) -> Vec<SessionBreakpointSpec> {
+    marks
+        .filter(|(_, s)| !s.is_plain())
+        .map(|(line, s)| SessionBreakpointSpec { line, condition: s.condition.clone(), log_message: s.log_message.clone() })
+        .collect()
+}
+
+/// The specs of a session file as the editor holds them: a field with a control character is dropped, the texts are
+/// trimmed, and a spec left plain is dropped.
+fn loaded_specs(specs: &[SessionBreakpointSpec]) -> Vec<(usize, BreakpointSpec)> {
+    let clean = |text: &Option<String>, line: usize, what: &str| {
+        let text = text.as_deref()?;
+        if text.chars().any(char::is_control) {
+            tracing::info!("session: dropping the {what} of the breakpoint on line {} (a control character)", line + 1);
+            return None;
+        }
+        BreakpointSpec::text(text)
+    };
+    specs
+        .iter()
+        .map(|s| {
+            (
+                s.line,
+                BreakpointSpec {
+                    condition: clean(&s.condition, s.line, "condition"),
+                    log_message: clean(&s.log_message, s.line, "log message"),
+                },
+            )
+        })
+        .filter(|(_, spec)| !spec.is_plain())
+        .collect()
 }
 
 /// A numbered bookmark of a file without a tab.
@@ -364,6 +417,9 @@ pub struct SessionFile {
     /// Lines with a breakpoint, 0-based; never their state.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub breakpoints: Vec<usize>,
+    /// The condition or log message of some of the `breakpoints`; plain ones are not listed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub breakpoint_specs: Vec<SessionBreakpointSpec>,
     /// Pinned tabs come first in `files`.
     #[serde(default)]
     pub pinned: bool,
@@ -544,7 +600,7 @@ impl App {
         self.history_root_changed();
         // The closed files' numbered bookmarks come with the new session.
         self.editor.restore_closed_bookmarks(&[]);
-        self.editor.restore_closed_breakpoints(&[]);
+        self.editor.restore_closed_breakpoint_marks(&[]);
         self.restore_session();
         self.load_recent_projects(true);
         self.notify(Level::Info, format!("Switched to {}", root.display()));
@@ -583,6 +639,7 @@ impl App {
                 bookmarks,
                 bookmark_digits: b.digits(),
                 breakpoints: b.breakpoints.keys().copied().collect(),
+                breakpoint_specs: session_specs(b.breakpoints.iter().map(|(l, m)| (*l, &m.spec))),
                 pinned: pinned.contains(&b.id),
                 folds: b.view.folds.to_session(&b.rope),
                 wrap: (b.view.wrap.on != self.editor.soft_wrap_for(b.path.as_deref())).then_some(b.view.wrap.on),
@@ -719,7 +776,7 @@ impl App {
         for (path, line, _) in self.editor.closed_bookmarks().into_iter().filter(|(_, _, d)| d.is_none()) {
             match closed_plain_bookmarks.last_mut() {
                 Some(f) if f.path == path => f.lines.push(line),
-                _ => closed_plain_bookmarks.push(SessionClosedFile { path, lines: vec![line] }),
+                _ => closed_plain_bookmarks.push(SessionClosedFile { path, lines: vec![line], specs: vec![] }),
             }
         }
         Session {
@@ -734,10 +791,15 @@ impl App {
             closed_plain_bookmarks,
             closed_breakpoints: self
                 .editor
-                .closed_breakpoints()
+                .closed_breakpoint_marks()
                 .into_iter()
-                .map(|(path, lines)| SessionClosedFile { path, lines })
+                .map(|(path, marks)| SessionClosedFile {
+                    path,
+                    lines: marks.iter().map(|(l, _)| *l).collect(),
+                    specs: session_specs(marks.iter().map(|(l, s)| (*l, s))),
+                })
                 .collect(),
+            watches: self.debug_panel.watches().to_vec(),
             run_config: self.run.selected.clone(),
             branch: self.session_branch.clone(),
             branches: self
@@ -849,7 +911,7 @@ impl App {
                 session.follow_branch(current, local.as_deref());
             }
             let files = session.files.iter().map(|f| std::fs::read(&f.path)).collect();
-            let _ = tx.send(AppMsg::SessionLoaded { generation, session, files });
+            let _ = tx.send(AppMsg::SessionLoaded { generation, session: Box::new(session), files });
         });
     }
 
@@ -930,6 +992,7 @@ impl App {
             self.editor.buffers[i].set_bookmarks(&f.bookmarks);
             self.editor.restore_digits(i, &f.bookmark_digits);
             self.editor.buffers[i].set_breakpoints(&f.breakpoints);
+            self.editor.buffers[i].restore_breakpoint_specs(&loaded_specs(&f.breakpoint_specs));
             if f.pinned {
                 self.editor.set_pinned(i, true);
             }
@@ -964,8 +1027,21 @@ impl App {
         let plain = session.closed_plain_bookmarks.iter().flat_map(|f| f.lines.iter().map(|&l| (f.path.clone(), l, None)));
         let closed: Vec<_> = numbered.chain(plain).collect();
         self.editor.restore_closed_bookmarks(&closed);
-        let breakpoints: Vec<_> = session.closed_breakpoints.iter().map(|f| (f.path.clone(), f.lines.clone())).collect();
-        self.editor.restore_closed_breakpoints(&breakpoints);
+        let breakpoints: Vec<_> = session
+            .closed_breakpoints
+            .iter()
+            .map(|f| {
+                let specs = loaded_specs(&f.specs);
+                let marks = f
+                    .lines
+                    .iter()
+                    .map(|l| (*l, specs.iter().find(|(sl, _)| sl == l).map(|(_, s)| s.clone()).unwrap_or_default()))
+                    .collect();
+                (f.path.clone(), marks)
+            })
+            .collect();
+        self.editor.restore_closed_breakpoint_marks(&breakpoints);
+        self.debug_panel.set_watches(&session.watches);
         if let Some(l) = &session.layout {
             let tasks = l.tasks.clone().unwrap_or_default();
             let dock = Dock { side: tasks.side.unwrap_or(ToolWindowId::Tasks.default_side()), split: tasks.split };
@@ -1037,6 +1113,7 @@ mod tests {
                     bookmarks: vec![3, 40],
                     bookmark_digits: vec![(7, 40)],
                     breakpoints: vec![2, 40],
+                    breakpoint_specs: vec![SessionBreakpointSpec { line: 40, condition: Some("n > 1".into()), log_message: None }],
                     pinned: true,
                     folds: vec![SessionFold { start_line: 2, start_col: 10, end_line: 5, end_col: 1 }],
                     wrap: Some(true),
@@ -1050,6 +1127,7 @@ mod tests {
                     bookmarks: vec![],
                     bookmark_digits: vec![],
                     breakpoints: vec![],
+                    breakpoint_specs: vec![],
                     pinned: false,
                     folds: vec![],
                     wrap: None,
@@ -1106,8 +1184,9 @@ mod tests {
                 focused: 1,
             }),
             closed_bookmarks: vec![SessionBookmark { digit: 2, path: root.join("src/lib.rs"), line: 12 }],
-            closed_plain_bookmarks: vec![SessionClosedFile { path: root.join("src/lib.rs"), lines: vec![3, 40] }],
-            closed_breakpoints: vec![SessionClosedFile { path: root.join("src/lib.rs"), lines: vec![5] }],
+            closed_plain_bookmarks: vec![SessionClosedFile { path: root.join("src/lib.rs"), lines: vec![3, 40], specs: vec![] }],
+            closed_breakpoints: vec![SessionClosedFile { path: root.join("src/lib.rs"), lines: vec![5], specs: vec![] }],
+            watches: vec!["a".into(), "b.c".into()],
             run_config: Some("cargo test".into()),
             branch: Some("main".into()),
             branches: BTreeMap::from([(
@@ -1400,7 +1479,7 @@ mod tests {
         assert_eq!(session.files[0].bookmarks, vec![1, 3]);
         assert_eq!(session.files[0].bookmark_digits, vec![(5, 1)]);
         assert_eq!(session.closed_bookmarks, vec![SessionBookmark { digit: 2, path: gone.clone(), line: 4 }]);
-        assert_eq!(session.closed_plain_bookmarks, vec![SessionClosedFile { path: gone.clone(), lines: vec![1, 7] }]);
+        assert_eq!(session.closed_plain_bookmarks, vec![SessionClosedFile { path: gone.clone(), lines: vec![1, 7], specs: vec![] }]);
         assert_eq!(session.files[0].folds, [SessionFold { start_line: 0, start_col: 0, end_line: 2, end_col: 3 }]);
         app.session().save(&app.paths.sessions_dir()).unwrap();
 
@@ -1420,9 +1499,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&fresh_dir);
     }
 
+    fn cond_spec(line: usize, text: &str) -> SessionBreakpointSpec {
+        SessionBreakpointSpec { line, condition: Some(text.into()), log_message: None }
+    }
+
+    fn log_spec(line: usize, text: &str) -> SessionBreakpointSpec {
+        SessionBreakpointSpec { line, condition: None, log_message: Some(text.into()) }
+    }
+
     #[tokio::test]
     async fn breakpoints_survive_a_session_round_trip() {
-        use crate::editor::buffer::{BpState, BreakpointMark};
+        use crate::editor::buffer::{BpState, BreakpointMark, BreakpointSpec};
         let (mut app, dir) = crate::app::tests::test_app("session-breakpoints");
         let path = app.workspace.root.join("a.txt");
         app.editor.open_text(path.clone(), "zero\none\ntwo\nthree\n", false, &app.theme);
@@ -1430,11 +1517,21 @@ mod tests {
         let mark = app.editor.buffers[0].breakpoints.get_mut(&1).unwrap();
         mark.state = BpState::Verified;
         mark.id = Some(9);
+        mark.spec = BreakpointSpec { condition: Some("i == 3".into()), log_message: None };
         let gone = app.workspace.root.join("gone.txt");
-        app.editor.restore_closed_breakpoints(&[(gone.clone(), vec![7, 1])]);
+        app.editor.restore_closed_breakpoint_marks(&[(
+            gone.clone(),
+            vec![(7, BreakpointSpec { condition: None, log_message: Some("n={n}".into()) }), (1, BreakpointSpec::default())],
+        )]);
+        app.debug_panel.set_watches(&["sum".to_string(), "p.x".to_string()]);
         let session = app.session();
         assert_eq!(session.files[0].breakpoints, vec![1, 3]);
-        assert_eq!(session.closed_breakpoints, vec![SessionClosedFile { path: gone.clone(), lines: vec![1, 7] }]);
+        assert_eq!(session.files[0].breakpoint_specs, vec![cond_spec(1, "i == 3")]);
+        assert_eq!(session.watches, ["sum", "p.x"]);
+        assert_eq!(
+            session.closed_breakpoints,
+            vec![SessionClosedFile { path: gone.clone(), lines: vec![1, 7], specs: vec![log_spec(7, "n={n}")] }]
+        );
         assert!(!serde_json::to_string(&session).unwrap().contains("Verified"), "state is never written");
         session.save(&app.paths.sessions_dir()).unwrap();
 
@@ -1446,8 +1543,14 @@ mod tests {
         fresh.session_loaded(generation, loaded, vec![Ok(b"zero\none\ntwo".to_vec())]);
         let b = &fresh.editor.buffers[0];
         assert_eq!(b.breakpoints.keys().copied().collect::<Vec<_>>(), vec![1], "line 3 is past the end");
-        assert_eq!(b.breakpoints[&1], BreakpointMark::default());
-        assert_eq!(fresh.editor.closed_breakpoints(), vec![(gone, vec![1, 7])]);
+        let want = BreakpointMark { spec: BreakpointSpec { condition: Some("i == 3".into()), log_message: None }, ..Default::default() };
+        assert_eq!(b.breakpoints[&1], want, "the condition is back, the state is Idle");
+        assert_eq!(fresh.editor.closed_breakpoints(), vec![(gone.clone(), vec![1, 7])]);
+        assert_eq!(
+            fresh.editor.closed_breakpoint_marks(),
+            vec![(gone, vec![(1, BreakpointSpec::default()), (7, BreakpointSpec { condition: None, log_message: Some("n={n}".into()) })])]
+        );
+        assert_eq!(fresh.debug_panel.watches(), ["sum", "p.x"]);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&fresh_dir);
     }
@@ -1459,6 +1562,117 @@ mod tests {
         assert!(json.get("closed_breakpoints").is_none());
         let json = serde_json::to_value(SessionFile::default()).unwrap();
         assert!(json.get("breakpoints").is_none());
+        assert!(json.get("breakpoint_specs").is_none());
+        let json = serde_json::to_value(Session { root: PathBuf::from("/tmp/p"), ..Default::default() }).unwrap();
+        assert!(json.get("watches").is_none());
+        let json = serde_json::to_value(SessionClosedFile::default()).unwrap();
+        assert!(json.get("specs").is_none());
+        let json = serde_json::to_value(SessionBreakpointSpec { line: 2, condition: Some("c".into()), log_message: None }).unwrap();
+        assert!(json.get("log_message").is_none() && json["condition"] == "c");
+    }
+
+    #[tokio::test]
+    async fn an_old_session_file_reads_as_before() {
+        let (mut app, dir) = crate::app::tests::test_app("session-old-breakpoints");
+        let root = app.workspace.root.clone();
+        let (path, gone) = (root.join("a.txt"), root.join("gone.txt"));
+        // As the build before this one wrote it: no spec keys, no watches.
+        let json = serde_json::json!({
+            "root": root,
+            "files": [{ "path": path, "breakpoints": [1] }],
+            "closed_breakpoints": [{ "path": gone, "lines": [2] }],
+            "closed_plain_bookmarks": [{ "path": gone, "lines": [3] }],
+        });
+        let session: Session = serde_json::from_value(json).unwrap();
+        assert!(session.watches.is_empty() && session.files[0].breakpoint_specs.is_empty());
+        assert!(session.closed_breakpoints[0].specs.is_empty());
+        let generation = app.workspace.generation;
+        app.session_loaded(generation, session, vec![Ok(b"a\nb\nc\n".to_vec())]);
+        assert_eq!(app.editor.buffers[0].breakpoints.keys().copied().collect::<Vec<_>>(), vec![1]);
+        assert!(app.editor.buffers[0].breakpoints[&1].spec.is_plain());
+        assert_eq!(app.editor.closed_breakpoints(), vec![(gone, vec![2])]);
+        assert!(app.debug_panel.watches().is_empty());
+        let written = serde_json::to_value(app.session()).unwrap();
+        assert!(written["closed_plain_bookmarks"][0].get("specs").is_none(), "bookmarks carry no specs");
+        assert!(written.get("watches").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_hand_edited_spec_is_cleaned() {
+        let (mut app, dir) = crate::app::tests::test_app("session-bad-specs");
+        let root = app.workspace.root.clone();
+        let (path, gone) = (root.join("a.txt"), root.join("gone.txt"));
+        let bad = |line, c: Option<&str>, m: Option<&str>| SessionBreakpointSpec {
+            line,
+            condition: c.map(Into::into),
+            log_message: m.map(Into::into),
+        };
+        let session = Session {
+            root,
+            files: vec![SessionFile {
+                path,
+                breakpoints: vec![1, 2],
+                breakpoint_specs: vec![
+                    bad(1, Some("a\nb"), Some("  ")),
+                    // Kept clean: trimmed; the control character in the other field is dropped alone.
+                    bad(2, Some("  ok "), Some("x\u{1b}y")),
+                    // No breakpoint on line 0.
+                    bad(0, Some("c"), None),
+                ],
+                ..Default::default()
+            }],
+            closed_breakpoints: vec![SessionClosedFile {
+                path: gone.clone(),
+                lines: vec![4],
+                specs: vec![bad(4, None, Some("a\r")), bad(9, Some("c"), None)],
+            }],
+            watches: vec![" w ".into(), "".into(), "x\ny".into()],
+            ..Default::default()
+        };
+        let generation = app.workspace.generation;
+        app.session_loaded(generation, session, vec![Ok(b"a\nb\nc\n".to_vec())]);
+        let marks = &app.editor.buffers[0].breakpoints;
+        assert_eq!(marks.keys().copied().collect::<Vec<_>>(), vec![1, 2]);
+        assert!(marks[&1].spec.is_plain(), "{:?}", marks[&1]);
+        assert_eq!(marks[&2].spec.condition.as_deref(), Some("ok"));
+        assert_eq!(marks[&2].spec.log_message, None);
+        assert_eq!(app.editor.closed_breakpoint_marks(), vec![(gone, vec![(4, Default::default())])]);
+        assert_eq!(app.debug_panel.watches(), ["w"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_root_switch_keeps_each_roots_specs_and_watches() {
+        use crate::editor::buffer::BreakpointSpec;
+        let (mut app, dir) = crate::app::tests::test_app("session-roots-specs");
+        let other = std::fs::canonicalize({
+            std::fs::create_dir_all(dir.join("other")).unwrap();
+            dir.join("other")
+        })
+        .unwrap();
+        let root = app.workspace.root.clone();
+        let generation = app.workspace.generation;
+        app.session_loaded(generation, Session { root: root.clone(), ..Default::default() }, vec![]);
+        let gone = root.join("gone.txt");
+        let spec = BreakpointSpec { condition: Some("i == 1".into()), log_message: None };
+        app.editor.restore_closed_breakpoint_marks(&[(gone.clone(), vec![(2, spec.clone())])]);
+        app.debug_panel.set_watches(&["sum".to_string()]);
+        app.do_switch_root(other.clone());
+        // The other root has its own: none.
+        let generation = app.workspace.generation;
+        let b = Session::load(&app.paths.sessions_dir(), &other).unwrap_or_else(|| Session { root: other.clone(), ..Default::default() });
+        app.session_loaded(generation, b, vec![]);
+        assert!(app.editor.closed_breakpoint_marks().is_empty());
+        assert!(app.debug_panel.watches().is_empty());
+        app.do_switch_root(root.clone());
+        let a = Session::load(&app.paths.sessions_dir(), &root).expect("saved at the switch");
+        assert_eq!(a.watches, ["sum"]);
+        let generation = app.workspace.generation;
+        app.session_loaded(generation, a, vec![]);
+        assert_eq!(app.editor.closed_breakpoint_marks(), vec![(gone, vec![(2, spec)])]);
+        assert_eq!(app.debug_panel.watches(), ["sum"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -1484,9 +1698,13 @@ mod tests {
             files: vec![SessionFile { path: root.join("a.txt"), breakpoints: vec![1], ..Default::default() }],
             ..Default::default()
         };
+        let mut set = set;
+        set.files[0].breakpoint_specs = vec![cond_spec(1, "i == 2")];
         app.open_editor_set(&set, vec![Ok(b"a\nb\n".to_vec())]);
         assert_eq!(app.editor.buffers[0].breakpoints.keys().copied().collect::<Vec<_>>(), vec![1]);
+        assert_eq!(app.editor.buffers[0].breakpoints[&1].spec.condition.as_deref(), Some("i == 2"));
         assert_eq!(app.editor_set().files[0].breakpoints, vec![1]);
+        assert_eq!(app.editor_set().files[0].breakpoint_specs, vec![cond_spec(1, "i == 2")]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -571,6 +571,8 @@ pub enum DebugAction {
     ShowExecutionPoint,
     /// Evaluate an expression in the selected frame, or add it to the watches.
     Evaluate,
+    /// Alt+Shift+F8: edit the condition or log message of the breakpoint on the caret's line.
+    EditBreakpoint,
     /// Variables: remove the selected watch.
     RemoveWatch,
     /// The menu of the paused program's threads.
@@ -1203,6 +1205,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "debug.pause" => "Debug: Pause", Debug(DebugAction::Pause);
         "debug.show_execution_point" => "Debug: Show Execution Point", Debug(DebugAction::ShowExecutionPoint);
         "debug.evaluate" => "Debug: Evaluate Expression", Debug(DebugAction::Evaluate);
+        "debug.edit_breakpoint" => "Debug: Edit Breakpoint (condition or log message) on the caret's line", Debug(DebugAction::EditBreakpoint);
         "debug.remove_watch" => "Debug: remove the selected watch", Debug(DebugAction::RemoveWatch);
         "debug.up" => "Debug: up", Debug(DebugAction::Up);
         "debug.down" => "Debug: down", Debug(DebugAction::Down);
@@ -1374,6 +1377,7 @@ impl Action {
             Action::Structure(_) => &["structure", "global"],
             Action::EventLog(_) => &["event_log", "global"],
             Action::Run(_) => &["run", "global"],
+            Action::Debug(DebugAction::EditBreakpoint) => &["editor", "global"],
             Action::Debug(DebugAction::Stop) => &["debug.active"],
             Action::Debug(
                 DebugAction::Resume
