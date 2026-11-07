@@ -266,7 +266,7 @@ impl TextInput {
     }
 
     /// The cell `render` puts the terminal cursor on, `None` for an empty `area`.
-    /// Valid after `render` has run for the same `area`, which settles the scroll.
+    /// Valid after `render` has run for the same `area`, which settles the scroll; before that it may be `None`.
     pub fn cursor_cell(&self, area: Rect) -> Option<(u16, u16)> {
         if area.width == 0 || area.height == 0 {
             return None;
@@ -277,10 +277,10 @@ impl TextInput {
             lines.get(cline).map(|l| l.chars().take(ccol).map(|c| c.width().unwrap_or(1)).sum()).unwrap_or(0)
         } else {
             let chars: Vec<char> = self.text.chars().collect();
-            cells(&chars[self.hscroll..self.cursor])
+            cells(chars.get(self.hscroll..self.cursor)?)
         };
         let cx = area.x + (cw as u16).min(area.width.saturating_sub(1));
-        let cy = area.y + (cline - self.scroll) as u16;
+        let cy = area.y + cline.checked_sub(self.scroll)? as u16;
         Some((cx, cy))
     }
 }
