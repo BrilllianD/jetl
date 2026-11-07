@@ -47,10 +47,10 @@
 //! true of the text (T1 to T3 in that module). The symbols the index links to it
 //! by relationships are renamed with it; a trait member in an index that states
 //! no relationships (rust-analyzer's) is renamed as text. Files the index does
-//! not cover or cannot vouch for show text matches, excluded. This preview is always
-//! shown, whatever `rename_preview` says. When no definition of the caret's symbol or not the
-//! caret's own span survives, the build says so (`ScipOutcome::fallback`) and
-//! the textual rename above opens instead.
+//! not cover or cannot vouch for show text matches, excluded. This preview is
+//! always shown, whatever `rename_preview` says. When no definition of the
+//! caret's symbol or not the caret's own span survives, the build says so
+//! (`ScipOutcome::fallback`) and the textual rename above opens instead.
 //!
 //! A command's `workspace/applyEdit` carries no document version, so while a command is in
 //! flight (`CommandGuard`) such an edit of an open buffer typed in since the command was sent is

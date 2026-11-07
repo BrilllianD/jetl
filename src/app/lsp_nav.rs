@@ -2143,6 +2143,10 @@ mod tests {
         assert!(app.find.rename_preview().is_some());
         let main = "main.rs".to_string();
         assert_eq!(included(&app), [(main.clone(), 2, 21), (main.clone(), 3, 30), (main, 3, 41)]);
+        let name = |p: &Path| p.file_name().unwrap().to_str().unwrap().to_string();
+        let text: Vec<_> = app.find.hits().iter().filter(|h| h.excluded).map(|h| (name(&h.path), h.line, h.col)).collect();
+        assert_eq!(text, [("area.rs".to_string(), 0, 20)], "the stale trait file, as text");
+        assert!(warn_toasts(&app).iter().any(|t| t.contains("1 file changed or unreadable")), "{:?}", warn_toasts(&app));
         let _ = std::fs::remove_dir_all(&dir);
 
         // Nothing stale.
