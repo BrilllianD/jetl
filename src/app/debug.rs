@@ -331,6 +331,8 @@ fn verdict_line(source: &Path, line: usize, mark: &BreakpointMark) -> Option<Run
             None => " failed".to_string(),
         };
         (rest, Some(Severity::Warning), line)
+    } else if mark.state == BpState::Pending {
+        return None;
     } else {
         let moved = mark.adapter_line?;
         (format!(" moved to line {}", moved + 1), None, moved)
@@ -733,7 +735,7 @@ impl App {
             DapBody::Output(e) => {
                 if let Some(l) = self.debug.session.as_mut() {
                     if e.category.as_deref() == Some("stdout") && early_gdb_line(&e.output, &mut l.early) {
-                        tracing::debug!("dap: not shown, said before the program loads: {}", e.output.trim_end());
+                        tracing::info!("dap: not shown, said before the program loads: {}", e.output.trim_end());
                     } else {
                         let _ = l.console.send(e);
                     }
@@ -3351,6 +3353,16 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_breakpoint_told_as_never_placed_writes_nothing_when_placed_later() {
+        let (mut app, dir, mut fake, a) = two_marks_one_placed("console-unplaced-later").await;
+        stop_at(&mut app, &mut fake, 7, &a, 2).await;
+        assert_eq!(console(&app), [NOT_PLACED_4]);
+        changed(&mut app, "changed", json!({"id": 2, "verified": true}));
+        assert_eq!(console(&app), [NOT_PLACED_4]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn a_breakpoint_never_placed_is_told_when_the_program_ends() {
         let (mut app, dir, _fake, _a) = two_marks_one_placed("console-unplaced-exit").await;
         inject(&mut app, DapBody::Exited(0));
@@ -3526,6 +3538,7 @@ pub(crate) mod tests {
         assert_eq!(failed.link.unwrap().line, 1, "a failed one links the user's line");
         assert!(verdict_line(path, 1, &mark(BpState::Verified, None, None)).is_none());
         assert!(verdict_line(path, 1, &mark(BpState::Pending, None, None)).is_none());
+        assert!(verdict_line(path, 1, &mark(BpState::Pending, Some(3), None)).is_none(), "a moved mark no longer placed");
         // An adapter's message is escape codes and lines: the verdict is one clean line.
         let noisy = verdict_line(path, 1, &mark(BpState::Failed, None, Some("\x1b[31mno code\x1b[0m\nat line 2"))).unwrap();
         assert_eq!(noisy.text, "Breakpoint a.log:2 failed: no code at line 2");
