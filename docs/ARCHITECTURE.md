@@ -806,7 +806,9 @@ under `prune.lock` (`drop_lines` / `write_index`).
   its session through `Driver`'s drop. The hook tells the main thread by its
   `ThreadId` taken in `install_panic_hook`, so that call and `App::run` stay
   on the same thread (like `spawn_tied_to_thread`). Tokio's default worker
-  thread name is `tokio-rt-worker`. Debug builds read
+  thread name is `tokio-rt-worker`. A worker panic after `tui::restore()`
+  (shutdown, the runtime's drop) reaches only `jetl.log`: no toast is left to
+  show it and stderr stays quiet. Debug builds read
   `JETL_DEBUG_WORKER_PANIC=<n>` (1-9) in `main.rs` and panic that many tokio
   tasks, 0.5 s apart.
 - Take every color from `Theme`; a hard-coded `Color::Rgb` skips themes and

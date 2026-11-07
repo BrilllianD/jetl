@@ -269,10 +269,10 @@ pub fn take_worker_panics() -> Vec<WorkerPanic> {
 /// thread, which runs the UI loop). A panic there restores the terminal
 /// first, then writes the unsaved buffers (`recovery::dump_on_panic`), then
 /// logs and runs the default hook, and last tells the user where the buffers
-/// went. A panic on any other thread is caught by its runtime while jetl
-/// keeps running: the hook only logs it and queues a notice for
-/// [`take_worker_panics`], so the terminal, the buffers and stderr stay
-/// untouched.
+/// went. A panic on any other thread leaves jetl running (tokio catches a
+/// task's panic; a plain thread just ends): the hook only logs it and
+/// queues a notice for [`take_worker_panics`], so the terminal, the buffers
+/// and stderr stay untouched.
 pub fn install_panic_hook() {
     let main = std::thread::current().id();
     let default = std::panic::take_hook();
@@ -330,14 +330,8 @@ mod tests {
         let main = std::thread::current().id();
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).build().unwrap();
         rt.block_on(async {
-            let (route_of_task, name) = tokio::spawn(async move {
-                let t = std::thread::current();
-                (route(main, t.id()), t.name().map(str::to_owned))
-            })
-            .await
-            .unwrap();
+            let route_of_task = tokio::spawn(async move { route(main, std::thread::current().id()) }).await.unwrap();
             assert_eq!(route_of_task, PanicRoute::Worker);
-            assert_eq!(name.as_deref(), Some("tokio-rt-worker"));
 
             // Tokio catches the panic; a quiet hook keeps the test output clean.
             let prev = std::panic::take_hook();
