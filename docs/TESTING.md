@@ -1487,7 +1487,7 @@ matched by its shape (`[▸▾] big`), since the source pane holds the same name
    both sizes until End).
 3. `giant`, Right: `▾ giant  first 1000 of 2000000 shown  int [2000000]` and rows `0 = 0  int`, `1 = 0  int`. Sent:
    `{"count": 1000, "start": 0, "variablesReference": N}`. Answer 71 008 characters. Without the capability this answer
-   would be about 156 MB (the 5000-element rate times 400; not run), over `MAX_BODY`, and it would end the session. Left.
+   would be about 156 MB (ten times the 15 577 896 of the 200 000 element frame; not run), over `MAX_BODY`, and it would end the session. Left.
 4. `huge`, Right: `first 1000 of 200000 shown  int [200000]`, the same request shape, answer 71 008. Left.
 5. `big`, Right: `first 1000 of 5000 shown  int [5000]`, rows `0 = 0  int`, `1 = 1  int`. Sent paged, answer 72 898
    characters (372 898 before this change). Left.

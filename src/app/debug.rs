@@ -655,6 +655,8 @@ impl App {
         let generation = self.workspace.generation;
         let root = self.workspace.root.clone();
         let gdb = p.adapter.name == "gdb";
+        // The name alone says nothing of what `[debug.adapters.gdb] command` runs, and a very large answer ends the session.
+        let trusted_paging = gdb && p.adapter.command.first().is_some_and(|c| Path::new(c).file_name().is_some_and(|f| f == "gdb"));
         let conn = match &mut self.debug.connector {
             // On the main loop's thread, so it lasts as long as jetl. A stopped gdb cannot see stdin close, so it would stay,
             // with its debuggee, after jetl is killed; its own death takes the debuggee. Other adapters may clean up on
@@ -720,7 +722,7 @@ impl App {
             stop_seq: 0,
             console,
             gate,
-            trusted_paging: gdb,
+            trusted_paging,
         });
         self.notify(Level::Info, format!("Debugging {} with {}", p.name, p.adapter.name));
         if let Some(c) = lost_cwd {
@@ -5857,15 +5859,13 @@ pub(crate) mod tests {
             ("trusted 200000", true, 200_000, page.clone()),
             ("trusted 2000000", true, 2_000_000, page.clone()),
         ];
-        // `JETL_PAGING_ROW=<label>` runs one row alone, to see it fail on its own.
-        let only = std::env::var("JETL_PAGING_ROW").ok();
+        // Every row runs, so a failure names all the rows that are wrong.
+        let mut wrong = Vec::new();
         for (i, (label, trusted, indexed, want)) in cases.into_iter().enumerate() {
-            if only.is_some() && only.as_deref() != Some(label) {
-                continue;
-            }
             let (mut app, dir, mut fake, sent) = paging_case(&format!("vars-page-{i}"), trusted, indexed, 0).await;
-            assert_eq!(sent_args(&sent), want, "{label}");
-            if want.is_none() {
+            if sent_args(&sent) != want {
+                wrong.push((label, sent_args(&sent)));
+            } else if want.is_none() {
                 let row = format!("  ▸ arr  could not read: too many elements ({indexed})");
                 assert_eq!(var_rows(&mut app).last().map(String::as_str), Some(row.as_str()), "{label}");
                 let before = texts(&app);
@@ -5874,15 +5874,14 @@ pub(crate) mod tests {
             }
             let _ = std::fs::remove_dir_all(dir);
         }
+        assert!(wrong.is_empty(), "{wrong:?}");
         // What the adapter says of itself no longer counts: no capability tells that it honours `start` and `count`.
-        if only.as_deref().is_none_or(|o| o == "claim") {
-            let mut c = caps();
-            c["supportsVariablePaging"] = json!(true);
-            let (mut app, dir, _fake, sent) = paging_case_with("vars-page-claim", c, false, 200_000, 0).await;
-            assert!(sent.is_none(), "the adapter's word");
-            assert_eq!(var_rows(&mut app).last().map(String::as_str), Some("  ▸ arr  could not read: too many elements (200000)"));
-            let _ = std::fs::remove_dir_all(dir);
-        }
+        let mut c = caps();
+        c["supportsVariablePaging"] = json!(true);
+        let (mut app, dir, _fake, sent) = paging_case_with("vars-page-claim", c, false, 200_000, 0).await;
+        assert!(sent.is_none(), "the adapter's word");
+        assert_eq!(var_rows(&mut app).last().map(String::as_str), Some("  ▸ arr  could not read: too many elements (200000)"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
@@ -5920,9 +5919,9 @@ pub(crate) mod tests {
         fake.respond(&req, leaves(1000));
         pump_until(&mut app, |a| a.debug_panel.var_count() == 2 + 1000).await;
         let rows = var_rows(&mut app);
-        let arr = rows.iter().find(|r| r.contains("arr")).expect("arr row");
-        assert!(arr.contains("first 1000 of 5000 shown"), "{arr}");
-        assert!(rows.iter().any(|r| r.contains("0 = ")), "the first child is element 0");
+        let at = rows.iter().position(|r| r.contains("arr")).expect("arr row");
+        assert!(rows[at].contains("first 1000 of 5000 shown"), "{}", rows[at]);
+        assert!(rows[at + 1].trim_start().starts_with("0 = "), "the first child is element 0: {}", rows[at + 1]);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -5945,8 +5944,23 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn only_gdb_is_trusted_with_paging() {
-        let (app, dir, _fakes, _fake) = gdb_running("trust-gdb").await;
-        assert!(app.debug.session.as_ref().unwrap().trusted_paging, "gdb");
+        use std::os::unix::fs::PermissionsExt;
+
+        // A file of that name stands in for gdb, since the start looks for the program and the fake is what answers.
+        let (mut app, dir) = test_app("trust-gdb");
+        let program = dir.join("gdb");
+        std::fs::write(&program, "").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        let over = AdapterOverride { command: Some(vec![program.to_string_lossy().into_owned(), "-i=dap".into()]), ..Default::default() };
+        app.config.debug.adapters.insert("gdb".into(), over);
+        write_run_toml(&app, &DEMO.replace("\"fake\"", "\"gdb\""));
+        let _ = running(&mut app, &mut fakes).await;
+        assert!(app.debug.session.as_ref().unwrap().trusted_paging, "a program called gdb");
+        let _ = std::fs::remove_dir_all(dir);
+        // `gdb_running` names the adapter `gdb` and runs `sh`.
+        let (app, dir, _fakes, _fake) = gdb_running("trust-wrapper").await;
+        assert!(!app.debug.session.as_ref().unwrap().trusted_paging, "a wrapper under the name");
         let _ = std::fs::remove_dir_all(dir);
         let (mut app, dir, mut fakes) = setup("trust-fake", Order::LaunchEarly);
         let _ = running(&mut app, &mut fakes).await;
