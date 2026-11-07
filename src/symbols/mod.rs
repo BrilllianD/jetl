@@ -447,13 +447,31 @@ mod tests {
             [
                 row("App", "implementation", 1, 5, Some(1)),
                 row("helper", "call", 2, 23, Some(2)),
+                row("new", "call", 5, 17, Some(3)),
                 row("run", "call", 6, 6, Some(3)),
                 row("println", "call", 7, 4, Some(3))
             ]
         );
-        assert!(!got.iter().any(|r| r.0 == "new"));
+        // The path call `App::new()` is one reference; the definition `fn new` (line 2) is none.
+        assert_eq!(got.iter().filter(|r| r.0 == "new").count(), 1);
         let def = crate::editor::syntax::language_for_name("rust").unwrap();
         assert_eq!(extract_text(def, &mut tree_sitter::Parser::new(), src), syms);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn rust_path_calls_are_references() {
+        let src = "fn main() {\n    util::helper(1);\n    a::b::c();\n    self::f();\n    super::g();\n    let p = util::helper;\n    let n = m::N;\n}\n";
+        let (_, got) = refs("a.rs", src).unwrap();
+        assert_eq!(
+            got,
+            [
+                row("helper", "call", 1, 10, Some(0)),
+                row("c", "call", 2, 10, Some(0)),
+                row("f", "call", 3, 10, Some(0)),
+                row("g", "call", 4, 11, Some(0))
+            ]
+        );
     }
 
     #[test]

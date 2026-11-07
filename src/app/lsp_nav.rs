@@ -1539,10 +1539,13 @@ mod tests {
         app.perform(Action::Editor(EditorAction::InsertText("\n".into())));
         goto(&mut app, 2, 26);
         act(&mut app, LspAction::FindUsages);
-        // SCIP would list the two calls; the tags index has no refs for scoped
-        // calls like `util::helper(..)`, so today's path finds nothing.
-        assert!(app.palette.is_none());
-        assert!(toasts(&app).contains(&"No usages found".to_string()), "{:?}", toasts(&app));
+        // SCIP is not asked: the usages come from the tags index (the two path
+        // calls `util::helper(..)` and the definition), titled unverified.
+        let p = app.palette.as_ref().expect("Locations");
+        assert_eq!(p.kind, PaletteKind::Locations);
+        let buf = draw(&mut app, 100, 30);
+        assert!((0..30).any(|y| row(&buf, y).contains("Usages of helper (unverified)")));
+        assert!(!(0..30).any(|y| row(&buf, y).contains("(SCIP)")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

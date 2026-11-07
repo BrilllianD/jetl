@@ -189,9 +189,10 @@ fn join_static(parts: &[&str]) -> &'static str {
 }
 
 /// Prepended to the Rust tags: upstream lists `impl` blocks as references
-/// only, so methods would have no parent in the Structure window.
+/// only, so methods would have no parent in the Structure window. Upstream has
+/// no pattern for path calls (`util::helper()`), so they are added here.
 #[cfg(feature = "lang-rust")]
-const RUST_TAGS_EXTRA: &str = "(impl_item trait: (_) @trait type: (_) @name) @definition.impl (impl_item type: (_) @name !trait) @definition.impl (const_item name: (identifier) @name) @definition.constant (static_item name: (identifier) @name) @definition.constant";
+const RUST_TAGS_EXTRA: &str = "(impl_item trait: (_) @trait type: (_) @name) @definition.impl (impl_item type: (_) @name !trait) @definition.impl (const_item name: (identifier) @name) @definition.constant (static_item name: (identifier) @name) @definition.constant (call_expression function: (scoped_identifier name: (identifier) @name)) @reference.call";
 
 /// C has no reference patterns upstream: calls and type names, for the
 /// symbol index.

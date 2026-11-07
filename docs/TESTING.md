@@ -2190,9 +2190,8 @@ x4, `Home`, `Right` x10: the caret is inside `helper` of line 5.
    wait 1.5 s. In the shell: `touch src/util.rs` (its definition is changed).
    Keys: `S-F6`, `C-a`, `-l assist`, `Enter`: Info toast `The SCIP index has no
    usable definition of helper; renaming as text` and an ordinary Find on
-   `helper`. Only the caret's call (line 5) starts included: the Rust symbol index
-   lists no path calls such as `util::helper(s)`, so line 4 starts excluded (yman
-   407). Nothing is written (disk as in step 2). `Escape`, then in the shell
+   `helper`. Both calls (lines 4 and 5) start included: the Rust symbol index
+   lists path calls such as `util::helper(s)` (yman 445). Nothing is written (disk as in step 2). `Escape`, then in the shell
    `touch index.scip`, then `C-q`.
 6. Start jetl on `src/util.rs`; warm-up; in the shell `touch src/main.rs`, sleep
    1; keys `Home`, `Right` x16 (the caret is on `helper`). `S-F6`, `C-a`, `-l

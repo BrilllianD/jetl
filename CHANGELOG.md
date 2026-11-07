@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Rust path calls such as `util::helper()` and `App::new()` are now found without a language server: the textual rename (Shift+F6) starts them included, and Find Usages and the Call Hierarchy list them.
+
 ## [0.9.0] - 2026-11-07
 
 ### Added
