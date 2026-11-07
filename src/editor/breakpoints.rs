@@ -3,7 +3,7 @@
 //! and it carries its `BreakpointSpec` (condition, log message), so the spec
 //! follows too; when a file's last tab closes its lines and specs wait in
 //! `Editor::closed_breakpoints` and go back into the buffer when the file
-//! opens again.
+//! opens again. View Breakpoints lists `breakpoint_entries`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -21,6 +21,16 @@ use crate::event::Level;
 pub struct ExecutionPoint {
     pub path: PathBuf,
     pub line: usize,
+}
+
+/// A breakpoint as View Breakpoints lists it: an open file's mark as it is, or a closed file's line with its spec and
+/// no adapter state (`open` false, state `Idle`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BreakpointEntry {
+    pub path: PathBuf,
+    pub line: usize,
+    pub mark: BreakpointMark,
+    pub open: bool,
 }
 
 /// Why a tab takes no breakpoint: the hint to show, or `None`.
@@ -99,6 +109,43 @@ impl Editor {
             }
         }
         out
+    }
+
+    /// Every breakpoint, paths ascending then lines ascending: closed files, with open buffers that have a path and a
+    /// mark over them (the walk of `all_breakpoints`).
+    pub fn breakpoint_entries(&self) -> Vec<BreakpointEntry> {
+        let entry =
+            |path: &Path, line: usize, mark: BreakpointMark, open: bool| BreakpointEntry { path: path.to_path_buf(), line, mark, open };
+        let mut out: BTreeMap<PathBuf, Vec<BreakpointEntry>> = self
+            .closed_breakpoints
+            .iter()
+            .map(|(p, l)| {
+                (p.clone(), l.iter().map(|(l, s)| entry(p, *l, BreakpointMark { spec: s.clone(), ..Default::default() }, false)).collect())
+            })
+            .collect();
+        for b in &self.buffers {
+            let Some(path) = &b.path else { continue };
+            if b.breakpoints.is_empty() {
+                out.remove(path);
+            } else {
+                out.insert(path.clone(), b.breakpoints.iter().map(|(l, m)| entry(path, *l, m.clone(), true)).collect());
+            }
+        }
+        out.into_values().flatten().collect()
+    }
+
+    /// Removes the breakpoint on `line` of `path`, open or closed; a closed file left with none leaves the closed map.
+    /// False, and nothing changes, when there is none.
+    pub fn remove_breakpoint(&mut self, path: &Path, line: usize) -> bool {
+        if let Some(i) = self.index_of(path) {
+            return self.buffers[i].breakpoints.remove(&line).is_some();
+        }
+        let Some(lines) = self.closed_breakpoints.get_mut(path) else { return false };
+        let removed = lines.remove(&line).is_some();
+        if lines.is_empty() {
+            self.closed_breakpoints.remove(path);
+        }
+        removed
     }
 
     /// The marks of the open buffer for `path`; `None` when it is not open.
@@ -669,5 +716,61 @@ mod tests {
         app.handle_key(f8());
         assert!(marks(&app).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn entries_list_open_and_closed_files_in_order() {
+        let theme = Theme::default();
+        let mut ed = Editor::new(&Config::default());
+        let (z, zero, a) = (PathBuf::from("/tmp/z.log"), PathBuf::from("/tmp/0.log"), PathBuf::from("/tmp/a.log"));
+        for (p, lines) in [(&z, vec![2]), (&zero, vec![0])] {
+            ed.open_text(p.clone(), "x0\nx1\nx2\n", false, &theme);
+            ed.active_buffer_mut().unwrap().set_breakpoints(&lines);
+        }
+        ed.set_breakpoint_spec(&z, 2, cond("z > 1"));
+        ed.force_close(ed.index_of(&z).unwrap());
+        ed.force_close(ed.index_of(&zero).unwrap());
+        ed.open_text(a.clone(), "a0\na1\na2\na3\n", false, &theme);
+        ed.active_buffer_mut().unwrap().set_breakpoints(&[1, 3]);
+        ed.set_breakpoint_spec(&a, 3, cond("i == 3"));
+        let m = ed.breakpoint_marks_mut(&a).unwrap().get_mut(&1).unwrap();
+        m.state = BpState::Verified;
+        m.adapter_line = Some(2);
+        ed.open_untitled("u");
+        ed.active_buffer_mut().unwrap().breakpoints.insert(0, BreakpointMark::default());
+        let got: Vec<_> = ed.breakpoint_entries().into_iter().map(|e| (e.path, e.line, e.mark, e.open)).collect();
+        let verified = BreakpointMark { state: BpState::Verified, adapter_line: Some(2), ..Default::default() };
+        let idle = |spec| BreakpointMark { spec, ..Default::default() };
+        assert_eq!(
+            got,
+            vec![
+                (zero, 0, idle(BreakpointSpec::default()), false),
+                (a.clone(), 1, verified, true),
+                (a, 3, idle(cond("i == 3")), true),
+                (z, 2, idle(cond("z > 1")), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn remove_breakpoint_in_open_and_closed_files() {
+        let theme = Theme::default();
+        let mut ed = Editor::new(&Config::default());
+        let (a, c) = (PathBuf::from("/tmp/a.log"), PathBuf::from("/tmp/c.log"));
+        ed.open_text(c.clone(), "c0\nc1\n", false, &theme);
+        ed.active_buffer_mut().unwrap().set_breakpoints(&[1]);
+        ed.force_close(ed.index_of(&c).unwrap());
+        ed.open_text(a.clone(), "a0\na1\na2\n", false, &theme);
+        ed.active_buffer_mut().unwrap().set_breakpoints(&[0, 2]);
+        assert!(ed.remove_breakpoint(&a, 2));
+        assert!(!ed.remove_breakpoint(&a, 2), "already gone");
+        assert!(!ed.remove_breakpoint(&a, 1), "no mark there");
+        assert_eq!(keys(&ed), vec![0]);
+        assert!(!ed.remove_breakpoint(&c, 0), "no mark in the closed file");
+        assert_eq!(ed.closed_breakpoints(), vec![(c.clone(), vec![1])]);
+        assert!(ed.remove_breakpoint(&c, 1));
+        assert!(!ed.all_breakpoints().contains_key(&c));
+        assert!(ed.closed_breakpoints().is_empty());
+        assert!(!ed.remove_breakpoint(&PathBuf::from("/tmp/none.log"), 0));
     }
 }

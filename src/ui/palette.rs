@@ -28,6 +28,8 @@ use unicode_width::UnicodeWidthStr;
 use crate::actions::{Action, PaletteAction, PaletteKind};
 use crate::config::FileIcons;
 use crate::config::theme::Theme;
+use crate::editor::breakpoint_glyph;
+use crate::editor::buffer::{BpState, BreakpointSpec};
 use crate::event::Mouse;
 use crate::git::BranchInfo;
 use crate::lsp::locations::LocationItem;
@@ -108,6 +110,8 @@ pub enum Source {
     /// A language server's locations (`PaletteKind::Locations`).
     Locations,
     Scratches,
+    /// View Breakpoints (`PaletteKind::Breakpoints`).
+    Breakpoints,
 }
 
 impl Source {
@@ -122,8 +126,22 @@ impl Source {
             Source::Tasks => "Run",
             Source::Locations => "Locations",
             Source::Scratches => "Scratch Files",
+            Source::Breakpoints => "Breakpoints",
         }
     }
+}
+
+/// A View Breakpoints row. The texts are made by the app; adapter text has been through `one_line`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BreakpointItem {
+    pub path: PathBuf,
+    /// 0-based, the mark's key.
+    pub line: usize,
+    pub state: BpState,
+    pub spec: BreakpointSpec,
+    pub place: String,
+    pub detail: String,
+    pub verdict: String,
 }
 
 /// One Find Action row.
@@ -161,6 +179,16 @@ pub enum Accept {
     /// Shift+Delete on a recent project: the palette has dropped the row
     /// and stays open; the app drops it from the recent projects file.
     ForgetProject(PathBuf),
+    /// Shift+Delete on a breakpoint: the palette has dropped the row and stays open; the app removes the breakpoint.
+    RemoveBreakpoint {
+        path: PathBuf,
+        line: usize,
+    },
+    /// Alt+Shift+F8 on a breakpoint: the palette closes and the app asks what to edit.
+    EditBreakpoint {
+        path: PathBuf,
+        line: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -212,6 +240,8 @@ pub struct Palette {
     scratches: Vec<ScratchFile>,
     scratch_names: Vec<String>,
     scratch_dates: Vec<String>,
+    /// View Breakpoints rows, paths then lines ascending.
+    breakpoints: Vec<BreakpointItem>,
     matcher: Matcher,
     /// Where large sources are filtered (set by `App::open_palette`); none
     /// filters everything at once.
@@ -239,6 +269,7 @@ impl Palette {
             PaletteKind::RunTasks | PaletteKind::SelectRunConfig => vec![Source::Tasks],
             PaletteKind::Locations => vec![Source::Locations],
             PaletteKind::Scratches => vec![Source::Scratches],
+            PaletteKind::Breakpoints => vec![Source::Breakpoints],
             PaletteKind::CompareWith => vec![Source::Files],
             // Go to Line stays a dialog and never opens a palette.
             PaletteKind::Branches | PaletteKind::GotoLine => vec![Source::Branches],
@@ -271,6 +302,7 @@ impl Palette {
             scratches: Vec::new(),
             scratch_names: Vec::new(),
             scratch_dates: Vec::new(),
+            breakpoints: Vec::new(),
             matcher: Matcher::default(),
             bus: None,
             filter_seq: Arc::new(AtomicU64::new(0)),
@@ -412,6 +444,20 @@ impl Palette {
         if self.source() == Source::Scratches {
             self.refilter(false);
         }
+    }
+
+    /// The View Breakpoints rows; the selected index is kept.
+    pub fn set_breakpoints(&mut self, items: Vec<BreakpointItem>) {
+        self.breakpoints = items;
+        if self.source() == Source::Breakpoints {
+            self.refilter(false);
+        }
+    }
+
+    /// The rows as set (tests outside this module).
+    #[cfg(test)]
+    pub(crate) fn breakpoint_items(&self) -> &[BreakpointItem] {
+        &self.breakpoints
     }
 
     /// Recent project roots, newest first; the current root is left out.
@@ -578,6 +624,10 @@ impl Palette {
                 let names = &self.scratch_names;
                 if q.is_empty() { (0..names.len()).collect() } else { rank_paths(q, names, &mut self.matcher) }
             }
+            Source::Breakpoints => {
+                let texts = self.breakpoints.iter().map(|b| [b.place.as_str(), b.detail.as_str()]);
+                if q.is_empty() { (0..self.breakpoints.len()).collect() } else { rank_texts(q, texts, &mut self.matcher) }
+            }
             Source::Actions => {
                 if q.is_empty() {
                     (0..self.actions.len()).collect()
@@ -721,6 +771,10 @@ impl Palette {
             Source::Actions => Accept::Action(self.actions.get(i)?.action.clone()),
             Source::Tasks => Accept::RunTask(Box::new(self.tasks.get(i)?.clone())),
             Source::Scratches => Accept::OpenFile(self.scratches.get(i)?.path.clone()),
+            Source::Breakpoints => {
+                let b = self.breakpoints.get(i)?;
+                Accept::OpenFileAt { path: b.path.clone(), line: b.line, col: 0 }
+            }
             Source::Locations => {
                 let at = match self.loc_rows.get(i)? {
                     LocRow::File { first, .. } => *first,
@@ -784,6 +838,18 @@ impl Palette {
                 self.refilter(false);
                 return Some(PaletteResult::Accept(Accept::ForgetProject(root)));
             }
+            // Dropped at once, like a project; the app removes the breakpoint.
+            PaletteAction::DeleteItem if self.source() == Source::Breakpoints => {
+                let i = *self.rows.get(self.list.selected)?;
+                let b = self.breakpoints.remove(i);
+                self.refilter(false);
+                return Some(PaletteResult::Accept(Accept::RemoveBreakpoint { path: b.path, line: b.line }));
+            }
+            PaletteAction::EditItem if self.source() == Source::Breakpoints => {
+                let b = self.rows.get(self.list.selected).and_then(|&i| self.breakpoints.get(i))?;
+                return Some(PaletteResult::Accept(Accept::EditBreakpoint { path: b.path.clone(), line: b.line }));
+            }
+            PaletteAction::EditItem => {}
             // Nothing to delete: Shift+Delete deletes in the query, as before.
             PaletteAction::DeleteItem => {
                 self.input.delete();
@@ -872,6 +938,7 @@ impl Palette {
             PaletteKind::RunTasks => "Run",
             PaletteKind::SelectRunConfig => "Select Run Configuration",
             PaletteKind::Scratches => "Scratch Files",
+            PaletteKind::Breakpoints => "Breakpoints",
             PaletteKind::CompareWith => "Compare With",
             PaletteKind::Branches | PaletteKind::GotoLine => "Git Branches",
         }
@@ -950,6 +1017,7 @@ impl Palette {
             Source::Tasks => "type a task name",
             Source::Locations => "type to filter",
             Source::Scratches => "type a scratch name · Shift+Del deletes",
+            Source::Breakpoints => "filter · Shift+Del removes · Alt+Shift+F8 edits",
         };
         self.input.render(frame, qrect, Style::default().bg(theme.bg).fg(theme.fg), placeholder, theme.dim.bg(theme.bg), true);
         frame.buffer_mut().set_stringn(inner.right().saturating_sub(cw + 1), y, &count, cw as usize, theme.dim.bg(theme.popup_bg));
@@ -968,6 +1036,7 @@ impl Palette {
                     "No run configurations: Run > Edit Configurations… or [[run.configs]] in config.toml"
                 }
                 Source::Scratches if self.input.text.trim().is_empty() => "No scratch files: File > New Scratch File…",
+                Source::Breakpoints if self.input.text.trim().is_empty() => "No breakpoints: Ctrl+F8 sets one on the caret's line",
                 _ => "Nothing found",
             };
             frame.buffer_mut().set_stringn(lrect.x + 2, lrect.y, msg, lrect.width.saturating_sub(2) as usize, theme.dim.bg(theme.popup_bg));
@@ -1057,6 +1126,30 @@ impl Palette {
                     if used + info.width() + 2 <= width {
                         v.push((" ".repeat(width - used - info.width()), base));
                         v.push((info, dim));
+                    }
+                    v
+                }
+                Source::Breakpoints => {
+                    let b = &self.breakpoints[i];
+                    // Glyph, place, detail; the verdict right-aligned, at most half the row.
+                    let (glyph, gstyle) = breakpoint_glyph(b.state, &b.spec, theme);
+                    let gstyle = if selected { base } else { bg.patch(gstyle) };
+                    let marks = match_indices(&pattern, &b.place, &mut self.matcher);
+                    let verdict = crate::util::text::fit(&b.verdict, width / 2);
+                    let mut v = vec![(glyph.to_string(), gstyle), (" ".to_string(), base)];
+                    v.extend(highlight(&b.place, |ci| marks.contains(&(ci as u32)), base, hl));
+                    let used = 2 + b.place.width();
+                    if !b.detail.is_empty() {
+                        let room = width.saturating_sub(used + 2 + verdict.width() + 2);
+                        if room > 0 {
+                            v.push(("  ".into(), base));
+                            v.push((crate::util::text::fit(&b.detail, room), dim));
+                        }
+                    }
+                    let used: usize = v.iter().map(|(t, _)| t.width()).sum();
+                    if !verdict.is_empty() && used + verdict.width() + 2 <= width {
+                        v.push((" ".repeat(width - used - verdict.width()), base));
+                        v.push((verdict, dim));
                     }
                     v
                 }
@@ -1438,6 +1531,62 @@ mod tests {
         p.input.home();
         assert_eq!(p.handle_action(&PaletteAction::DeleteItem), None);
         assert_eq!(p.input.text, "b");
+    }
+
+    fn item(path: &str, line: usize, detail: &str) -> BreakpointItem {
+        let spec = BreakpointSpec { condition: (!detail.is_empty()).then(|| detail.to_string()), log_message: None };
+        BreakpointItem {
+            path: PathBuf::from("/w").join(path),
+            line,
+            state: BpState::Idle,
+            spec,
+            place: format!("{path}:{}", line + 1),
+            detail: if detail.is_empty() { String::new() } else { format!("if {detail}") },
+            verdict: String::new(),
+        }
+    }
+
+    #[test]
+    fn breakpoints_filter_accept_remove_and_edit() {
+        let mut p = Palette::new(PaletteKind::Breakpoints, PathBuf::from("/w"));
+        p.set_breakpoints(vec![item("loop.c", 4, "i == 3"), item("loop.c", 6, ""), item("demo.c", 2, "count > 100")]);
+        assert_eq!(p.rows_selected(), (3, 0));
+        p.set_query("loop");
+        assert_eq!(p.rows_selected().0, 2);
+        p.set_query("count");
+        assert_eq!(p.rows_selected().0, 1, "a condition's text finds its row");
+        assert_eq!(
+            p.handle_action(&PaletteAction::Accept),
+            Some(PaletteResult::Accept(Accept::OpenFileAt { path: PathBuf::from("/w/demo.c"), line: 2, col: 0 }))
+        );
+        // The selected row, not the first.
+        p.set_query("");
+        p.handle_action(&PaletteAction::Down);
+        let at = |path: &str, line| Some(PaletteResult::Accept(Accept::EditBreakpoint { path: PathBuf::from(path), line }));
+        assert_eq!(p.handle_action(&PaletteAction::EditItem), at("/w/loop.c", 6));
+        assert_eq!(p.rows_selected(), (3, 1), "editing drops nothing");
+        let removed = Some(PaletteResult::Accept(Accept::RemoveBreakpoint { path: PathBuf::from("/w/loop.c"), line: 6 }));
+        assert_eq!(p.handle_action(&PaletteAction::DeleteItem), removed);
+        assert_eq!(p.rows_selected(), (2, 1));
+        assert_eq!(p.breakpoint_items().len(), 2);
+        // Nothing shown: Shift+Delete deletes in the query, as before.
+        p.set_query("zzz");
+        assert_eq!(p.rows_selected().0, 0);
+        assert_eq!(p.handle_action(&PaletteAction::DeleteItem), None);
+        assert_eq!(p.handle_action(&PaletteAction::EditItem), None);
+        assert_eq!(p.breakpoint_items().len(), 2);
+    }
+
+    #[test]
+    fn edit_item_does_nothing_elsewhere() {
+        let mut p = Palette::new(PaletteKind::Actions, PathBuf::from("/w"));
+        p.set_query("ab");
+        assert_eq!(p.handle_action(&PaletteAction::EditItem), None);
+        assert_eq!(p.input.text, "ab");
+        let mut p = Palette::new(PaletteKind::Scratches, PathBuf::from("/w"));
+        p.set_scratches(vec![ScratchFile { path: PathBuf::from("/s/a.txt"), name: "a.txt".into(), language: "Plain text", modified: 0 }]);
+        assert_eq!(p.handle_action(&PaletteAction::EditItem), None);
+        assert_eq!(p.rows_selected().0, 1);
     }
 
     #[test]

@@ -1383,6 +1383,54 @@ async fn palette_scratches() {
 }
 
 #[tokio::test]
+async fn palette_breakpoints() {
+    use crate::editor::buffer::BreakpointSpec;
+    let mut fx = stable_app("palette-breakpoints");
+    let app = &mut fx.app;
+    load(app, "loop.log", "a\nb\nc\nd\ne\nf\ng\n");
+    let marks = [
+        (0, BreakpointMark { state: BpState::Pending, ..Default::default() }),
+        (
+            4,
+            BreakpointMark {
+                state: BpState::Verified,
+                spec: BreakpointSpec { condition: Some("i == 3".into()), log_message: None },
+                ..Default::default()
+            },
+        ),
+        (
+            6,
+            BreakpointMark {
+                state: BpState::Failed,
+                message: Some("No symbol \"nosuch\" in current context, and a second clause to make it long".into()),
+                spec: BreakpointSpec { condition: None, log_message: Some("sum={sum}".into()) },
+                ..Default::default()
+            },
+        ),
+    ];
+    app.editor.active_buffer_mut().unwrap().breakpoints.extend(marks);
+    let demo = app.workspace.root.join("demo.log");
+    let long = BreakpointSpec { condition: Some("count > 100 && total < 5000 && flag == 1 && other_flag == 0".into()), log_message: None };
+    app.editor.restore_closed_breakpoint_marks(&[(demo, vec![(2, long)])]);
+    app.open_palette(PaletteKind::Breakpoints);
+    let term = draw_app(app, 80, 24);
+    let mut marks = palette_marks(&app.theme);
+    marks.push(Mark::style('B', "breakpoint", app.theme.breakpoint));
+    marks.push(Mark::style('U', "unverified breakpoint", app.theme.breakpoint_unverified));
+    assert_snapshot!("palette_breakpoints", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn palette_breakpoints_empty() {
+    let mut fx = stable_app("palette-breakpoints-empty");
+    let app = &mut fx.app;
+    app.open_palette(PaletteKind::Breakpoints);
+    let term = draw_app(app, 80, 24);
+    let marks = palette_marks(&app.theme);
+    assert_snapshot!("palette_breakpoints_empty", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn palette_select_run_config() {
     let mut fx = stable_app("palette-select-run-config");
     let app = &mut fx.app;

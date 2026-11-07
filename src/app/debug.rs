@@ -31,7 +31,7 @@ use crate::dap::session::{Command, DapTag, Phase, ResumeKind, SessionId, Session
 use crate::dap::vars::{MAX_CHILDREN, UNPAGED_LIMIT, VarItem, scopes_to_open};
 use crate::dap::{DapBody, DapMsg};
 use crate::editor::buffer::{BpState, BreakpointMark, BreakpointSpec};
-use crate::editor::{Editor, ExecutionPoint};
+use crate::editor::{BreakpointEntry, Editor, ExecutionPoint};
 use crate::event::{AppMsg, Effect, Level};
 #[cfg(test)]
 use crate::lsp::client::Conn;
@@ -42,6 +42,7 @@ use crate::run::{RunTask, load_tasks, quote_word};
 use crate::ui::dialog::{Dialog, DialogId};
 use crate::ui::focus::{PanelId, ToolWindowId};
 use crate::ui::menu::{ContextMenu, MenuItem};
+use crate::ui::palette::{BreakpointItem, Source, display_path};
 
 /// How adapters are reached: processes, or in-process fakes in tests.
 #[derive(Default)]
@@ -353,6 +354,36 @@ fn breakpoint_gone(path: &Path, line: usize) -> String {
     format!("The breakpoint on {} is gone", breakpoint_place(path, line))
 }
 
+/// What View Breakpoints says of a breakpoint's verdict: a closed file has none, an open one the state and the line
+/// the adapter put it on. Adapter text goes through `one_line`.
+fn breakpoint_verdict(entry: &BreakpointEntry) -> String {
+    if !entry.open {
+        return "file closed".to_string();
+    }
+    let mark = &entry.mark;
+    let state = match (mark.state, &mark.message) {
+        (BpState::Idle, _) => String::new(),
+        (BpState::Pending, _) => "pending".to_string(),
+        (BpState::Verified, _) => "verified".to_string(),
+        (BpState::Failed, Some(m)) => format!("failed: {}", one_line(m)),
+        (BpState::Failed, None) => "failed".to_string(),
+    };
+    match mark.adapter_line {
+        Some(l) if mark.state != BpState::Failed && state.is_empty() => format!("moved to line {}", l + 1),
+        Some(l) if mark.state != BpState::Failed => format!("{state}, moved to line {}", l + 1),
+        _ => state,
+    }
+}
+
+/// The condition and log message of a spec as one row's detail: `if <condition> · log <message>`.
+fn breakpoint_detail(spec: &BreakpointSpec) -> String {
+    let parts: Vec<String> = [("if", &spec.condition), ("log", &spec.log_message)]
+        .into_iter()
+        .filter_map(|(word, text)| Some(format!("{word} {}", one_line(text.as_deref()?))))
+        .collect();
+    parts.join(" · ")
+}
+
 /// Most characters of an adapter's name, type, value or error that are looked at: a value can be megabytes.
 const MAX_TEXT: usize = 1024;
 
@@ -592,6 +623,7 @@ impl App {
         let before = self.debug.retire();
         // The live session's `Ended` will be dropped, so its marks' states go now.
         self.editor.reset_breakpoint_states();
+        self.debug_refresh_breakpoint_list();
         self.editor.set_execution_point(None);
         self.debug_panel.clear_stack();
         self.editor.set_selected_frame(None);
@@ -921,6 +953,45 @@ impl App {
         let message = breakpoint_place(&path, line);
         self.dialog = Some(Dialog::choice(DialogId::DebugBreakpoint { path, line }, "Edit Breakpoint", &message, items));
         self.dispatcher.reset();
+    }
+
+    /// The rows of View Breakpoints: every breakpoint with its texts, relative to the root.
+    pub(super) fn breakpoint_items(&self) -> Vec<BreakpointItem> {
+        self.editor
+            .breakpoint_entries()
+            .into_iter()
+            .map(|e| BreakpointItem {
+                place: format!("{}:{}", one_line(&display_path(&e.path, &self.workspace.root)), e.line + 1),
+                detail: breakpoint_detail(&e.mark.spec),
+                verdict: breakpoint_verdict(&e),
+                state: e.mark.state,
+                spec: e.mark.spec,
+                path: e.path,
+                line: e.line,
+            })
+            .collect()
+    }
+
+    /// Shift+Delete in View Breakpoints: the breakpoint goes and a live session is told at once.
+    pub(super) fn debug_remove_breakpoint(&mut self, path: PathBuf, line: usize) {
+        if !self.editor.remove_breakpoint(&path, line) {
+            return self.notify(Level::Info, breakpoint_gone(&path, line));
+        }
+        self.debug_sync_breakpoints();
+        self.debug_refresh_breakpoint_list();
+        self.dirty_frame = true;
+    }
+
+    /// Rebuilds the rows of an open View Breakpoints palette; nothing when none is open.
+    pub(super) fn debug_refresh_breakpoint_list(&mut self) {
+        if !self.palette.as_ref().is_some_and(|p| p.wants(Source::Breakpoints)) {
+            return;
+        }
+        let items = self.breakpoint_items();
+        if let Some(p) = self.palette.as_mut() {
+            p.set_breakpoints(items);
+        }
+        self.dirty_frame = true;
     }
 
     /// The choice's answer: the input for the condition or the log message, prefilled with it.
@@ -1669,6 +1740,11 @@ impl App {
     /// An answer to the newest `setBreakpoints` of a source; results are positional. A closed file has no marks to
     /// update, and a mark gone since the request is not brought back.
     fn debug_breakpoints_answered(&mut self, source: &Path, requested: &[usize], result: &[Breakpoint]) {
+        self.debug_apply_breakpoints_answer(source, requested, result);
+        self.debug_refresh_breakpoint_list();
+    }
+
+    fn debug_apply_breakpoints_answer(&mut self, source: &Path, requested: &[usize], result: &[Breakpoint]) {
         tracing::debug!("dap: breakpoints of {}: {requested:?} answered {result:?}", source.display());
         let skip = self.debug_run_to_answered(source, requested, result);
         let Some(marks) = self.editor.breakpoint_marks_mut(source) else { return };
@@ -1714,6 +1790,7 @@ impl App {
         if !lines.is_empty() {
             self.debug_panel.push(lines);
         }
+        self.debug_refresh_breakpoint_list();
     }
 
     /// On the tick: tells the adapter of each source that changed since the last time. The machine holds a change that
@@ -1749,6 +1826,7 @@ impl App {
     fn debug_ended(&mut self, reason: String) {
         let Some(live) = self.debug.session.take() else { return };
         self.editor.reset_breakpoint_states();
+        self.debug_refresh_breakpoint_list();
         self.editor.set_execution_point(None);
         self.debug_panel.clear_stack();
         self.editor.set_selected_frame(None);
@@ -8121,5 +8199,245 @@ pub(crate) mod tests {
         let needle = format!("\"{}\"", "repl");
         let source = include_str!("debug.rs");
         assert_eq!(source.matches(needle.as_str()).count(), 1, "only the format! above");
+    }
+
+    // ---- View Breakpoints (yman 449) ----
+
+    fn ctrl_shift_f8() -> KeyEvent {
+        KeyEvent::new(KeyCode::F(8), KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+    }
+
+    /// A closed file `name` with one breakpoint on `line`, its text three lines.
+    fn closed_with(app: &mut App, name: &str, line: usize, spec: BreakpointSpec) -> PathBuf {
+        let z = load(app, name, "z0\nz1\nz2\n");
+        toggle(app, &z, line);
+        app.editor.set_breakpoint_spec(&z, line, spec);
+        app.editor.force_close(app.editor.index_of(&z).unwrap());
+        z
+    }
+
+    /// The rows View Breakpoints would show: place, detail, verdict.
+    fn rows(app: &App) -> Vec<(String, String, String)> {
+        app.breakpoint_items().into_iter().map(|i| (i.place, i.detail, i.verdict)).collect()
+    }
+
+    /// The rows of the open palette.
+    fn open_rows(app: &App) -> Vec<(String, String, String)> {
+        let p = app.palette.as_ref().expect("the palette");
+        p.breakpoint_items().iter().map(|i| (i.place.clone(), i.detail.clone(), i.verdict.clone())).collect()
+    }
+
+    fn row(place: &str, detail: &str, verdict: &str) -> (String, String, String) {
+        (place.to_string(), detail.to_string(), verdict.to_string())
+    }
+
+    fn shift_delete() -> KeyEvent {
+        KeyEvent::new(KeyCode::Delete, KeyModifiers::SHIFT)
+    }
+
+    #[tokio::test]
+    async fn ctrl_shift_f8_opens_view_breakpoints() {
+        use crate::actions::{AppAction, PaletteKind};
+        let (mut app, dir) = test_app("vb-key");
+        load(&mut app, "a.log", "one\ntwo\n");
+        app.focus.set(PanelId::Editor);
+        let want = Action::App(AppAction::OpenPalette(PaletteKind::Breakpoints));
+        assert_eq!(action_of(&mut app, ctrl_shift_f8()), Some(want.clone()));
+        assert_eq!(app.keymap.shortcut_for(&want, want.contexts()).as_deref(), Some("Ctrl+Shift+F8"));
+        app.focus.set(PanelId::Project);
+        assert_eq!(action_of(&mut app, ctrl_shift_f8()), Some(want.clone()), "from anywhere");
+        assert!(app.palette_actions().iter().any(|a| a.id == "debug.view_breakpoints" && a.action == want));
+        app.open_palette(PaletteKind::Actions);
+        app.handle_key(ctrl_shift_f8());
+        assert_eq!(app.palette.as_ref().map(|p| p.kind), Some(PaletteKind::Breakpoints), "switches from another palette");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_list_shows_specs_and_verdicts() {
+        let (mut app, dir, mut fakes) = setup("vb-rows", Order::LaunchEarly);
+        let a = six(&mut app);
+        for line in [1, 3, 4] {
+            toggle(&mut app, &a, line);
+        }
+        app.editor.set_breakpoint_spec(&a, 1, cond("i == 3"));
+        app.editor.set_breakpoint_spec(&a, 3, logging("i={i}"));
+        closed_with(&mut app, "z.log", 0, cond("z > 1"));
+        // No session: an open row has no verdict, a closed one says so.
+        let want = |verdicts: [&str; 3]| {
+            vec![
+                row("a.log:2", "if i == 3", verdicts[0]),
+                row("a.log:4", "log i={i}", verdicts[1]),
+                row("a.log:5", "", verdicts[2]),
+                row("z.log:1", "if z > 1", "file closed"),
+            ]
+        };
+        assert_eq!(rows(&app), want(["", "", ""]));
+        let _ = running(&mut app, &mut fakes).await;
+        answered(
+            &mut app,
+            &a,
+            vec![1, 3, 4],
+            vec![
+                bp(json!({"verified": true, "line": 2})),
+                bp(json!({"verified": false, "reason": "failed", "message": "bad\u{1b}[31m\nthing"})),
+                bp(json!({"verified": false})),
+            ],
+        );
+        assert_eq!(rows(&app), want(["verified", "failed: bad thing", "pending"]));
+        answered(&mut app, &a, vec![1], vec![bp(json!({"verified": true, "line": 7}))]);
+        assert_eq!(rows(&app)[0], row("a.log:2", "if i == 3", "verified, moved to line 7"));
+        // Both texts, one line each; a failure with no message.
+        app.editor.set_breakpoint_spec(&a, 4, BreakpointSpec { condition: Some("c\u{1b}[0m".into()), log_message: Some("m".into()) });
+        answered(&mut app, &a, vec![4], vec![bp(json!({"verified": false, "reason": "failed"}))]);
+        assert_eq!(rows(&app)[2], row("a.log:5", "if c · log m", "failed"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_list_follows_answers_while_open() {
+        use crate::actions::PaletteKind;
+        let (mut app, dir, mut fakes) = setup("vb-follow", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let _ = running(&mut app, &mut fakes).await;
+        app.open_palette(PaletteKind::Breakpoints);
+        assert_eq!(open_rows(&app), [row("a.log:2", "", "")]);
+        answered(&mut app, &a, vec![1], vec![bp(json!({"id": 5, "verified": true}))]);
+        assert_eq!(open_rows(&app), [row("a.log:2", "", "verified")], "an answer");
+        changed(&mut app, "removed", json!({"id": 5, "verified": true}));
+        assert_eq!(open_rows(&app), [row("a.log:2", "", "failed: removed by the debug adapter")], "an event");
+        app.debug_ended(String::new());
+        assert_eq!(open_rows(&app), [row("a.log:2", "", "")], "the end");
+        assert_eq!(app.palette.as_ref().map(|p| p.kind), Some(PaletteKind::Breakpoints));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn remove_from_the_list_tells_the_adapter_at_once() {
+        use crate::actions::PaletteKind;
+        let (mut app, dir, mut fakes) = setup("vb-remove", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        toggle(&mut app, &a, 3);
+        let z = closed_with(&mut app, "z.log", 0, BreakpointSpec::default());
+        let mut fake = paused(&mut app, &mut fakes, &a, 5).await;
+        app.open_palette(PaletteKind::Breakpoints);
+        assert_eq!(open_rows(&app).len(), 3);
+        press(&mut app, KeyCode::Down);
+        app.handle_key(shift_delete());
+        assert_eq!(app.palette.as_ref().map(|p| p.kind), Some(PaletteKind::Breakpoints), "still open");
+        assert_eq!(open_rows(&app).len(), 2);
+        assert_eq!(keys(&app, &a), [1]);
+        // No tick in between.
+        let set = fake.recv("setBreakpoints").await;
+        assert_eq!((source(&set), entries(&set)), (a.to_string_lossy().into_owned(), json!([{"line": 2}])));
+        // The selection stayed on the row now at its index: the closed file.
+        app.handle_key(shift_delete());
+        let set = fake.recv("setBreakpoints").await;
+        assert_eq!((source(&set), entries(&set)), (z.to_string_lossy().into_owned(), json!([])));
+        assert!(app.editor.closed_breakpoints().is_empty());
+        assert_eq!(open_rows(&app), [row("a.log:2", "", "")]);
+        app.on_tick();
+        assert_quiet(&mut app, &mut fake, "q1.log").await;
+        // A line already gone: the toast and nothing sent.
+        app.debug_remove_breakpoint(a.clone(), 3);
+        assert_eq!(last(&app), (Level::Info, "The breakpoint on a.log:4 is gone".to_string()));
+        app.on_tick();
+        assert_quiet(&mut app, &mut fake, "q2.log").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn edit_from_the_list_opens_the_spec_dialog() {
+        use crate::actions::PaletteKind;
+        use crate::ui::dialog::DialogResult;
+        let (mut app, dir) = test_app("vb-edit");
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        toggle(&mut app, &a, 3);
+        let z = closed_with(&mut app, "z.log", 0, BreakpointSpec::default());
+        at_line(&mut app, 1);
+        app.open_palette(PaletteKind::Breakpoints);
+        press(&mut app, KeyCode::Down);
+        app.handle_key(alt_shift_f8());
+        assert!(app.palette.is_none(), "the list closes");
+        assert_eq!(
+            app.dialog.as_ref().map(|d| d.id.clone()),
+            Some(DialogId::DebugBreakpoint { path: a.clone(), line: 3 }),
+            "the row, not the caret"
+        );
+        answer_dialog(&mut app, DialogResult::Choice(0));
+        answer_dialog(&mut app, DialogResult::Text("i > 1".into()));
+        assert_eq!((spec_of(&app, &a, 3), spec_of(&app, &a, 1)), (cond("i > 1"), BreakpointSpec::default()));
+        assert_eq!(app.editor.active_buffer().unwrap().cursor_line_col().0, 1, "the caret stays");
+        // The closed file's row.
+        app.open_palette(PaletteKind::Breakpoints);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        app.handle_key(alt_shift_f8());
+        assert_eq!(app.dialog.as_ref().map(|d| d.id.clone()), Some(DialogId::DebugBreakpoint { path: z.clone(), line: 0 }));
+        answer_dialog(&mut app, DialogResult::Choice(0));
+        answer_dialog(&mut app, DialogResult::Text("z > 0".into()));
+        assert_eq!(app.editor.breakpoint_spec(&z, 0), Some(cond("z > 0")));
+        assert!(app.editor.index_of(&z).is_none(), "still closed");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // With a session paused the answer is sent at once.
+        let (mut app, dir, mut fakes) = setup("vb-edit-live", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let mut fake = paused(&mut app, &mut fakes, &a, 5).await;
+        app.open_palette(PaletteKind::Breakpoints);
+        app.handle_key(alt_shift_f8());
+        answer_dialog(&mut app, DialogResult::Choice(0));
+        answer_dialog(&mut app, DialogResult::Text("i == 2".into()));
+        let set = fake.recv("setBreakpoints").await;
+        assert_eq!(entries(&set), json!([{"line": 2, "condition": "i == 2"}]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn enter_on_a_row_jumps_there() {
+        use crate::actions::PaletteKind;
+        let (mut app, dir) = test_app("vb-enter");
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        toggle(&mut app, &a, 3);
+        let z = closed_with(&mut app, "z.log", 2, BreakpointSpec::default());
+        std::fs::write(&z, "z0\nz1\nz2\n").unwrap();
+        at_line(&mut app, 0);
+        app.open_palette(PaletteKind::Breakpoints);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.palette.is_none());
+        assert_eq!(app.editor.active_buffer().unwrap().cursor_line_col().0, 3);
+        app.open_palette(PaletteKind::Breakpoints);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        handle_next(&mut app, |m| matches!(m, AppMsg::FileLoaded { .. })).await;
+        assert_eq!(app.editor.active_path(), Some(z.as_path()));
+        assert_eq!(app.editor.active_buffer().unwrap().cursor_line_col().0, 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn run_to_cursor_adds_no_row() {
+        let (mut app, dir, mut fakes) = setup("vb-run-to", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let mut fake = paused(&mut app, &mut fakes, &a, 4).await;
+        let only = [row("a.log:2", "", "")];
+        assert_eq!(rows(&app), only);
+        at_line(&mut app, 4);
+        run_to_cursor(&mut app);
+        let set = fake.recv("setBreakpoints").await;
+        assert_eq!(entries(&set), json!([{"line": 2}, {"line": 5}]));
+        assert_eq!(rows(&app), only, "before the answer");
+        answer(&fake, &set, json!([{"id": 1, "verified": true, "line": 2}, {"id": 9, "verified": true, "line": 5}]));
+        placed(&mut app).await;
+        assert_eq!(rows(&app), [row("a.log:2", "", "verified")], "after it");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -129,6 +129,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+F2` | `run.stop` | Run: stop the running task |
 | `F4` | `run.next_problem` | Run: next problem (opens it) |
 | `Shift+F4` | `run.prev_problem` | Run: previous problem (opens it) |
+| `Ctrl+Shift+F8` | `debug.view_breakpoints` | Debug: View Breakpoints (every breakpoint with its condition, log message and verdict; jump, remove, edit) |
 | `Shift+F9` | `debug.start` | Debug: start the selected run configuration under its debug adapter |
 
 ## editor
@@ -391,7 +392,8 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Ctrl+W` | `palette.delete_word` | Palette: delete word |
 | `Tab` | `palette.next_tab` | Palette: next tab |
 | `Shift+Tab` | `palette.prev_tab` | Palette: previous tab |
-| `Shift+Delete` | `palette.delete_item` | Palette: delete the selected item (Scratch Files, Recent Projects) |
+| `Shift+Delete` | `palette.delete_item` | Palette: delete the selected item (Scratch Files, Recent Projects, View Breakpoints) |
+| `Alt+Shift+F8` | `palette.edit_item` | Palette: edit the selected item (View Breakpoints) |
 
 ## mode.normal
 

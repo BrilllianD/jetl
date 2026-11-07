@@ -1,0 +1,35 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+80x24 cursor=(6,5)
+00  ≣ ┌ Project: root ───────────────┐│  loop.log ×
+01    │                              ││  1○   a
+02  ⌂ │                              ││  2    b
+03  ◫ │                              ││  3    c
+04  ⊢┌ Breakpoints ─────────────────────────────────────────────────────────────┐
+05   │ › filter · Shift+Del removes · Alt+Shift+F8 edits                      4 │
+06   │ ◉ demo.log:3  if count > 100 && total < 5000 && flag == 1 …  file closed │
+07   │ ○ loop.log:1                                                     pending │
+08   │ ◉ loop.log:5  if i == 3                                         verified │
+09   │ □ loop.log:7  log sum={sum}         failed: No symbol "nosuch" in curre… │
+10   │                                                                          │
+11   │                                                                          │
+12  ◉└──────────────────────────────────────────────────────────────────────────┘
+13  ⋔ │                              ││
+14  ✎ │                              ││
+15  ✓ │                              ││
+16  ⟲ │                              ││
+17  ⚑ │                              ││
+18  ⎇ │                              ││
+19  ❯ │                              ││
+20  ⚠ │                              ││
+21  ► │                              ││
+22  ⌕ └──────────────────────────────┘│
+23  loop.log                          Ln 1, Col 1  LF  UTF-8  4 spaces  Plain text
+-- marks: L=selected B=breakpoint U=unverified breakpoint
+01                                        U
+06    LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+07     U
+08     B
+09     U

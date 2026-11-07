@@ -148,6 +148,8 @@ pub enum PaletteKind {
     Scratches,
     /// Go to File's list; the accepted file is compared with the active tab (`editor.compare_with_file`).
     CompareWith,
+    /// View Breakpoints: every file's breakpoints (debug.view_breakpoints).
+    Breakpoints,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -797,6 +799,8 @@ pub enum PaletteAction {
     PrevTab,
     /// Delete the selected item where a list allows it (Scratch Files).
     DeleteItem,
+    /// Edit the selected item where a list allows it (View Breakpoints).
+    EditItem,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1198,6 +1202,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "run.open" => "Run: jump to the selected line's location", Run(RunAction::Open);
         "run.next_problem" => "Run: next problem (opens it)", Run(RunAction::NextProblem);
         "run.prev_problem" => "Run: previous problem (opens it)", Run(RunAction::PrevProblem);
+        "debug.view_breakpoints" => "Debug: View Breakpoints (every breakpoint with its condition, log message and verdict; jump, remove, edit)", App(AppAction::OpenPalette(PaletteKind::Breakpoints));
         "debug.start" => "Debug: start the selected run configuration under its debug adapter", Debug(DebugAction::Start);
         "debug.stop" => "Debug: stop the debug session", Debug(DebugAction::Stop);
         "debug.resume" => "Debug: Resume", Debug(DebugAction::Resume);
@@ -1344,7 +1349,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "palette.delete_word" => "Palette: delete word", Palette(PaletteAction::DeleteWord);
         "palette.next_tab" => "Palette: next tab", Palette(PaletteAction::NextTab);
         "palette.prev_tab" => "Palette: previous tab", Palette(PaletteAction::PrevTab);
-        "palette.delete_item" => "Palette: delete the selected item (Scratch Files, Recent Projects)", Palette(PaletteAction::DeleteItem);
+        "palette.delete_item" => "Palette: delete the selected item (Scratch Files, Recent Projects, View Breakpoints)", Palette(PaletteAction::DeleteItem);
+        "palette.edit_item" => "Palette: edit the selected item (View Breakpoints)", Palette(PaletteAction::EditItem);
 
         "mode.normal" => "Vim: normal mode", Mode(ModeAction::Normal);
         "mode.insert" => "Vim: insert mode", Mode(ModeAction::Insert);

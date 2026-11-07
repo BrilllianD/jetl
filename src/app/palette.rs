@@ -60,6 +60,9 @@ impl App {
             // right after a delete.
             p.set_scratches(crate::scratch::list(&self.paths.scratches_dir()));
         }
+        if p.wants(Source::Breakpoints) {
+            p.set_breakpoints(self.breakpoint_items());
+        }
         if p.wants(Source::Branches) {
             p.set_branches(self.git_panel.branches.clone());
             self.branches_error_shown = false;
@@ -241,8 +244,8 @@ impl App {
     pub(super) fn finish_palette(&mut self, res: PaletteResult) {
         let compare = self.palette.as_ref().is_some_and(|p| p.kind == PaletteKind::CompareWith);
         let select = self.palette.as_ref().is_some_and(|p| p.kind == PaletteKind::SelectRunConfig);
-        // Forgetting a recent project keeps the palette open, without the row.
-        if !matches!(res, PaletteResult::Accept(Accept::ForgetProject(_))) {
+        // Forgetting a recent project or removing a breakpoint keeps the palette open, without the row.
+        if !matches!(res, PaletteResult::Accept(Accept::ForgetProject(_) | Accept::RemoveBreakpoint { .. })) {
             self.close_palette();
         }
         self.dirty_frame = true;
@@ -264,6 +267,10 @@ impl App {
             }
             PaletteResult::Accept(Accept::DeleteScratch(path)) => self.ask_delete_scratch(path),
             PaletteResult::Accept(Accept::ForgetProject(root)) => self.forget_recent_project(root),
+            PaletteResult::Accept(Accept::RemoveBreakpoint { path, line }) => self.debug_remove_breakpoint(path, line),
+            // The palette is closed above: `debug_edit_breakpoint` opens nothing while a dialog is up, and the palette
+            // must not stay over the dialog.
+            PaletteResult::Accept(Accept::EditBreakpoint { path, line }) => self.debug_edit_breakpoint(path, line),
             // A symbol or location: back returns here even after a short jump.
             PaletteResult::Accept(Accept::OpenFileAtUtf16 { path, pos }) => {
                 self.editor.push_nav_here();

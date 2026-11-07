@@ -1237,6 +1237,47 @@ that comes after the user resumed (nothing resumes again), a mark changed during
 keeps the temporary entry, `Live::sent` stays the marks'), and a second run in another file (the first source is
 restored first). The one line gdb prints when a restore re-creates a log point (`Breakpoint N at ...`) is not hidden.
 
+### Scenario: View Breakpoints
+
+Needs `gdb` 14 or newer (written against 17.2) and `gcc`. At 80x24 and at 120x40, with the directories, config and
+log of `### Scenario: conditional and log breakpoints` (`RUST_LOG=jetl=debug`, `[lsp] enabled = false`, `[ui] toolbar =
+false`, and `-iex "set debug dap-log-file <path>"` in the adapter's command; copy `dap.log` after each session, and
+strip the `env` object of the `launch` request from the copy: it holds jetl's whole environment), the fixture
+`/tmp/jetl-dap-demo` with `loop.c` (line 5 `sum += i;`, line 7 the `printf`) and `demo.c`, and the `loop`
+configuration picked with Alt+Shift+F9 (`Down`, `Enter`). Start `jetl loop.c` only when `pgrep -x loop` and `pgrep -f
+'[g]db -q -i=dap'` print nothing. tmux delivers `send-keys C-S-F8` to jetl here (the palette opens) although jetl's log
+warns that the terminal lacks the kitty keyboard protocol, and `M-S-F8` is Alt+Shift+F8. The Debug window shows on Alt+F5.
+
+1. Negative control: with no breakpoint anywhere, Ctrl+Shift+F8 shows `Breakpoints`, the placeholder `filter ·
+   Shift+Del removes · Alt+Shift+F8 edits`, the message `No breakpoints: Ctrl+F8 sets one on the caret's line` and the
+   count `0`. Esc.
+2. With no session, in `loop.c` set line 5 with the condition `i == 3` and line 7 with the log message `sum={sum}`
+   (Ctrl+F8, Alt+Shift+F8). Ctrl+N `demo.c`, Ctrl+G `3`, Ctrl+F8, Ctrl+W. Ctrl+Shift+F8 shows three rows in this order:
+   `● demo.c:3` with `file closed` on the right, `◉ loop.c:5  if i == 3`, `■ loop.c:7  log sum={sum}`, and no verdict
+   on the two open rows. Type `sum`: only `loop.c:7` is left, the count is `1`.
+3. Clear the query, select `demo.c:3`, Enter: `demo.c` opens with the status bar at `Ln 3`. Ctrl+W.
+4. Shift+F9: the program stops at 5. Ctrl+Shift+F8: `loop.c:5` and `loop.c:7` read `verified`, `demo.c:3` still reads
+   `file closed`. Select `loop.c:7`, Alt+Shift+F8: the list closes, `Edit Breakpoint` names `loop.c:7` and shows `Log
+   message: sum={sum}` while the caret stays on line 5. `Log message`, Ctrl+A, Backspace, Enter: `7●`, and one
+   `setBreakpoints` for `loop.c` went out at once (`dap: sending breakpoints of ...loop.c: [4, 6]`). Ctrl+Shift+F8,
+   select `loop.c:7`, Alt+Shift+F8, `Condition`, `nosuch > 2`, Enter, Ctrl+Shift+F8: `◎ loop.c:7  if nosuch > 2` with
+   `failed: No symbol "nosuch" in current context.` At 120x40 the whole text fits; at 80x24 it is cut to half the row,
+   `failed: No symbol "nosuch" in curre…`.
+5. In the list, select `loop.c:7`, Shift+Delete: the row goes, the list stays open with two rows, and `dap.log` has a
+   `setBreakpoints` for `loop.c` holding only line 5 (`dap: sending breakpoints of ...loop.c: [4]`), sent at once. Up
+   to `demo.c:3`, Shift+Delete: a `setBreakpoints` for `demo.c` with `"breakpoints": []`. Esc: no mark on 7. Ctrl+N
+   `demo.c`: no mark on 3. Ctrl+W.
+6. Paused at 5: Ctrl+G `7`, Alt+F9. It stops at 7 (`7▶`). Ctrl+Shift+F8 lists only `loop.c:5`: Run to Cursor's
+   temporary entry is in no row (it went out in the `setBreakpoints` and the restore after the stop). Esc.
+7. A second session, one breakpoint on 5 with `i == 3`: Shift+F9, Ctrl+Shift+F8 reads `verified`, Esc, F9 (the keys
+   after a list is open go to the list, so close it first): `Debug session ended, exit code 0`. Ctrl+Shift+F8:
+   `loop.c:5  if i == 3` with no verdict. Esc, Ctrl+Q.
+8. Every session: exit 0, empty stderr; no `gdb`, `loop` or tmux server is left.
+
+What only the unit tests and the fake adapter show: a verdict that moves (`verified, moved to line 7`; gdb answered
+every line it was given as the line itself), the list following an answer, a `breakpoint` event or the session's end
+while it is open, an Enter on a closed file's row, and the edit of a closed file's breakpoint. Only gdb was tried.
+
 ### Scenario: stepping and the execution point
 
 Needs `gdb` 14 or newer and `gcc`. At 80x24 and at 120x40, with the directories, config and log of the previous

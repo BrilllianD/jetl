@@ -4,7 +4,7 @@ pub mod blame;
 mod bookmarks;
 mod breakpoints;
 pub use bookmarks::BookmarkTarget;
-pub use breakpoints::ExecutionPoint;
+pub use breakpoints::{BreakpointEntry, ExecutionPoint, breakpoint_glyph};
 pub mod brackets;
 pub(crate) mod breadcrumbs;
 pub mod buffer;
