@@ -1701,7 +1701,38 @@ editor, where Ctrl+G and Ctrl+F8 set a breakpoint. Each step's error check: nowh
     user asked for it, and it works.
 21. Ctrl+F2, Ctrl+Q: exit 0, empty stderr, no gdb or debuggee left.
 
-Last run: `~/.claude/plans/backlog-run-25-S7-evidence/live/<size>/{kept,mapped}`; the changed steps of the two paged
+`shadow`, a second fixture built `g++ -g -O0 -o shadow shadow.cc`, with `Other` having a member `x` like `Pair`'s, and a
+breakpoint on line 8 (`p.x.a = 10;`; line 10 is `Other p = ...` and line 11 `sum += p.x.a;`):
+
+    #include <cstdio>
+    struct Inner { int a; int b; };
+    struct Pair { Inner x; Inner y; };
+    struct Other { Inner x; int k; };
+    int main() {
+        Pair p = {{1, 2}, {3, 4}};
+        int sum = 0;
+        p.x.a = 10;
+        {
+            Other p = {{20, 21}, 5};
+            sum += p.x.a;
+            sum += p.k;
+        }
+        sum += 1;
+        printf("%d\n", sum);
+        return 0;
+    }
+
+22. Variables: `p` (Down, Right), `x` (Down, Right): `a = 1`, `b = 2`. F8 twice, to line 11: `▸ p  Other`, `▸ p #2  Pair`,
+    both closed, and no `variables` for either.
+23. Home, Down, Right on `p  Other` (opened by hand, in the shadow): `▸ x  Inner` and `k = 5  int`. `x` stays closed
+    though `p`, `x` was saved from the outer `p`; `dap.log` has one `variables`, for `p`, and none for `x`. (Before the
+    guard in `reopen_under` it read `x` as well: `▾ x`, `a = 20`, `b = 21`.) End, Up, Up to `p #2`, Right: its `y`, and
+    `dap.log` has one `variables` for it.
+24. F8 twice, to line 14: `▾ p  Pair`, `▾ x`, `a = 10`, `b = 2`: the outer `p` and its `x` are back, with
+    `variables` for Locals, `p` and `x`. Ctrl+F2, Ctrl+Q: exit 0, empty stderr, no gdb or debuggee left.
+
+Last run: `~/.claude/plans/backlog-run-25-S7-evidence/live/<size>/{kept,mapped}` (`shadow` for steps 22 to 24 is in
+`.../fix/live/<size>/shadow`, with the run before the guard in `<size>-before`); the changed steps of the two paged
 scenarios are in `paged-vars` and `paged-more`. The trees at each step are in `<step>.tree` (a walk of every row), and
 the requests since the step's key in `<step>-wire.txt`.
 

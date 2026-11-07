@@ -293,7 +293,8 @@ impl VarTree {
         std::mem::take(&mut self.asks)
     }
 
-    /// The names from the root down to `i`. Empty when `i` is no node.
+    /// The names from the root down to `i`. Empty when `i` is no node. A load-more row has an empty name, so its path
+    /// ends in `""`: ask `more_of` first, and take the container's.
     pub fn path_of(&self, i: usize) -> Vec<String> {
         let mut path = Vec::new();
         let mut at = Some(i);
@@ -305,8 +306,12 @@ impl VarTree {
         path
     }
 
-    /// `i`'s path, or `None` when a name on it is ambiguous, so the path cannot be told from another across stops.
+    /// `i`'s path, or `None` when a name on it is ambiguous, so the path cannot be told from another across stops, or
+    /// when `i` is a load-more row, which names nothing.
     pub fn stable_path_of(&self, i: usize) -> Option<Vec<String>> {
+        if self.more_of(i).is_some() {
+            return None;
+        }
         let mut at = Some(i);
         while let Some(n) = at {
             if self.ambiguous(n) {
@@ -400,6 +405,10 @@ impl VarsView {
     pub fn reopen_under(&mut self, i: usize, before: usize, kept: &KeptFrame) {
         let Some(n) = self.tree.node(i).filter(|n| n.expanded) else { return };
         let Some(children) = n.children.as_ref() else { return };
+        // Under a shadowed name nothing opens, whoever opened `i`.
+        if self.tree.stable_path_of(i).is_none() {
+            return;
+        }
         let new = children[before.min(children.len())..].to_vec();
         let prefix = self.tree.path_of(i);
         self.reopen_among(&new, &prefix, kept);
@@ -1268,11 +1277,6 @@ mod tests {
     }
 
     #[test]
-    fn a_new_view_has_a_new_budget() {
-        assert_eq!(VarsView::default().spent, 0);
-    }
-
-    #[test]
     fn the_default_scopes_cost_nothing() {
         let mut v = view(&["Arguments", "Locals"]);
         v.reopen_roots(&[0, 1], None);
@@ -1381,5 +1385,90 @@ mod tests {
         assert_eq!(v.tree.node(1).unwrap().children.as_ref().map(Vec::len), Some(1000));
         let all = v.tree.take_asks();
         assert!(all.iter().all(|a| a.start == 0), "{all:?}");
+    }
+
+    /// `L` holding `arr` (hint 2500) and its first page of 1000, whose row `5` has a reference (40) and was asked
+    /// for; `5` is the child returned.
+    fn page_one_with_a_child(k: &KeptFrame) -> (VarsView, usize) {
+        let mut v = paged_reopen(k);
+        asked(&mut v);
+        let mut page = from(0, 1000);
+        page[5] = item("5", 40);
+        stored(&mut v, 1, page, k);
+        let five = child(&v, 1, "5");
+        (v, five)
+    }
+
+    /// Presses the load-more row of node 1 and stores `page` as its answer.
+    fn later_page(v: &mut VarsView, page: Vec<VarItem>, k: &KeptFrame) {
+        let r = v.tree.node(1).unwrap().more.expect("a load-more row");
+        assert!(v.tree.load_more(r));
+        let start = v.tree.node(1).unwrap().children.as_ref().map_or(0, Vec::len);
+        assert_eq!(asked(v), [(1, 20, start)]);
+        stored(v, 1, page, k);
+    }
+
+    #[test]
+    fn a_failed_child_of_page_one_stays_as_it_is_when_a_later_page_lands() {
+        let k = open(&[&["L"], &["L", "arr"], &["L", "arr", "5"]]);
+        let (mut v, five) = page_one_with_a_child(&k);
+        assert_eq!(asked(&mut v), [(five, 40, 0)], "5 reopens on page one");
+        v.tree.set_failed(five, "could not read".into());
+        let spent = v.spent;
+        later_page(&mut v, from(1000, 1000), &k);
+        assert!(asked(&mut v).is_empty(), "no second ask for 5");
+        let n = v.tree.node(five).unwrap();
+        assert_eq!(n.failed.as_deref(), Some("could not read"), "the note stays");
+        assert!(!n.expanded && n.children.is_none());
+        assert_eq!(v.spent, spent, "and costs nothing");
+    }
+
+    #[test]
+    fn a_selection_on_a_nested_load_more_row_stays_when_the_outer_page_lands() {
+        let mut k = open(&[&["L"], &["L", "arr"]]);
+        k.selected = Some(path(&["L", "arr", "c"]));
+        let mut v = paged_reopen(&k);
+        asked(&mut v);
+        let mut page = from(0, 999);
+        page.push(VarItem { children: 2500, ..item("c", 41) });
+        stored(&mut v, 1, page, &k);
+        let c = child(&v, 1, "c");
+        assert_eq!(v.node, c, "the saved selection finds c on page one");
+        v.tree.expand(c);
+        asked(&mut v);
+        stored(&mut v, c, from(0, 1000), &k);
+        let row = v.tree.node(c).unwrap().more.expect("c has a load-more row");
+        v.node = row;
+        later_page(&mut v, from(1000, 1000), &k);
+        assert_eq!(v.node, row, "the page of arr leaves the selection on the row of c");
+    }
+
+    #[test]
+    fn a_load_more_row_has_no_stable_path() {
+        let k = open(&[&["L"], &["L", "arr"]]);
+        let mut v = paged_reopen(&k);
+        asked(&mut v);
+        stored(&mut v, 1, from(0, 1000), &k);
+        let r = v.tree.node(1).unwrap().more.expect("a load-more row");
+        assert_eq!(v.tree.stable_path_of(1), Some(path(&["L", "arr"])));
+        assert_eq!(v.tree.stable_path_of(r), None);
+    }
+
+    #[test]
+    fn nothing_opens_under_a_shadowed_node() {
+        // `p` and `p #2` under a scope: whichever the user opens, a saved child does not follow.
+        let k = open(&[&["L"], &["L", "p"], &["L", "p", "x"]]);
+        let mut v = view(&["L"]);
+        v.reopen_roots(&[0], Some(&k));
+        asked(&mut v);
+        stored(&mut v, 0, vec![item("p", 20), item("p #2", 21)], &k);
+        assert!(asked(&mut v).is_empty(), "p is ambiguous");
+        let p = child(&v, 0, "p");
+        v.tree.expand(p);
+        asked(&mut v);
+        stored(&mut v, p, vec![item("x", 30)], &k);
+        assert!(asked(&mut v).is_empty(), "x stays closed under a shadow");
+        let x = child(&v, p, "x");
+        assert!(!v.tree.node(x).unwrap().expanded);
     }
 }

@@ -2372,15 +2372,37 @@ mod tests {
     fn opened_in_a_shadow_records_nothing() {
         let mut p = locals_panel(vec![vi("p", "", "struct inner", 5), vi("p #2", "", "struct pair", 7), vi("q", "", "int", 0)]);
         p.kept.frame_mut("add").record(named(&["Locals", "p"]), true);
+        p.kept.frame_mut("add").record(named(&["Locals", "p", "x"]), true);
         go_to(&mut p, "p  ");
         key_in(&mut p, DebugAction::Expand);
+        p.take_var_asks();
         p.show_children(1, vec![vi("x", "1", "int", 8)]);
+        assert!(p.take_var_asks().is_empty(), "the saved x does not open under a hand-opened shadow");
         go_to(&mut p, "x");
+        assert!(p.var_selected().starts_with("▸ x"), "{}", p.var_selected());
         key_in(&mut p, DebugAction::Expand);
-        assert_eq!(kept_open(&p), [named(&["Locals", "p"])], "opening in a shadow adds nothing");
+        assert_eq!(kept_open(&p), [named(&["Locals", "p"]), named(&["Locals", "p", "x"])], "opening in a shadow adds nothing");
         go_to(&mut p, "p  ");
         key_in(&mut p, DebugAction::Collapse);
-        assert_eq!(kept_open(&p), [named(&["Locals", "p"])], "and closing removes nothing");
+        assert_eq!(kept_open(&p), [named(&["Locals", "p"]), named(&["Locals", "p", "x"])], "and closing removes nothing");
+    }
+
+    #[test]
+    fn a_new_stop_has_a_new_budget() {
+        // Five arrays of 3000 cost 21 each, 105 of the 200; spent twice over they would not all fit.
+        let arrays = || (0..5).map(|i| VarItem { children: 3000, ..vi(&format!("a{i}"), "", "int []", 20 + i) }).collect();
+        let mut p = locals_panel(arrays());
+        for i in 0..5 {
+            p.kept.frame_mut("add").record(named(&["Locals", &format!("a{i}")]), true);
+        }
+        for stop in 1..=3 {
+            assert_eq!(stopped_again(&mut p, "add"), [11, 12], "stop {stop}");
+            p.show_children(0, Vec::new());
+            p.show_children(1, arrays());
+            let asked: Vec<i64> = p.take_var_asks().iter().map(|a| a.reference).collect();
+            assert_eq!(asked, [24, 23, 22, 21, 20], "stop {stop}: all five, newest first");
+            assert_eq!(p.vars.spent, 105, "stop {stop}: spent started over");
+        }
     }
 
     #[test]
@@ -2391,6 +2413,32 @@ mod tests {
         assert_eq!(p.take_var_asks().iter().map(|a| a.start).collect::<Vec<_>>(), [1000]);
         assert!(kept_open(&p).is_empty());
         assert_eq!(p.kept.frame("add").and_then(|f| f.selected.clone()), Some(named(&["Locals", "arr"])));
+    }
+
+    #[test]
+    fn a_click_on_a_load_more_row_saves_its_container() {
+        let mut p = paged_panel(5000);
+        key_in(&mut p, DebugAction::End);
+        draw(&mut p, 60, 12, Some(Phase::Suspended));
+        let (row, offset) = (p.vars.list.selected, p.vars.list.offset);
+        // Something else was saved last.
+        p.kept.frame_mut("add").selected = Some(named(&["Locals"]));
+        let (x, y) = (p.list_rect.x + 10, p.list_rect.y + (row - offset) as u16);
+        with_cx(|cx| assert!(p.handle_mouse(&press(x, y, 1), Some(Phase::Suspended), cx)));
+        assert_eq!(p.take_var_asks().iter().map(|a| a.start).collect::<Vec<_>>(), [1000], "the click reads a page");
+        assert!(kept_open(&p).is_empty());
+        assert_eq!(p.kept.frame("add").and_then(|f| f.selected.clone()), Some(named(&["Locals", "arr"])));
+    }
+
+    #[test]
+    fn a_selected_root_other_than_the_first_comes_back() {
+        let mut p = with_vars();
+        for _ in 0..3 {
+            key_in(&mut p, DebugAction::Down);
+        }
+        assert!(p.var_selected().starts_with("▾ Locals"), "{}", p.var_selected());
+        assert_eq!(stopped_again(&mut p, "add"), [11, 12]);
+        assert!(p.var_selected().starts_with("▾ Locals"), "{}", p.var_selected());
     }
 
     #[test]
