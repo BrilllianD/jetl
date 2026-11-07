@@ -35,7 +35,7 @@ use crate::editor::{Editor, ExecutionPoint};
 use crate::event::{AppMsg, Effect, Level};
 #[cfg(test)]
 use crate::lsp::client::Conn;
-use crate::lsp::client::spawn_process;
+use crate::lsp::client::{spawn_process, spawn_tied_to_thread};
 use crate::run::matcher::{Link, RunLine, Severity};
 use crate::run::process::{RunEnd, Spec, clean, kill_group};
 use crate::run::{RunTask, load_tasks, quote_word};
@@ -651,7 +651,12 @@ impl App {
         self.debug.starting = false;
         let generation = self.workspace.generation;
         let root = self.workspace.root.clone();
+        let gdb = p.adapter.name == "gdb";
         let conn = match &mut self.debug.connector {
+            // On the main loop's thread, so it lasts as long as jetl. A stopped gdb cannot see stdin close, so it would stay,
+            // with its debuggee, after jetl is killed; its own death takes the debuggee. Other adapters may clean up on
+            // stdin's EOF, which SIGKILL would take away, and none could be tried, so they are not tied.
+            Connector::Process if gdb => spawn_tied_to_thread(&p.adapter.name, &p.adapter.command, &root),
             Connector::Process => spawn_process(&p.adapter.name, &p.adapter.command, &root),
             #[cfg(test)]
             Connector::Fake(connect) => connect(),
@@ -674,7 +679,6 @@ impl App {
             .map(|(p, lines)| (p.clone(), SourceBreakpoints { lines: lines.clone(), modified: source_modified(&self.editor, p) }))
             .collect();
         let cwd = p.launch["cwd"].as_str().map_or_else(|| root.clone(), PathBuf::from);
-        let gdb = p.adapter.name == "gdb";
         let lost_cwd = p.launch["cwd"].as_str().filter(|c| gdb && gdb_cd_fails(c, &root)).map(one_line);
         let spec = SessionSpec { id, generation, adapter_id: p.adapter.name.clone(), launch: p.launch, breakpoints };
         let output_tx = self.bus_tx.clone();

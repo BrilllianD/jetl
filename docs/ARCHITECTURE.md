@@ -493,8 +493,14 @@ its busy id before the generation check, so the spinner never sticks.
   adapter (after the stop stages, or on quit with an adapter that does not answer), the debuggee ends
   only if the adapter's death takes it. With gdb it did: `kill -9` of the gdb (step 8 of the "Debug and Stop"
   scenario in TESTING.md), and `kill -STOP` of it followed by Ctrl+F2 or Ctrl+Q (steps 10 and 11), left
-  no debuggee. Other adapters are not verified. If jetl itself is killed while the adapter is stopped,
-  the debuggee can survive (not tested; yman 418).
+  no debuggee. Other adapters are not verified. jetl has no signal handler, so its death by SIGKILL, SIGTERM or SIGHUP
+  reaches gdb in one of two ways. Stdin's EOF ends a gdb that runs (`main_loop` then `quit`), which takes the debuggee.
+  A gdb that is stopped cannot read it, so the adapter named `gdb` is started by `spawn_tied_to_thread`
+  (`PR_SET_PDEATHSIG` = SIGKILL, Linux only, the one signal a stopped process acts on), and its death takes the debuggee
+  through ptrace. The kernel's rule is about the forking thread, so this has to be called on the main loop:
+  `debug_launch` is, because `main` awaits `App::run` itself. Other adapters are not tied, since they may clean up on EOF
+  and could not be tried; killing jetl with one of them stopped can leave it and its debuggee. A child the debuggee
+  forked is out of reach of all of this, on an ordinary Stop too.
 - Lists keep their wheel scroll: `ListState::set_viewport` and `fit` bound
   the offset without pulling the view back to the selection.
 - Panic path (`tui::install_panic_hook`, `recovery.rs`): the terminal is

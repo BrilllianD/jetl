@@ -663,7 +663,7 @@ mod tests {
         use std::path::Path;
 
         use super::*;
-        use crate::lsp::client::spawn_process;
+        use crate::lsp::client::{spawn_process, spawn_tied_to_thread};
 
         fn sh(script: &str, args: &[&str]) -> Conn {
             let mut argv: Vec<String> = ["sh", "-c", script].map(String::from).to_vec();
@@ -861,6 +861,51 @@ mod tests {
             drop(rt); // `client` is still alive
             group_gone_blocking(pgid);
             assert_eq!(client.pid(), None);
+        }
+
+        type Spawn = fn(&str, &[String], &Path) -> std::io::Result<Conn>;
+
+        /// Starts `sleep` from a thread of its own, stops it (as a `kill -STOP` of the adapter does), and returns its pid
+        /// and what ends the thread. A process's death is out of a test's reach, and the kernel's rule is about the thread that
+        /// forked: its end stands for jetl's death. The handle is leaked: its `kill_on_drop` is not what this is about.
+        fn stopped_child_of_a_thread(spawn: Spawn) -> (u32, std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+            let (pid_tx, pid_rx) = std::sync::mpsc::channel();
+            let (end, ended) = std::sync::mpsc::channel::<()>();
+            let thread = std::thread::spawn(move || {
+                let rt = runtime();
+                let _in_runtime = rt.enter();
+                let argv: Vec<String> = ["sleep", "100"].map(String::from).to_vec();
+                let conn = spawn("test", &argv, Path::new("/tmp")).expect("sleep starts");
+                pid_tx.send(conn.child.as_ref().and_then(|c| c.id()).unwrap()).unwrap();
+                std::mem::forget(conn);
+                let _ = ended.recv();
+            });
+            let pid = pid_rx.recv().unwrap();
+            members_at_least_blocking(pid, 1);
+            // SAFETY: `kill` takes plain integers, and this is a child that has not been reaped, so the pid is its own.
+            assert_eq!(unsafe { libc::kill(pid as libc::pid_t, libc::SIGSTOP) }, 0);
+            (pid, end, thread)
+        }
+
+        #[test]
+        fn a_tied_child_lives_with_its_thread_and_dies_with_it_even_stopped() {
+            let (pid, end, thread) = stopped_child_of_a_thread(spawn_tied_to_thread);
+            std::thread::sleep(Duration::from_millis(300));
+            assert_eq!(group_members(pid), 1, "the thread still runs");
+            drop(end);
+            thread.join().unwrap();
+            group_gone_blocking(pid);
+        }
+
+        #[test]
+        fn an_untied_child_outlives_its_thread() {
+            let (pid, end, thread) = stopped_child_of_a_thread(spawn_process);
+            drop(end);
+            thread.join().unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            assert_eq!(group_members(pid), 1, "only `spawn_tied_to_thread` ties a child");
+            kill_group(pid);
+            group_gone_blocking(pid);
         }
     }
 }

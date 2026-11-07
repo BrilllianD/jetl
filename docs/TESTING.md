@@ -1035,6 +1035,38 @@ neither toast and were not tried.
 What gdb cannot show, and the unit tests prove instead: a failed `threads`, a user's Stop between the two
 rounds, an `exited` with no `process`, a `process` with no `name`.
 
+### Scenario: jetl killed with gdb stopped
+
+Needs the setup of `### Scenario: Debug and Stop` (gdb 17.2, `gcc`, `XDG_*` under `/tmp`, `[lsp] enabled = false`),
+and a copy of the sleepy fixture built with `-g` (`gcc -g -O0 -o jetl-dbg-sleepy sleepy.c`, `sleep(300)` on line 3),
+with a `.jetl/run.toml` for it. At 80x24, with jetl started by `exec env ... jetl sleepy.c` in a tmux session on a private
+socket, so the pane's pid is jetl's (check `/proc/<pid>/comm`). Start only when `pgrep -x jetl-dbg-sleepy` and
+`pgrep -f '[g]db -q -i=dap'` print nothing. Use pids in every `kill`, never a pattern.
+
+1. The cell: Shift+F9, wait for `pgrep -x jetl-dbg-sleepy`, take the gdb pid from `pgrep -f '[g]db -q -i=dap'`, and
+   record `State` and `TracerPid` in `/proc/<pid>/status` of both (the debuggee reads `TracerPid` = the gdb's pid).
+   For a stopped gdb: `kill -STOP <gdb>`, wait 0.2 s. Then `kill -<signal> <jetl>`, wait 2 s and read both again. For
+   a stopped gdb, `kill -CONT <gdb>`, wait 2 s and read again.
+2. The matrix, 12 cells: the debuggee running, and paused at a breakpoint (`Ctrl+G`, `3`, Enter, Ctrl+F8 on the `sleep`
+   line before Shift+F9; wait for `paused (breakpoint)`), crossed with gdb normal and gdb stopped, crossed with `KILL`,
+   `TERM` and `HUP`. Every cell reads both pids gone at +2 s, with the pids recorded before the kill.
+   Before this change a stopped gdb stayed `T` and its debuggee `S` (`t` when paused), traced by it, until the
+   `kill -CONT`, for all three signals. One more cell at 120x40: gdb stopped, running, `KILL`, the same reading.
+3. An idle session stays: Shift+F9 and nothing else for 20 s, past the blocking pool's 10 s idle keep-alive. gdb and the
+   debuggee still run, and `TracerPid` is unchanged. Ctrl+F2: `Debug session stopped`, neither left. If gdb dies
+   here, `debug_launch` is no longer on the main loop's thread.
+4. A normal quit: Shift+F9, Ctrl+Q: exit 0, empty stderr, neither left. Then steps 8 to 11 of `### Scenario: Debug and
+   Stop` as before (step 8's toast wraps at 80 columns: `Debug session ended: adapter` and `exited` on the next
+   line).
+5. Another adapter is not tied: in `config.toml`, `[debug.adapters.notgdb]` with `command = ["sleep", "317"]` and
+   `languages = ["c"]`, and `adapter = "notgdb"` in `.jetl/run.toml`. Shift+F9, then `kill -9 <jetl>`, wait 2 s:
+   `pgrep -f '^sleep 317$'` still prints the pid. Kill it by that pid.
+6. Nothing is left: `pgrep -x jetl-dbg-sleepy`, `pgrep -f '[g]db -q -i=dap'` and `pgrep -f '^sleep 317$'` print
+   nothing, and the tmux socket has no server.
+
+What gdb cannot show, and the unit tests prove instead: the tie itself is a kernel rule about the forking thread.
+lldb-dap, codelldb and debugpy were not tried.
+
 ### Scenario: breakpoints sent to a debug session
 
 Needs `gdb` 14 or newer and `gcc`. At 80x24 and at 120x40, with `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and

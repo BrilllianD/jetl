@@ -63,14 +63,40 @@ pub struct Conn {
 /// terminal; [`kill_group`] stops it with everything it started), stdin and
 /// stdout for the protocol, stderr to the log.
 pub fn spawn_process(name: &str, argv: &[String], cwd: &Path) -> std::io::Result<Conn> {
+    spawn_server(name, argv, cwd, false)
+}
+
+/// [`spawn_process`], and on Linux the kernel sends the child SIGKILL when the calling thread ends. Called on the main
+/// loop's thread, that is when jetl dies, however it dies, with nothing for jetl to do at that moment. SIGKILL, because
+/// it is the only signal that acts on a stopped process. Do not call it from a tokio worker or a blocking thread: the
+/// child would die with that thread. Only the child is reached, not what it started.
+pub fn spawn_tied_to_thread(name: &str, argv: &[String], cwd: &Path) -> std::io::Result<Conn> {
+    spawn_server(name, argv, cwd, true)
+}
+
+fn spawn_server(name: &str, argv: &[String], cwd: &Path, tied: bool) -> std::io::Result<Conn> {
     let program = argv.first().filter(|p| !p.is_empty()).ok_or_else(|| std::io::Error::other("empty command"))?;
     let mut cmd = tokio::process::Command::new(program);
     cmd.args(&argv[1..]).current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    #[cfg(not(target_os = "linux"))]
+    let _ = tied;
+    #[cfg(target_os = "linux")]
+    let parent = std::process::id() as libc::pid_t;
     #[cfg(unix)]
-    // SAFETY: setsid is async-signal-safe and touches no memory of the parent.
+    // SAFETY: setsid, prctl and getppid are async-signal-safe and touch no memory of the parent. The errors do not allocate.
     unsafe {
-        cmd.pre_exec(|| {
+        cmd.pre_exec(move || {
             libc::setsid();
+            #[cfg(target_os = "linux")]
+            if tied {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // A parent that died before the line above sent nothing, and will not.
+                if libc::getppid() != parent {
+                    return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
+                }
+            }
             Ok(())
         });
     }
