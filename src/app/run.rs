@@ -842,6 +842,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn select_picker_double_click_selects_and_runs_nothing() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
+        let (mut app, dir) = test_app("run-select-click");
+        two_configs(&mut app);
+        open_select_picker(&mut app).await;
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        let buf = term.draw(|f| crate::ui::render(&mut app, f)).unwrap().buffer.clone();
+        let row = (0..24).find(|&y| (0..80).map(|x| buf[(x, y)].symbol()).collect::<String>().contains(" b  ")).unwrap();
+        let click = MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: 20, row, modifiers: KeyModifiers::NONE };
+        app.handle_mouse(click);
+        assert!(app.palette.is_some(), "one click only moves the row");
+        assert_eq!(app.run.selected, None);
+        app.handle_mouse(click);
+        assert_eq!(app.run.selected.as_deref(), Some("b"));
+        assert!(!app.run.running(), "nothing started");
+        assert!(app.run.last.is_none());
+        assert!(app.palette.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn select_picker_cancel_keeps_the_selection() {
         use crate::ui::palette::PaletteResult;
 

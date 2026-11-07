@@ -2106,8 +2106,8 @@ Needs `gdb` 14 or newer and `gcc`. The fixture `/tmp/jetl-dap-demo` of `### Scen
 120x40, with `[lsp] enabled = false` and the toolbar on (the default). Add to its `.jetl/run.toml`, after `demo`:
 `[[configs]] name = "marker"`, `command = ["sh", "-c", "touch marker-ran"]`, and `[debug.marker]` with `adapter = "gdb"`
 and `launch = { program = "${workspaceFolder}/demo" }`. Start jetl on the file, `jetl /tmp/jetl-dap-demo/demo.c`, so the
-editor has the focus (Shift+F10 in the Project tree opens its context menu). Delete `marker-ran` before each size. After
-every step that must run nothing, `ls marker-ran` fails. At 80x24 the toast of step 3 wraps over two lines.
+editor has the focus (Shift+F10 in the Project tree opens its context menu). Delete `marker-ran` and use fresh `XDG_*`
+directories before each size, since step 7 keeps `marker` in the session. After every step that must run nothing, `ls marker-ran` fails. At 80x24 the toast of step 3 wraps over two lines.
 
 1. Negative control, nothing selected: Shift+F9 shows `Debugging demo with gdb`, then `Debug session ended, exit code 0`.
 2. `send-keys M-S-F9`: the title `Select Run Configuration`, the rows `demo` and `marker`. Escape: the toolbar does not
