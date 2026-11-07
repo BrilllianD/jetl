@@ -84,9 +84,12 @@ impl Editor {
         self.index_of(path).map(|i| &mut self.buffers[i].breakpoints)
     }
 
-    /// Every mark the adapter knows by `id`, in any open buffer, with its line.
-    pub fn breakpoint_marks_by_id_mut(&mut self, id: i64) -> impl Iterator<Item = (usize, &mut BreakpointMark)> {
-        self.buffers.iter_mut().flat_map(|b| b.breakpoints.iter_mut()).filter(move |(_, m)| m.id == Some(id)).map(|(l, m)| (*l, m))
+    /// Every mark the adapter knows by `id`, in any open buffer with a path (only those were sent), with its file and line.
+    pub fn breakpoint_marks_by_id_mut(&mut self, id: i64) -> impl Iterator<Item = (&Path, usize, &mut BreakpointMark)> {
+        self.buffers.iter_mut().flat_map(move |b| {
+            let path = b.path.as_deref();
+            b.breakpoints.iter_mut().filter(move |(_, m)| m.id == Some(id)).filter_map(move |(l, m)| Some((path?, *l, m)))
+        })
     }
 
     /// Every mark back to its default state, keeping its line.
@@ -426,10 +429,10 @@ mod tests {
         for (path, line, id) in [(&a, 0, 7), (&a, 2, 8), (&b, 1, 7)] {
             ed.breakpoint_marks_mut(path).unwrap().get_mut(&line).unwrap().id = Some(id);
         }
-        let mut seven: Vec<usize> = ed.breakpoint_marks_by_id_mut(7).map(|(l, _)| l).collect();
+        let mut seven: Vec<usize> = ed.breakpoint_marks_by_id_mut(7).map(|(_, l, _)| l).collect();
         seven.sort();
         assert_eq!(seven, vec![0, 1]);
-        assert_eq!(ed.breakpoint_marks_by_id_mut(8).map(|(l, _)| l).collect::<Vec<_>>(), vec![2]);
+        assert_eq!(ed.breakpoint_marks_by_id_mut(8).map(|(_, l, _)| l).collect::<Vec<_>>(), vec![2]);
         assert_eq!(ed.breakpoint_marks_by_id_mut(9).count(), 0);
     }
 

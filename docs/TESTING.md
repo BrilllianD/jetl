@@ -1116,14 +1116,19 @@ cells. The script of the last run is `~/.claude/plans/backlog-run-24-partC-S7-fi
    `next`, `stepIn`, `stepOut`; Resume ends the program; at another stop Stop gives `Debug session stopped`. On `spin`:
    `running`, a click on Resume sends nothing, Pause sends `pause`, the title reads `paused`, Stop stops it.
 8. A breakpoint on a comment-only line (`moved.c`, line 3) stops at line 4 (`4▶`) and the log says `Verified, adapter
-   line Some(3)`, but the Console writes no `moved to line` line: gdb answers `setBreakpoints` with `pending` and
-   places the line in a `breakpoint` event, which the Console does not report. A breakpoint on the blank line 7 of
-   `demo.c` stays pending and the program runs to its end.
+   line Some(3)`. The Console writes `Breakpoint moved.c:3 moved to line 4` once, although gdb sends the `breakpoint`
+   event three times (the log shows three `dap: breakpoint changed`): gdb answers `setBreakpoints` with `pending` and
+   places the line in the event. A breakpoint on the blank line 7 of `demo.c` stays pending and the program runs to its
+   end; the Console then has `Breakpoint demo.c:7 not placed: no code loaded for this line`, once, written at the
+   program's end (or at the first stop, with a second mark on 9: before F9). A click on `demo.c:7` in that line puts the
+   caret on `Ln 7,`. A mark that stays pending when Ctrl+F2 ends the session before any stop (`spin.c`, blank line 8)
+   writes no such line. A plain start (one mark on `demo.c` line 9, Shift+F9, F9) writes no `moved`, `not placed` or
+   `No source file named` line at all.
    While `moved.c` is paused at line 4, Ctrl+F8 on its comment-only line 5 sends `setBreakpoints` (`[2, 4]` in the log)
    and gdb answers it `verified` on line 6 (the log: `mark ...moved.c:4 is Verified, adapter line Some(5)`); the Console
    gets `Breakpoint moved.c:5 moved to line 6`, once. So gdb does answer a `setBreakpoints` sent while the program is
-   paused, and the verdict line from a `setBreakpoints` answer runs against a real adapter. The breakpoint set before
-   Shift+F9 was reported by an event only.
+   paused, and the verdict line from a `setBreakpoints` answer runs against a real adapter. The program stops at 6 on
+   the first F9 and ends on the second (`moved` returns 1: `exit code 1`).
 9. A mistyped `program` (`typo`): the window stays `running` with `No output yet` until Ctrl+F2 (yman 416).
 10. Marks back on `demo.c`, Shift+F9, Ctrl+Q while paused: exit 0, empty stderr, no `demo` or `gdb` left.
 11. Restart with `RUST_LOG=jetl=info`. `flood`: from Shift+F9 to the toast `exit code 0`, then until `flood 99999` is the
@@ -1132,8 +1137,8 @@ cells. The script of the last run is `~/.claude/plans/backlog-run-24-partC-S7-fi
     `ps -o rss=` of jetl: about 100 to 125 MB while spewing and after.
 
 gdb cannot show, and the unit tests prove: `stderr` and `important` styling (gdb's stderr arrives as `stdout`), a partial
-last line (gdb is line-based), `telemetry`, a `Failed` verdict's message, a verdict line for a breakpoint set before the
-start (gdb reports those by event), stale `DebugOutput`, a root switch, the other start orders. Alt+F5 from a physical
+last line (gdb is line-based), `telemetry`, a `Failed` verdict's message, a `removed` event's line, a `breakpoint` event for a mark in a
+second file, a pending breakpoint placed later by a library load, stale `DebugOutput`, a root switch, the other start orders. Alt+F5 from a physical
 keyboard through the terminal emulator into tmux stays the user's to confirm.
 
 ### Scenario: Debug window, threads and frames

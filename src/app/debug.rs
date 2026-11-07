@@ -63,6 +63,8 @@ pub(super) struct Live {
     pub(super) sent: BTreeMap<PathBuf, Vec<usize>>,
     /// The breakpoints of the start that gdb has yet to speak of: `sent` at launch, less each pair `early_gdb_line` took.
     pub(super) early: BTreeMap<PathBuf, Vec<usize>>,
+    /// The marks still pending at the first stop or the exit have been told to the Console.
+    pub(super) told_unplaced: bool,
     /// The sources in `sent` that had an open buffer at the last comparison.
     pub(super) open: BTreeSet<PathBuf>,
     /// The epoch of the last `Stopped` or `Running`; the tag of the requests the App makes.
@@ -244,8 +246,6 @@ fn apply_breakpoint(line: usize, mark: &mut BreakpointMark, bp: &Breakpoint) {
     mark.message = bp.message.clone();
 }
 
-/// The Console line for a verdict the user should read: a failed breakpoint, or one the adapter put on another
-/// line. A verified breakpoint on its own line, or a pending one, says nothing. The location is the user's line.
 /// An adapter's message as one display line: each of its lines cleaned of escape sequences and control
 /// characters, the non-empty ones joined by a space.
 fn one_line(message: &str) -> String {
@@ -308,6 +308,20 @@ fn early_gdb_line(output: &str, early: &mut BTreeMap<PathBuf, Vec<usize>>) -> bo
     true
 }
 
+/// The Console line for a mark the adapter never placed: no event comes for it, so the first stop or the exit says it.
+fn not_placed_line(source: &Path, line: usize) -> Option<RunLine> {
+    let file = source.file_name()?.to_string_lossy();
+    let place = format!("{file}:{}", line + 1);
+    let link = Link { path: source.to_path_buf(), line, col: 0, span: 11..11 + place.len() };
+    Some(RunLine {
+        text: format!("Breakpoint {place} not placed: no code loaded for this line"),
+        severity: Some(Severity::Warning),
+        link: Some(link),
+    })
+}
+
+/// The Console line for a verdict the user should read: a failed breakpoint, or one the adapter put on another
+/// line. A verified breakpoint on its own line, or a pending one, says nothing. The location is the user's line.
 fn verdict_line(source: &Path, line: usize, mark: &BreakpointMark) -> Option<RunLine> {
     let file = source.file_name()?.to_string_lossy();
     let place = format!("{file}:{}", line + 1);
@@ -662,6 +676,7 @@ impl App {
             exit_code: None,
             stop_requested: false,
             early: sent.clone(),
+            told_unplaced: false,
             sent,
             open,
             epoch: 0,
@@ -749,9 +764,23 @@ impl App {
 
     /// The program has run: gdb has no more to say of the start's breakpoints, and its `stdout` category is also the
     /// debuggee's, so the gate on those lines closes at the first stop or the exit.
+    /// gdb sends no event for a breakpoint it cannot place, so the marks still `Pending` are told here, once per session
+    /// and not after a user's Stop.
     fn debug_program_seen(&mut self) {
-        if let Some(live) = self.debug.session.as_mut() {
-            live.early.clear();
+        let Some(live) = self.debug.session.as_mut() else { return };
+        live.early.clear();
+        if live.told_unplaced || live.stop_requested {
+            return;
+        }
+        live.told_unplaced = true;
+        let sources: Vec<PathBuf> = live.sent.keys().cloned().collect();
+        let mut lines = Vec::new();
+        for source in &sources {
+            let Some(marks) = self.editor.breakpoint_marks_mut(source) else { continue };
+            lines.extend(marks.iter().filter(|(_, m)| m.state == BpState::Pending).filter_map(|(l, _)| not_placed_line(source, *l)));
+        }
+        if !lines.is_empty() {
+            self.debug_panel.push(lines);
         }
     }
 
@@ -1136,7 +1165,9 @@ impl App {
     fn debug_breakpoint_changed(&mut self, e: &BreakpointEvent) {
         tracing::debug!("dap: breakpoint {}: {:?}", e.reason, e.breakpoint);
         let Some(id) = e.breakpoint.id else { return };
-        for (line, mark) in self.editor.breakpoint_marks_by_id_mut(id) {
+        let mut lines = Vec::new();
+        for (source, line, mark) in self.editor.breakpoint_marks_by_id_mut(id) {
+            let before = (mark.state, mark.adapter_line, mark.message.clone());
             if e.reason == "removed" {
                 // gdb's `removed` carries the old descriptor, so `verified` says nothing here.
                 *mark =
@@ -1145,6 +1176,12 @@ impl App {
                 apply_breakpoint(line, mark, &e.breakpoint);
             }
             tracing::debug!("dap: mark with id {id} on line {line} is {:?}, adapter line {:?}", mark.state, mark.adapter_line);
+            if before != (mark.state, mark.adapter_line, mark.message.clone()) {
+                lines.extend(verdict_line(source, line, mark));
+            }
+        }
+        if !lines.is_empty() {
+            self.debug_panel.push(lines);
         }
     }
 
@@ -3226,6 +3263,147 @@ pub(crate) mod tests {
         answered(&mut app, &closed, vec![0], vec![bp(json!({"verified": false, "reason": "failed", "message": "x"}))]);
         assert_eq!(console(&app).len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_breakpoint_event_writes_its_verdict_once() {
+        let (mut app, dir, mut fakes) = setup("console-event", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let _ = running(&mut app, &mut fakes).await;
+        answered(&mut app, &a, vec![1], vec![bp(json!({"id": 1, "verified": false, "reason": "pending"}))]);
+        assert!(console(&app).is_empty(), "{:?}", console(&app));
+        for _ in 0..3 {
+            changed(&mut app, "changed", json!({"id": 1, "verified": true, "line": 4}));
+        }
+        assert_eq!(console(&app), ["Breakpoint a.log:2 moved to line 4"]);
+        // The answer repeats the state the event set.
+        answered(&mut app, &a, vec![1], vec![bp(json!({"id": 1, "verified": true, "line": 4}))]);
+        assert_eq!(console(&app).len(), 1);
+        // On its own line a verified one says nothing.
+        changed(&mut app, "changed", json!({"id": 1, "verified": true, "line": 2}));
+        assert_eq!(console(&app).len(), 1);
+        // A real change back.
+        changed(&mut app, "changed", json!({"id": 1, "verified": true, "line": 4}));
+        assert_eq!(console(&app).len(), 2);
+        changed(&mut app, "changed", json!({"id": 1, "verified": false, "reason": "failed", "message": "no code"}));
+        assert_eq!(console(&app).last().map(String::as_str), Some("Breakpoint a.log:2 failed: no code"));
+        let len = console(&app).len();
+        for _ in 0..2 {
+            changed(&mut app, "removed", json!({"id": 1, "verified": true}));
+        }
+        assert_eq!(console(&app).len(), len + 1);
+        assert_eq!(console(&app).last().map(String::as_str), Some("Breakpoint a.log:2 failed: removed by the debug adapter"));
+        // No mark has that id, and an event with no id names no mark.
+        changed(&mut app, "changed", json!({"id": 99, "verified": false, "reason": "failed"}));
+        changed(&mut app, "changed", json!({"verified": false, "reason": "failed"}));
+        assert_eq!(console(&app).len(), len + 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_event_names_the_file_its_mark_is_in() {
+        let (mut app, dir, mut fakes) = setup("console-event-file", Order::LaunchEarly);
+        let a = load(&mut app, "a.log", "l0\nl1\nl2\nl3\nl4\n");
+        let b = load(&mut app, "b.log", "l0\nl1\nl2\nl3\nl4\n");
+        toggle(&mut app, &a, 0);
+        toggle(&mut app, &b, 0);
+        let _ = running(&mut app, &mut fakes).await;
+        answered(&mut app, &a, vec![0], vec![bp(json!({"id": 1, "verified": false, "reason": "pending"}))]);
+        answered(&mut app, &b, vec![0], vec![bp(json!({"id": 2, "verified": false, "reason": "pending"}))]);
+        changed(&mut app, "changed", json!({"id": 2, "verified": true, "line": 4}));
+        assert_eq!(console(&app), ["Breakpoint b.log:1 moved to line 4"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    const NOT_PLACED_4: &str = "Breakpoint a.log:4 not placed: no code loaded for this line";
+
+    /// Marks on lines 1 and 3 (0-based; 1-based 2 and 4) answered pending, ids 1 and 2; the first then placed on 2.
+    async fn two_marks_one_placed(name: &str) -> (App, PathBuf, FakeAdapter, PathBuf) {
+        let (mut app, dir, mut fakes) = setup(name, Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        toggle(&mut app, &a, 3);
+        let (fake, _) = running(&mut app, &mut fakes).await;
+        answered(
+            &mut app,
+            &a,
+            vec![1, 3],
+            vec![
+                bp(json!({"id": 1, "verified": false, "reason": "pending"})),
+                bp(json!({"id": 2, "verified": false, "reason": "pending"})),
+            ],
+        );
+        changed(&mut app, "changed", json!({"id": 1, "verified": true, "line": 2}));
+        (app, dir, fake, a)
+    }
+
+    #[tokio::test]
+    async fn a_breakpoint_never_placed_is_told_once_at_the_first_stop() {
+        let (mut app, dir, mut fake, a) = two_marks_one_placed("console-unplaced-stop").await;
+        stop_at(&mut app, &mut fake, 7, &a, 2).await;
+        assert_eq!(console(&app), [NOT_PLACED_4]);
+        stop_at(&mut app, &mut fake, 7, &a, 2).await;
+        assert_eq!(console(&app).len(), 1);
+        inject(&mut app, DapBody::Exited(0));
+        assert_eq!(console(&app).len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_breakpoint_never_placed_is_told_when_the_program_ends() {
+        let (mut app, dir, _fake, _a) = two_marks_one_placed("console-unplaced-exit").await;
+        inject(&mut app, DapBody::Exited(0));
+        assert_eq!(console(&app), [NOT_PLACED_4]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_user_stop_tells_nothing_of_marks_never_placed() {
+        let (mut app, dir, mut fakes) = setup("console-unplaced-user-stop", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let _ = running(&mut app, &mut fakes).await;
+        answered(&mut app, &a, vec![1], vec![bp(json!({"id": 1, "verified": false, "reason": "pending"}))]);
+        app.debug.session.as_mut().unwrap().stop_requested = true;
+        inject(&mut app, DapBody::Exited(0));
+        assert!(console(&app).is_empty(), "{:?}", console(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn only_a_pending_mark_is_told() {
+        let (mut app, dir, mut fakes) = setup("console-unplaced-states", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        toggle(&mut app, &a, 2);
+        let _ = running(&mut app, &mut fakes).await;
+        answered(
+            &mut app,
+            &a,
+            vec![1, 2],
+            vec![bp(json!({"verified": false, "reason": "failed", "message": "no"})), bp(json!({"id": 3, "verified": true, "line": 3}))],
+        );
+        // No tick has run, so the adapter has not been told of this mark and no answer reaches it.
+        toggle(&mut app, &a, 4);
+        assert_eq!(state(&app, &a, 1).state, BpState::Failed);
+        assert_eq!(state(&app, &a, 2).state, BpState::Verified);
+        assert_eq!(state(&app, &a, 4).state, BpState::Idle);
+        let before = console(&app).len();
+        inject(&mut app, DapBody::Exited(0));
+        assert_eq!(console(&app).len(), before);
+        assert!(console(&app).iter().all(|t| !t.contains("not placed")), "{:?}", console(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_not_placed_line_is_a_warning_linked_to_the_users_line() {
+        let path = Path::new("/p/a.log");
+        let line = not_placed_line(path, 1).unwrap();
+        assert_eq!(line.text, "Breakpoint a.log:2 not placed: no code loaded for this line");
+        assert_eq!(line.severity, Some(Severity::Warning));
+        let link = line.link.unwrap();
+        assert_eq!((link.path.as_path(), link.line, &line.text[link.span]), (path, 1, "a.log:2"));
     }
 
     #[test]
