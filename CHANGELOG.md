@@ -56,6 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Debug under gdb: the Console no longer shows "No source file named" and "pending" on each start for a breakpoint that then works.
 - Toasts keep off the editor's gutter when room allows (breakpoints and the execution arrow stay readable at 80 columns beside one editor; with two split editors the second gutter can stay covered, since a narrower toast would not read), and they leave the lower half of the screen free.
 - A toast's time now starts when it is first drawn, so a toast held back by Settings or another overlay no longer expires unseen.
 - Drawing: text after an emoji with a variation selector (such as gdb's ❌️) no longer lands one column to the right, which left a stray letter or a missing border until the next full redraw.

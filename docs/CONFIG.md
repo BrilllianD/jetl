@@ -492,6 +492,8 @@ With gdb, a `program` or `cwd` that does not exist gives no error: gdb answers `
 with success and logs the failure only, so the session stays idle with `Debugging <name> with gdb`
 as its only sign, and Ctrl+F2 ends it.
 
+gdb loads the program only when the session starts, after it has been told the breakpoints, so it answers each one with "No source file named" and "pending". The Debug Console leaves those two lines out for the breakpoints set before the start (the debug log keeps them), and they stay for a breakpoint set later. Other adapters were not tried.
+
 Things to know about arguments and test runs: with `command = ["sh", "-c",
 script]` the first of `args` becomes `$0` of the script, not `$1`. A compound
 string such as `cd web && cargo test` passes `args` to its last command only.

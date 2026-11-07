@@ -61,6 +61,8 @@ pub(super) struct Live {
     pub(super) stop_requested: bool,
     /// What the adapter was last told, per source: never an empty list, a cleared source leaves it.
     pub(super) sent: BTreeMap<PathBuf, Vec<usize>>,
+    /// The breakpoints of the start that gdb has yet to speak of: `sent` at launch, less each pair `early_gdb_line` took.
+    pub(super) early: BTreeMap<PathBuf, Vec<usize>>,
     /// The sources in `sent` that had an open buffer at the last comparison.
     pub(super) open: BTreeSet<PathBuf>,
     /// The epoch of the last `Stopped` or `Running`; the tag of the requests the App makes.
@@ -277,6 +279,33 @@ fn var_item(v: &Variable) -> VarItem {
         reference: v.variables_reference,
         children: v.indexed_variables.max(0).saturating_add(v.named_variables.max(0)),
     }
+}
+
+/// Whether `output` is gdb's word on a breakpoint of the start, which it says for every one because `launch` loads the
+/// program only at `configurationDone`: `No source file named <path>.`, then `Breakpoint <n> (-source <path> -line <l>)
+/// pending.`, which uses up that entry of `early`. Anything else is the Console's, so another wording shows as gdb wrote it.
+fn early_gdb_line(output: &str, early: &mut BTreeMap<PathBuf, Vec<usize>>) -> bool {
+    if early.is_empty() {
+        return false;
+    }
+    let Some(text) = output.strip_suffix('\n') else { return false };
+    let named = text.strip_prefix("\u{274c}\u{fe0f} ").unwrap_or(text);
+    if let Some(path) = named.strip_prefix("No source file named ").and_then(|r| r.strip_suffix('.')) {
+        return early.contains_key(Path::new(path));
+    }
+    let Some((number, rest)) = text.strip_prefix("Breakpoint ").and_then(|t| t.split_once(" (-source ")) else { return false };
+    let Some((path, line)) = rest.strip_suffix(") pending.").and_then(|r| r.rsplit_once(" -line ")) else { return false };
+    if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    let Some(line) = line.parse::<usize>().ok().and_then(|l| l.checked_sub(1)) else { return false };
+    let Some(lines) = early.get_mut(Path::new(path)) else { return false };
+    let Some(at) = lines.iter().position(|l| *l == line) else { return false };
+    lines.remove(at);
+    if lines.is_empty() {
+        early.remove(Path::new(path));
+    }
+    true
 }
 
 fn verdict_line(source: &Path, line: usize, mark: &BreakpointMark) -> Option<RunLine> {
@@ -632,6 +661,7 @@ impl App {
             phase: Phase::Initializing,
             exit_code: None,
             stop_requested: false,
+            early: sent.clone(),
             sent,
             open,
             epoch: 0,
@@ -675,6 +705,7 @@ impl App {
                 if let Some(l) = self.debug.session.as_mut() {
                     l.exit_code = Some(c);
                 }
+                self.debug_program_seen();
             }
             DapBody::Error(e) => self.notify(Level::Error, e),
             DapBody::Stopped { epoch, event } => self.debug_stopped(epoch, event),
@@ -685,8 +716,12 @@ impl App {
             DapBody::BreakpointChanged(e) => self.debug_breakpoint_changed(&e),
             // Split and matched on the Console thread: a program can print 100 000 lines a second.
             DapBody::Output(e) => {
-                if let Some(l) = &self.debug.session {
-                    let _ = l.console.send(e);
+                if let Some(l) = self.debug.session.as_mut() {
+                    if e.category.as_deref() == Some("stdout") && early_gdb_line(&e.output, &mut l.early) {
+                        tracing::debug!("dap: not shown, said before the program loads: {}", e.output.trim_end());
+                    } else {
+                        let _ = l.console.send(e);
+                    }
                 }
             }
             DapBody::Started { capabilities } => {
@@ -712,8 +747,17 @@ impl App {
         self.layout.is_visible(ToolWindowId::Debug) && self.layout.maximized_window().is_none_or(|tw| tw == ToolWindowId::Debug)
     }
 
+    /// The program has run: gdb has no more to say of the start's breakpoints, and its `stdout` category is also the
+    /// debuggee's, so the gate on those lines closes at the first stop or the exit.
+    fn debug_program_seen(&mut self) {
+        if let Some(live) = self.debug.session.as_mut() {
+            live.early.clear();
+        }
+    }
+
     /// A stop: asks for the stack of the stopped thread, or for the threads when the event names none.
     fn debug_stopped(&mut self, epoch: u64, event: StoppedEvent) {
+        self.debug_program_seen();
         self.debug_panel.set_reason(Some(event.reason.clone()));
         // A shown window has the reason in its title; otherwise nothing says the program stopped. A stop does not move
         // focus, so a covering window stays.
@@ -3182,6 +3226,112 @@ pub(crate) mod tests {
         answered(&mut app, &closed, vec![0], vec![bp(json!({"verified": false, "reason": "failed", "message": "x"}))]);
         assert_eq!(console(&app).len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn early_lines_are_only_the_pair_for_a_start_breakpoint() {
+        let path = PathBuf::from("/p/a b/c.c");
+        let fresh = || BTreeMap::from([(path.clone(), vec![8usize, 0])]);
+        let mut map = fresh();
+        let mut take = |text: &str, want: bool, after: Option<Vec<usize>>| {
+            assert_eq!(early_gdb_line(text, &mut map), want, "{text:?}");
+            assert_eq!(map.get(&path).cloned(), after, "{text:?}");
+        };
+        take("\u{274c}\u{fe0f} No source file named /p/a b/c.c.\n", true, Some(vec![8, 0]));
+        take("Breakpoint 1 (-source /p/a b/c.c -line 9) pending.\n", true, Some(vec![0]));
+        take("No source file named /p/a b/c.c.\n", true, Some(vec![0]));
+        take("Breakpoint 2 (-source /p/a b/c.c -line 1) pending.\n", true, None);
+        take("No source file named /p/a b/c.c.\n", false, None);
+        for text in [
+            "No source file named /p/other.c.\n",
+            "Breakpoint 1 (-source /p/a b/c.c -line 2) pending.\n",
+            "Breakpoint 1 (-source /p/a b/c.c -line 0) pending.\n",
+            "Breakpoint x (-source /p/a b/c.c -line 9) pending.\n",
+            "Breakpoint 1 (-source /p/a b/c.c -line 9) pending.",
+            "see No source file named /p/a b/c.c.\n",
+            "\u{274c}\u{fe0f} No compiled code for line 9 in file \"/p/a b/c.c\".\n",
+            "No source file named /p/a b/c.c.\nmore\n",
+            "",
+        ] {
+            let mut map = fresh();
+            assert!(!early_gdb_line(text, &mut map), "{text:?}");
+            assert_eq!(map, fresh(), "{text:?}");
+        }
+    }
+
+    /// gdb's pair for `path`'s 1-based `line`, as two `stdout` events.
+    fn gdbs_pair(fake: &FakeAdapter, category: &str, path: &Path, line: usize) {
+        output(fake, category, &format!("No source file named {}.\n", path.display()));
+        output(fake, category, &format!("Breakpoint 1 (-source {} -line {line}) pending.\n", path.display()));
+    }
+
+    #[tokio::test]
+    async fn the_pair_of_a_start_breakpoint_stays_out_of_the_console() {
+        let (mut app, dir, mut fakes) = setup("console-early", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let (fake, _) = running(&mut app, &mut fakes).await;
+        gdbs_pair(&fake, "stdout", &a, 2);
+        output(&fake, "stdout", "marker\n");
+        console_until(&mut app, |x| console(x).contains(&"marker".to_string())).await;
+        assert_eq!(console(&app), ["marker"]);
+        gdbs_pair(&fake, "stdout", &a, 2);
+        output(&fake, "stdout", "marker2\n");
+        console_until(&mut app, |x| console(x).contains(&"marker2".to_string())).await;
+        let p = a.display();
+        assert_eq!(
+            console(&app),
+            [
+                "marker".to_string(),
+                format!("No source file named {p}."),
+                format!("Breakpoint 1 (-source {p} -line 2) pending."),
+                "marker2".into()
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn gdbs_words_on_another_path_or_channel_are_shown() {
+        let (mut app, dir, mut fakes) = setup("console-early-other", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let (fake, _) = running(&mut app, &mut fakes).await;
+        output(&fake, "stdout", "No source file named /p/other.c.\n");
+        gdbs_pair(&fake, "stderr", &a, 2);
+        output(&fake, "stdout", "marker\n");
+        console_until(&mut app, |x| console(x).contains(&"marker".to_string())).await;
+        let p = a.display();
+        assert_eq!(
+            console(&app),
+            [
+                "No source file named /p/other.c.".to_string(),
+                format!("No source file named {p}."),
+                format!("Breakpoint 1 (-source {p} -line 2) pending."),
+                "marker".into()
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_first_stop_closes_the_gate() {
+        for exit in [false, true] {
+            let (mut app, dir, mut fakes) = setup(&format!("console-early-gate-{exit}"), Order::LaunchEarly);
+            let a = six(&mut app);
+            toggle(&mut app, &a, 1);
+            let (mut fake, _) = running(&mut app, &mut fakes).await;
+            if exit {
+                inject(&mut app, DapBody::Exited(0));
+            } else {
+                stop_at(&mut app, &mut fake, 7, &a, 2).await;
+            }
+            gdbs_pair(&fake, "stdout", &a, 2);
+            output(&fake, "stdout", "marker\n");
+            console_until(&mut app, |x| console(x).contains(&"marker".to_string())).await;
+            assert_eq!(console(&app).len(), 3, "exit {exit}: {:?}", console(&app));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]

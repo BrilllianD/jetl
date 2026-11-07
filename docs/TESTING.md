@@ -1102,8 +1102,8 @@ cells. The script of the last run is `~/.claude/plans/backlog-run-24-partC-S7-fi
 2. Ctrl+G, `9`, Ctrl+F8, Shift+F9: the window appears with the title `Debug: demo · paused (breakpoint)`, `9▶`, no
    `Paused (` toast anywhere, and the caret still in the editor (`Ln 9,`).
 3. F8, F7, Shift+F8 step as in the stepping scenario; F9 ends the program. The Console, on the same screen, holds
-   `x=3 y=7` and the `café 😀` line, and the title ends `ended`. gdb's own console text (`No source file named ...`,
-   `Breakpoint 1 (...) pending.`) comes first; it is output like any other.
+   `x=3 y=7` and the `café 😀` line, and the title ends `ended`. gdb's `No source file named ...` and
+   `Breakpoint 1 (...) pending.` are not there; the log holds them after `dap: not shown` (yman 427).
 4. A click on `demo.c:9` in the Console puts the caret on `Ln 9,` of `demo.c` (Ctrl+G, `1` first). By key: Alt+F5
    focuses the window, End selects the last line, Up as often as the capture shows lines below the link, Enter.
 5. Alt+F5 with the window shown and the editor focused focuses it; again hides it; again shows it. With the window hidden,
@@ -1151,8 +1151,8 @@ scenario's steps first.
 
 1. Fresh state, `demo.c`, window hidden. Alt+F5: ` Frames ` and ` Console ` on a row of their own and the hint
    `Shift+F9 starts the selected configuration`. A click on ` Frames ` keeps the hint; a click on ` Console ` shows the Console.
-2. Ctrl+G 9, Ctrl+F8, Shift+F9: `paused (breakpoint)`, `9▶`. The Console is still the tab and holds gdb's own text
-   (`No source file named /tmp/jetl-dap-demo/demo.c.`, `Breakpoint 1 (...) pending.`), not `No output yet`. The log holds
+2. Ctrl+G 9, Ctrl+F8, Shift+F9: `paused (breakpoint)`, `9▶`. The Console is still the tab. It shows `No output yet`: the two
+   lines gdb gives for a breakpoint before the program loads are not shown (yman 427). The log holds
    one `-> stackTrace` and one `-> threads`, and `dap: threads [Thread { id: 1, name: "demo" }]`: gdb names the thread
    after the program.
 3. Alt+F5 (focus), Alt+Right: `Thread 1: demo`, `main`, `demo.c:9`. F7: title `paused (step)`, `4▶`, rows `add demo.c:4`
@@ -1205,8 +1205,8 @@ run from `pgrep -f '[g]db -q -i=dap'` or `pgrep -x demo` first.
 
 1. Start jetl with `demo.c` as its path argument. Ctrl+G `5`, Ctrl+F8, Shift+F9: `paused (breakpoint)`, and `5▶` (at 80x24 only once the Warning
    toast over line 5 has gone).
-2. Click ` Console `. It holds gdb's `❌️ No source file named ...` and the fixture's `❌️ boom ...` line. Each of those
-   rows has its closing border in the same column as the row above, and the emoji is visible.
+2. Click ` Console `. It holds the fixture's `❌️ boom ...` line. That
+   row has its closing border in the same column as the row above, and the emoji is visible.
 3. Click ` Frames `. The thread row reads `Thread 1: demo ▾` with nothing to its right up to the border. No stray letter
    anywhere in the window.
 4. Click ` Console `, then ` Frames `, then ` Console `, capturing each: as in 2 and 3.
@@ -1276,7 +1276,7 @@ own capture (a toast can cover code, not the gutter in the default layout). The 
    then the title `Debug: cargo build · paused (breakpoint)` and `2▶`. The default block for a detected Cargo task
    works with no file.
 2. The Console (Alt+F5, Home) starts with `$ cargo build --message-format=json`, then `Compiling r` and `Finished`;
-   no line holds `"reason"`, and gdb's own `No source file named` line follows (yman 427).
+   no line holds `"reason"`, and no `No source file named` line follows (yman 427).
 3. F9: `x=3` in the Console and `Debug session ended, exit code 0`. Shift+F9 again, up to date: it stops again and the
    Console has `Finished` and no `Compiling`.
 4. A type error in `main.rs`, Shift+F9: the title `build failed`, a toast naming `exit code 101`, the `error[E0308]`
