@@ -1,6 +1,8 @@
 //! Symbols from tree-sitter tags queries: the extraction shared by the
 //! Structure window (`panel.rs`, the active buffer's live tree) and the
 //! project symbol index (`index.rs`, files parsed off the main thread).
+//! Rust calls inside macro arguments and `macro_rules!` bodies come from a
+//! token-tree walk (`rust_macro_calls`), not from the tags query.
 
 pub mod cache;
 pub mod graph;
@@ -75,15 +77,16 @@ type RawRef = (Range<usize>, usize, &'static str, String);
 /// `token_repetition`s, where the grammar gives only a flat `token_tree`: an
 /// `identifier` immediately followed by a `(`-delimited `token_tree` is a
 /// `call`, unless the token before it is `fn` or `struct` (a declaration).
-/// Attributes are skipped. This is not a query: the anchor `.` ignores
-/// anonymous nodes and a query cannot see the group's delimiter. Iterative,
+/// Attributes (`#[..]`, `#![..]`, also as plain tokens) are skipped. This is
+/// not a query: the anchor `.` ignores anonymous nodes and a query cannot see the group's delimiter. Iterative,
 /// so deep nesting cannot overflow the stack. Rows get pattern `usize::MAX`,
 /// so a query row on the same range wins.
 fn rust_macro_calls(tree: &Tree, text: impl Fn(tree_sitter::Node) -> String, out: &mut Vec<RawRef>) {
     let mut cur = tree.walk();
     loop {
         let node = cur.node();
-        if matches!(node.kind(), "token_tree" | "token_repetition") {
+        let skip = matches!(node.kind(), "attribute_item" | "inner_attribute_item") || is_token_attribute(node);
+        if !skip && matches!(node.kind(), "token_tree" | "token_repetition") {
             let kids: Vec<tree_sitter::Node> = node.children(&mut node.walk()).collect();
             for (i, k) in kids.iter().enumerate() {
                 let call = k.kind() == "identifier"
@@ -95,7 +98,6 @@ fn rust_macro_calls(tree: &Tree, text: impl Fn(tree_sitter::Node) -> String, out
                 }
             }
         }
-        let skip = matches!(node.kind(), "attribute_item" | "inner_attribute_item");
         if !skip && cur.goto_first_child() {
             continue;
         }
@@ -104,6 +106,19 @@ fn rust_macro_calls(tree: &Tree, text: impl Fn(tree_sitter::Node) -> String, out
                 return;
             }
         }
+    }
+}
+
+/// A `[..]` token tree after `#` or `#!`: an attribute inside a token tree.
+fn is_token_attribute(node: tree_sitter::Node) -> bool {
+    if node.kind() != "token_tree" || node.child(0).is_none_or(|d| d.kind() != "[") {
+        return false;
+    }
+    let Some(p) = node.prev_sibling() else { return false };
+    match p.kind() {
+        "#" => true,
+        "!" => p.prev_sibling().is_some_and(|h| h.kind() == "#"),
+        _ => false,
     }
 }
 
@@ -590,6 +605,14 @@ mod tests {
         );
         let def = crate::editor::syntax::detect(std::path::Path::new("a.rs")).unwrap();
         assert_eq!(extract_text(def, &mut tree_sitter::Parser::new(), src), syms);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn rust_macro_attributes_are_not_calls() {
+        let src = "macro_rules! m {\n    () => {\n        #[derive(Debug)]\n        #![allow(x)]\n        struct S;\n        helper(1)\n    };\n}\n";
+        let (_, got) = refs("a.rs", src).unwrap();
+        assert_eq!(got, [row("helper", "call", 5, 8, Some(0))]);
     }
 
     #[test]

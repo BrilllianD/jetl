@@ -1540,9 +1540,13 @@ mod tests {
         goto(&mut app, 2, 26);
         act(&mut app, LspAction::FindUsages);
         // SCIP is not asked: the usages come from the tags index (the two path
-        // calls `util::helper(..)` and the definition), titled unverified.
+        // calls `util::helper(..)`; definitions are not listed), titled unverified.
         let p = app.palette.as_ref().expect("Locations");
         assert_eq!(p.kind, PaletteKind::Locations);
+        let mut shown = p.shown_locations();
+        shown.sort();
+        let at = |f: &str, l| (app.workspace.root.join(f), l);
+        assert_eq!(shown, [at("src/main.rs", 2), at("src/main.rs", 3)]);
         let buf = draw(&mut app, 100, 30);
         assert!((0..30).any(|y| row(&buf, y).contains("Usages of helper (unverified)")));
         assert!(!(0..30).any(|y| row(&buf, y).contains("(SCIP)")));
