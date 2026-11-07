@@ -1050,8 +1050,8 @@ socket, so the pane's pid is jetl's (check `/proc/<pid>/comm`). Start only when 
 2. The matrix, 12 cells: the debuggee running, and paused at a breakpoint (`Ctrl+G`, `3`, Enter, Ctrl+F8 on the `sleep`
    line before Shift+F9; wait for `paused (breakpoint)`), crossed with gdb normal and gdb stopped, crossed with `KILL`,
    `TERM` and `HUP`. Every cell reads both pids gone at +2 s, with the pids recorded before the kill.
-   Before this change a stopped gdb stayed `T` and its debuggee `S` (`t` when paused), traced by it, until the
-   `kill -CONT`, for all three signals. One more cell at 120x40: gdb stopped, running, `KILL`, the same reading.
+   Before this change a stopped gdb stayed `T` and its debuggee `S`, traced by it, until the `kill -CONT`, for all
+   three signals (measured under jetl with the debuggee running; `t` when paused comes from a probe with another parent). One more cell at 120x40: gdb stopped, running, `KILL`, the same reading.
 3. An idle session stays: Shift+F9 and nothing else for 20 s, past the blocking pool's 10 s idle keep-alive. gdb and the
    debuggee still run, and `TracerPid` is unchanged. Ctrl+F2: `Debug session stopped`, neither left. If gdb dies
    here, `debug_launch` is no longer on the main loop's thread.

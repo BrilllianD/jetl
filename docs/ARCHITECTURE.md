@@ -499,7 +499,7 @@ its busy id before the generation check, so the spinner never sticks.
   (`PR_SET_PDEATHSIG` = SIGKILL, Linux only, the one signal a stopped process acts on), and its death takes the debuggee
   through ptrace. The kernel's rule is about the forking thread, so this has to be called on the main loop:
   `debug_launch` is, because `main` awaits `App::run` itself. Other adapters are not tied, since they may clean up on EOF
-  and could not be tried; killing jetl with one of them stopped can leave it and its debuggee. A child the debuggee
+  and could not be tried; killing jetl with one of them stopped can leave it and its debuggee. The tie goes by the adapter's name, so a `command` under `[debug.adapters.gdb]` that wraps gdb and cleans up after it loses that cleanup to SIGKILL. A child the debuggee
   forked is out of reach of all of this, on an ordinary Stop too.
 - Lists keep their wheel scroll: `ListState::set_viewport` and `fit` bound
   the offset without pulling the view back to the selection.
