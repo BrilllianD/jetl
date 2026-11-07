@@ -1886,10 +1886,16 @@ pub(crate) mod tests {
         let old = app.workspace.generation;
         // The root switches while the read is in flight.
         app.workspace.generation += 1;
-        app.handle_msg(AppMsg::FileLoaded { generation: old, path: path.clone(), result: Ok(b"old".to_vec()), focus: true });
+        app.handle_msg(AppMsg::FileLoaded { generation: old, path: path.clone(), result: Ok(b"old".to_vec()), focus: true, view: None });
         assert!(app.editor.buffers.is_empty());
         let current = app.workspace.generation;
-        app.handle_msg(AppMsg::FileLoaded { generation: current, path: path.clone(), result: Ok(b"new".to_vec()), focus: true });
+        app.handle_msg(AppMsg::FileLoaded {
+            generation: current,
+            path: path.clone(),
+            result: Ok(b"new".to_vec()),
+            focus: true,
+            view: None,
+        });
         assert_eq!(app.editor.buffers.len(), 1);
         assert_eq!(app.editor.buffers[0].text(), "new");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1916,7 +1922,7 @@ pub(crate) mod tests {
         let (mut app, dir) = test_app("blob-seq");
         let path = app.workspace.root.join("a.txt");
         let g = app.workspace.generation;
-        app.handle_msg(AppMsg::FileLoaded { generation: g, path: path.clone(), result: Ok(b"x".to_vec()), focus: true });
+        app.handle_msg(AppMsg::FileLoaded { generation: g, path: path.clone(), result: Ok(b"x".to_vec()), focus: true, view: None });
         let blob = |seq: u64, text: &str| {
             AppMsg::Git(GitMsg::Blob {
                 generation: g,
@@ -1937,7 +1943,8 @@ pub(crate) mod tests {
         let (mut app, dir) = test_app("close-dirty");
         let root = app.workspace.root.clone();
         let g = app.workspace.generation;
-        let load = |name: &str| AppMsg::FileLoaded { generation: g, path: root.join(name), result: Ok(b"text".to_vec()), focus: true };
+        let load =
+            |name: &str| AppMsg::FileLoaded { generation: g, path: root.join(name), result: Ok(b"text".to_vec()), focus: true, view: None };
         app.handle_msg(load("a.txt"));
         app.handle_msg(load("b.txt"));
         app.perform(Action::Editor(EditorAction::InsertText("dirty ".into())));
@@ -2006,7 +2013,7 @@ pub(crate) mod tests {
         let root = app.workspace.root.clone();
         let g = app.workspace.generation;
         for name in ["a.txt", "b.txt", "c.txt"] {
-            app.handle_msg(AppMsg::FileLoaded { generation: g, path: root.join(name), result: Ok(b"x".to_vec()), focus: true });
+            app.handle_msg(AppMsg::FileLoaded { generation: g, path: root.join(name), result: Ok(b"x".to_vec()), focus: true, view: None });
             app.perform(Action::Editor(EditorAction::InsertText("y".into())));
         }
         let (tree, status) = (app.project.refresh_requests(), app.git.status_requests());
@@ -2036,7 +2043,13 @@ pub(crate) mod tests {
         let path = app.workspace.root.join(name);
         std::fs::write(&path, text).unwrap();
         let generation = app.workspace.generation;
-        app.handle_msg(AppMsg::FileLoaded { generation, path: path.clone(), result: Ok(text.as_bytes().to_vec()), focus: true });
+        app.handle_msg(AppMsg::FileLoaded {
+            generation,
+            path: path.clone(),
+            result: Ok(text.as_bytes().to_vec()),
+            focus: true,
+            view: None,
+        });
         path
     }
 
@@ -2426,7 +2439,7 @@ pub(crate) mod tests {
         let g = app.workspace.generation;
         let b_path = root.join("src/b.rs");
         let bytes = std::fs::read(&b_path).unwrap();
-        app.handle_msg(AppMsg::FileLoaded { generation: g, path: b_path.clone(), result: Ok(bytes), focus: true });
+        app.handle_msg(AppMsg::FileLoaded { generation: g, path: b_path.clone(), result: Ok(bytes), focus: true, view: None });
         assert_eq!(app.editor.active_path(), Some(b_path.as_path()));
         assert_eq!(app.editor.status_position().as_deref(), Some("Ln 1, Col 5"));
         app.editor.force_close(app.editor.index_of(&b_path).unwrap());

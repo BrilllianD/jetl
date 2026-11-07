@@ -32,6 +32,8 @@ pub enum AppMsg {
         path: PathBuf,
         result: std::io::Result<Vec<u8>>,
         focus: bool,
+        /// A read for the debugger: the ticket of `DebugState::view` when it began. `None` for every other open.
+        view: Option<u64>,
     },
     Git(crate::git::GitMsg),
     /// yman results (`yman::YmanService`), tagged with the workspace generation.

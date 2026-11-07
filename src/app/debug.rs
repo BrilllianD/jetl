@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 
 use super::App;
+use super::msg::GotoTarget;
 use crate::actions::{Action, DebugAction};
 use crate::dap::build::{Artifact, BuildTags, drive_build};
 use crate::dap::client::{DapClient, SHUTDOWN_LIMIT};
@@ -125,6 +126,11 @@ pub struct DebugState {
     window_shown: bool,
     building: Option<Building>,
     choice: Option<Choice>,
+    /// The read the debugger is waiting for, as a ticket and a 0-based line: the newest stop's or choice's, if it needed one.
+    /// A read with another ticket is over, and `debug_file_loaded` drops it. Never `App::pending_goto`, which is the user's.
+    view: Option<(u64, usize)>,
+    /// The last ticket handed out.
+    next_view: u64,
 }
 
 impl DebugState {
@@ -818,6 +824,8 @@ impl App {
     /// A stop: asks for the stack of the stopped thread, or for the threads when the event names none.
     fn debug_stopped(&mut self, epoch: u64, event: StoppedEvent) {
         self.debug_program_seen();
+        // The earlier stop's or choice's read is over, even if this stop has no file to show.
+        self.debug.view = None;
         self.debug_panel.set_reason(Some(event.reason.clone()));
         // A shown window has the reason in its title; otherwise nothing says the program stopped. A stop does not move
         // focus, so a covering window stays.
@@ -1097,7 +1105,7 @@ impl App {
                 tracing::debug!("dap: execution point {}:{line}", path.display());
                 self.editor.set_execution_point(Some(ExecutionPoint { path: path.clone(), line }));
                 if open {
-                    self.open_file_at_unfocused(path, line, 0);
+                    self.debug_open_view(path, line, false);
                 }
             }
             None => {
@@ -1121,12 +1129,41 @@ impl App {
     /// Shows a frame in the editor. The line is marked unless it is where the arrow is. A frame with no file moves nothing.
     fn debug_show_row(&mut self, row: &FrameRow, focus: bool) {
         let Some((path, line)) = row.location.clone() else {
+            self.debug.view = None;
             return self.editor.set_selected_frame(None);
         };
         let here = ExecutionPoint { path: path.clone(), line };
         let marked = self.editor.execution_point() != Some(&here);
         self.editor.set_selected_frame(marked.then_some(here));
-        if focus { self.open_file_at(path, line, 0) } else { self.open_file_at_unfocused(path, line, 0) }
+        self.debug_open_view(path, line, focus);
+    }
+
+    /// Shows a place for a stop, a frame choice or Alt+F10. Any read still in flight for an earlier one is over.
+    fn debug_open_view(&mut self, path: PathBuf, line: usize, focus: bool) {
+        self.debug.view = None;
+        if self.editor.merge_active() {
+            return self.notify(Level::Info, crate::editor::merge::BUSY);
+        }
+        if self.editor.index_of(&path).is_some() {
+            self.open_file(path, focus);
+            self.goto_target(GotoTarget::Char { line, col: 0 });
+        } else {
+            self.debug.next_view += 1;
+            let ticket = self.debug.next_view;
+            self.debug.view = Some((ticket, line));
+            self.read_file(path, focus, Some(ticket));
+        }
+    }
+
+    /// A read `debug_open_view` started. Unless it is the newest goal and the program is still paused, it is dropped whole,
+    /// a failure included: no tab, no goto, no focus, no toast.
+    pub(super) fn debug_file_loaded(&mut self, ticket: u64, path: PathBuf, result: std::io::Result<Vec<u8>>, focus: bool) {
+        let goal = self.debug.view.filter(|(t, _)| *t == ticket && self.debug.suspended());
+        let Some((_, line)) = goal else {
+            return tracing::debug!("dropping the late read of {}", path.display());
+        };
+        self.debug.view = None;
+        self.file_loaded(path, result, focus, Some(GotoTarget::Char { line, col: 0 }));
     }
 
     fn debug_choose_thread(&mut self) {
@@ -1165,6 +1202,7 @@ impl App {
         let epoch = live.epoch;
         let seq = self.debug_panel.select_thread(thread);
         self.editor.set_selected_frame(None);
+        self.debug.view = None;
         let tag = DapTag { epoch, kind: TagKind::Frames { thread, seq } };
         let arguments = json!({"threadId": thread, "startFrame": 0, "levels": 20});
         self.debug.send(Command::Request { command: "stackTrace".into(), arguments, tag });
@@ -1206,7 +1244,7 @@ impl App {
         };
         self.editor.set_selected_frame(None);
         self.debug_panel.select_top_at(&p.path, p.line);
-        self.open_file_at(p.path, p.line, 0);
+        self.debug_open_view(p.path, p.line, true);
     }
 
     /// An answer to the newest `setBreakpoints` of a source; results are positional. A closed file has no marks to
@@ -4578,35 +4616,274 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn two_quick_choices_end_on_the_last() {
-        let (mut app, dir, mut fakes) = setup("frames-quick", Order::LaunchEarly);
-        let a = six(&mut app);
-        let b = app.workspace.root.join("b.log");
-        let d = app.workspace.root.join("d.log");
-        std::fs::write(&b, "b0\nb1\nb2\nb3\n").unwrap();
-        std::fs::write(&d, "d0\nd1\nd2\nd3\nd4\n").unwrap();
-        let (mut fake, _) = running(&mut app, &mut fakes).await;
-        let frames = vec![frame_at(0, "top", &a, 3), frame_at(1, "mid", &b, 2), frame_at(2, "low", &d, 4)];
-        stop_listed(&mut app, &mut fake, 7, frames, json!([{"id": 7}])).await;
-        pump_until(&mut app, |x| point(x).is_some()).await;
-        in_frames(&mut app);
-        press(&mut app, KeyCode::Down);
-        press(&mut app, KeyCode::Down);
-        // Both reads are in flight; they are handled in the order of the choices, whichever ends first.
-        let mut loaded = Vec::new();
-        while loaded.len() < 2 {
+        for d_first in [false, true] {
+            let (mut app, dir, mut fakes) = setup(&format!("frames-quick-{d_first}"), Order::LaunchEarly);
+            let a = six(&mut app);
+            let b = app.workspace.root.join("b.log");
+            let d = app.workspace.root.join("d.log");
+            std::fs::write(&b, "b0\nb1\nb2\nb3\n").unwrap();
+            std::fs::write(&d, "d0\nd1\nd2\nd3\nd4\n").unwrap();
+            let (mut fake, _) = running(&mut app, &mut fakes).await;
+            let frames = vec![frame_at(0, "top", &a, 3), frame_at(1, "mid", &b, 2), frame_at(2, "low", &d, 4)];
+            stop_listed(&mut app, &mut fake, 7, frames, json!([{"id": 7}])).await;
+            pump_until(&mut app, |x| point(x).is_some()).await;
+            in_frames(&mut app);
+            press(&mut app, KeyCode::Down);
+            press(&mut app, KeyCode::Down);
+            // Both reads are in flight; whichever lands first, the view ends on the last choice.
+            let mut loaded = Vec::new();
+            while loaded.len() < 2 {
+                match tokio::time::timeout(std::time::Duration::from_secs(5), app.bus_rx.recv()).await.expect("a file read in time") {
+                    Some(m @ AppMsg::FileLoaded { .. }) => loaded.push(m),
+                    Some(_) => {}
+                    None => panic!("bus closed"),
+                }
+            }
+            loaded.sort_by_key(|m| matches!(m, AppMsg::FileLoaded { path, .. } if *path == d) != d_first);
+            for m in loaded {
+                app.handle_msg(m);
+            }
+            assert_eq!(app.editor.active_path(), Some(d.as_path()), "d_first {d_first}");
+            assert_eq!(caret(&app), 3, "d_first {d_first}");
+            assert_eq!(selected(&app), Some((d, 3)), "d_first {d_first}");
+            assert_eq!(app.editor.index_of(&b), None, "the first choice is over");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// Handles the adapter's messages until a file read lands, and returns the read unhandled.
+    async fn held_read(app: &mut App) -> AppMsg {
+        loop {
             match tokio::time::timeout(std::time::Duration::from_secs(5), app.bus_rx.recv()).await.expect("a file read in time") {
-                Some(m @ AppMsg::FileLoaded { .. }) => loaded.push(m),
+                Some(m @ AppMsg::FileLoaded { .. }) => return m,
+                Some(m @ AppMsg::Dap(_)) => app.handle_msg(m),
                 Some(_) => {}
                 None => panic!("bus closed"),
             }
         }
-        loaded.sort_by_key(|m| matches!(m, AppMsg::FileLoaded { path, .. } if *path == d));
-        for m in loaded {
-            app.handle_msg(m);
-        }
-        assert_eq!(app.editor.active_path(), Some(d.as_path()));
+    }
+
+    /// `a.log` open, `b.log` written and not opened, a running session; a stop in `b.log` line 3 has its read held back.
+    async fn stopped_in_unopened(name: &str) -> (App, PathBuf, FakeAdapter, PathBuf, PathBuf, AppMsg) {
+        let (mut app, dir, mut fakes) = setup(name, Order::LaunchEarly);
+        let a = six(&mut app);
+        let b = app.workspace.root.join("b.log");
+        std::fs::write(&b, "b0\nb1\nb2\nb3\n").unwrap();
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        stop(&mut app, &mut fake, 7, frame(&b, 3)).await;
+        let held = held_read(&mut app).await;
+        (app, dir, fake, a, b, held)
+    }
+
+    #[tokio::test]
+    async fn a_read_after_the_stop_ended_moves_nothing() {
+        let (mut app, dir, mut fake, a, b, held) = stopped_in_unopened("late-ended").await;
+        press(&mut app, KeyCode::F(8));
+        let next = fake.recv("next").await;
+        fake.respond(&next, json!({}));
+        pump_until(&mut app, |x| point(x).is_none()).await;
+        app.handle_msg(held);
+        assert_eq!(app.editor.active_path(), Some(a.as_path()));
+        assert_eq!(caret(&app), 0);
+        assert_eq!(app.editor.index_of(&b), None, "no tab");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_read_while_stopping_moves_nothing() {
+        let (mut app, dir, _fake, a, b, held) = stopped_in_unopened("late-stopping").await;
+        inject(&mut app, DapBody::Phase(Phase::Stopping));
+        app.handle_msg(held);
+        assert_eq!(app.editor.active_path(), Some(a.as_path()));
+        assert_eq!(app.editor.index_of(&b), None, "no tab");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_later_stop_in_an_open_file_beats_the_read() {
+        let (mut app, dir, mut fake, a, b, held) = stopped_in_unopened("late-stop-open").await;
+        stop_at(&mut app, &mut fake, 7, &a, 4).await;
+        app.handle_msg(held);
+        assert_eq!(app.editor.active_path(), Some(a.as_path()));
         assert_eq!(caret(&app), 3);
-        assert_eq!(selected(&app), Some((d, 3)));
+        assert_eq!(app.editor.index_of(&b), None, "no tab");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_later_stop_with_no_source_ends_the_read() {
+        let (mut app, dir, mut fake, a, b, held) = stopped_in_unopened("late-stop-nosource").await;
+        stop(&mut app, &mut fake, 7, json!({"id": 0, "name": "libc", "line": 0, "column": 0})).await;
+        pump_until(&mut app, |x| texts(x).iter().any(|t| t.starts_with("Paused in libc"))).await;
+        app.handle_msg(held);
+        assert_eq!(app.editor.active_path(), Some(a.as_path()));
+        assert_eq!(app.editor.index_of(&b), None, "no tab");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_choice_in_an_open_file_beats_the_stops_read() {
+        let (mut app, dir, mut fakes) = setup("late-choice-open", Order::LaunchEarly);
+        let a = six(&mut app);
+        let b = app.workspace.root.join("b.log");
+        std::fs::write(&b, "b0\nb1\nb2\nb3\n").unwrap();
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        let frames = vec![frame_at(0, "top", &b, 3), frame_at(1, "caller", &a, 4)];
+        stop_frames(&mut app, &mut fake, 7, frames, json!([{"id": 7}])).await;
+        let held = held_read(&mut app).await;
+        pump_until(&mut app, |x| !x.debug_panel.threads().is_empty()).await;
+        in_frames(&mut app);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.editor.active_path(), Some(a.as_path()));
+        assert_eq!(caret(&app), 3);
+        app.handle_msg(held);
+        assert_eq!(app.editor.active_path(), Some(a.as_path()));
+        assert_eq!(caret(&app), 3);
+        assert_eq!(app.editor.index_of(&b), None, "no tab");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_chosen_thread_ends_the_read() {
+        let (mut app, dir, mut fakes) = setup("late-thread", Order::LaunchEarly);
+        let a = six(&mut app);
+        let b = app.workspace.root.join("b.log");
+        std::fs::write(&b, "b0\nb1\nb2\nb3\n").unwrap();
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        let frames = vec![frame_at(0, "top", &a, 3), frame_at(1, "caller", &b, 2)];
+        stop_listed(&mut app, &mut fake, 7, frames, json!([{"id": 7}, {"id": 4}])).await;
+        in_frames(&mut app);
+        press(&mut app, KeyCode::Down);
+        let held = held_read(&mut app).await;
+        app.perform(Action::Debug(DebugAction::SelectThread(4)));
+        app.handle_msg(held);
+        assert_eq!(app.editor.active_path(), Some(a.as_path()));
+        assert_eq!(app.editor.index_of(&b), None, "no tab");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_frame_with_no_file_ends_the_read() {
+        let (mut app, dir, mut fakes) = setup("late-nofile", Order::LaunchEarly);
+        let a = six(&mut app);
+        let b = app.workspace.root.join("b.log");
+        std::fs::write(&b, "b0\nb1\nb2\nb3\n").unwrap();
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        let frames =
+            vec![frame_at(0, "top", &a, 3), frame_at(1, "caller", &b, 2), json!({"id": 2, "name": "libc", "line": 0, "column": 0})];
+        stop_listed(&mut app, &mut fake, 7, frames, json!([{"id": 7}])).await;
+        app.debug_choose_frame(1, false);
+        let held = held_read(&mut app).await;
+        app.debug_choose_frame(2, false);
+        app.handle_msg(held);
+        assert_eq!(app.editor.active_path(), Some(a.as_path()));
+        assert_eq!(app.editor.index_of(&b), None, "no tab");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_stop_read_leaves_the_users_goto() {
+        for user_first in [true, false] {
+            let (mut app, dir, mut fakes) = setup(&format!("late-goto-{user_first}"), Order::LaunchEarly);
+            let _a = six(&mut app);
+            let b = app.workspace.root.join("b.log");
+            let u = app.workspace.root.join("u.log");
+            std::fs::write(&b, "b0\nb1\nb2\nb3\n").unwrap();
+            std::fs::write(&u, "u0\nu1\nu2\nu3\nu4\nu5\n").unwrap();
+            let (mut fake, _) = running(&mut app, &mut fakes).await;
+            app.open_file_at(u.clone(), 4, 0);
+            let user = held_read(&mut app).await;
+            stop(&mut app, &mut fake, 7, frame(&b, 3)).await;
+            let debug = held_read(&mut app).await;
+            let want = Some((u.clone(), GotoTarget::Char { line: 4, col: 0 }));
+            assert_eq!(app.pending_goto, want, "not overwritten");
+            if user_first {
+                app.handle_msg(user);
+                assert_eq!(app.editor.active_path(), Some(u.as_path()));
+                assert_eq!(caret(&app), 4);
+                assert_eq!(app.pending_goto, None);
+                app.handle_msg(debug);
+                assert_eq!(app.editor.active_path(), Some(b.as_path()));
+                assert_eq!(caret(&app), 2);
+            } else {
+                app.handle_msg(debug);
+                assert_eq!(app.editor.active_path(), Some(b.as_path()));
+                assert_eq!(caret(&app), 2);
+                assert_eq!(app.pending_goto, want, "still the user's");
+                app.handle_msg(user);
+                assert_eq!(app.editor.active_path(), Some(u.as_path()));
+                assert_eq!(caret(&app), 4);
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stop_read_takes_its_own_line_when_the_user_asked_for_the_same_file() {
+        let (mut app, dir, mut fakes) = setup("late-goto-same", Order::LaunchEarly);
+        let _a = six(&mut app);
+        let b = app.workspace.root.join("b.log");
+        std::fs::write(&b, "b0\nb1\nb2\nb3\n").unwrap();
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        app.open_file_at(b.clone(), 3, 0);
+        let user = held_read(&mut app).await;
+        stop(&mut app, &mut fake, 7, frame(&b, 2)).await;
+        let debug = held_read(&mut app).await;
+        app.handle_msg(debug);
+        assert_eq!(app.editor.active_path(), Some(b.as_path()));
+        assert_eq!(caret(&app), 1, "the stop's line, not the user's");
+        assert_eq!(app.pending_goto, Some((b.clone(), GotoTarget::Char { line: 3, col: 0 })), "still the user's");
+        drop(user);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_focused_choices_read_takes_focus_when_it_lands() {
+        let (mut app, dir, mut fakes) = setup("late-focus-choice", Order::LaunchEarly);
+        let a = six(&mut app);
+        let b = app.workspace.root.join("b.log");
+        std::fs::write(&b, "b0\nb1\nb2\nb3\n").unwrap();
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        let frames = vec![frame_at(0, "top", &a, 3), frame_at(1, "caller", &b, 2)];
+        stop_listed(&mut app, &mut fake, 7, frames, json!([{"id": 7}])).await;
+        in_frames(&mut app);
+        app.debug_choose_frame(1, true);
+        let held = held_read(&mut app).await;
+        assert!(app.focus.is(PanelId::Debug));
+        app.handle_msg(held);
+        assert_eq!(app.editor.active_path(), Some(b.as_path()));
+        assert_eq!(caret(&app), 1);
+        assert!(app.focus.is(PanelId::Editor));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_stop_read_does_not_take_focus() {
+        let (mut app, dir, mut fakes) = setup("late-focus-stop", Order::LaunchEarly);
+        let _a = six(&mut app);
+        let b = app.workspace.root.join("b.log");
+        std::fs::write(&b, "b0\nb1\nb2\nb3\n").unwrap();
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        app.focus.set(PanelId::Debug);
+        stop(&mut app, &mut fake, 7, frame(&b, 3)).await;
+        let held = held_read(&mut app).await;
+        app.handle_msg(held);
+        assert_eq!(app.editor.active_path(), Some(b.as_path()));
+        assert_eq!(caret(&app), 2);
+        assert!(app.focus.is(PanelId::Debug));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_stale_read_that_failed_is_silent() {
+        let (mut app, dir, mut fake, a, b, held) = stopped_in_unopened("late-failed").await;
+        stop_at(&mut app, &mut fake, 7, &a, 4).await;
+        let AppMsg::FileLoaded { view, .. } = held else { panic!("a file read") };
+        let toasts = texts(&app).len();
+        let generation = app.workspace.generation;
+        app.handle_msg(AppMsg::FileLoaded { generation, path: b.clone(), result: Err(std::io::Error::other("gone")), focus: false, view });
+        assert_eq!(texts(&app).len(), toasts, "{:?}", texts(&app));
+        assert_eq!(app.editor.index_of(&b), None, "no tab");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

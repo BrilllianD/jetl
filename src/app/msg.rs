@@ -21,14 +21,16 @@ impl App {
         self.dirty_frame = true;
         match msg {
             AppMsg::ConfigChanged { files } => self.config_changed(files),
-            AppMsg::FileLoaded { generation, path, result, focus } => {
-                if generation == self.workspace.generation {
-                    self.file_loaded(path, result, focus);
-                } else {
+            AppMsg::FileLoaded { generation, path, result, focus, view } => {
+                if generation != self.workspace.generation {
                     // Its queued revert, if any, already went with the root switch
                     // (`App::pending_reverts_dropped`); a `pending_revert` entry for the
                     // same path now belongs to the new root and is left alone.
                     tracing::debug!("dropping stale load of {}", path.display());
+                } else if let Some(ticket) = view {
+                    self.debug_file_loaded(ticket, path, result, focus);
+                } else {
+                    self.file_loaded(path, result, focus, None);
                 }
             }
             AppMsg::Git(m) => self.on_git_msg(m),
@@ -411,35 +413,30 @@ impl App {
 
     /// Open a file with the caret at a 0-based line and char column.
     pub fn open_file_at(&mut self, path: PathBuf, line: usize, col: usize) {
-        self.open_file_goto(path, GotoTarget::Char { line, col }, true);
-    }
-
-    /// As [`App::open_file_at`], leaving focus where it is: a debug stop must not take keys from a panel or the Terminal.
-    pub(super) fn open_file_at_unfocused(&mut self, path: PathBuf, line: usize, col: usize) {
-        self.open_file_goto(path, GotoTarget::Char { line, col }, false);
+        self.open_file_goto(path, GotoTarget::Char { line, col });
     }
 
     /// Open a file with the caret at an LSP position (0-based line, UTF-16
     /// column), converted against the text once it is loaded.
     pub fn open_file_at_utf16(&mut self, path: PathBuf, pos: lsp_types::Position) {
-        self.open_file_goto(path, GotoTarget::Utf16(pos), true);
+        self.open_file_goto(path, GotoTarget::Utf16(pos));
     }
 
-    fn open_file_goto(&mut self, path: PathBuf, target: GotoTarget, focus: bool) {
+    fn open_file_goto(&mut self, path: PathBuf, target: GotoTarget) {
         if self.editor.merge_active() {
             return self.notify(Level::Info, crate::editor::merge::BUSY);
         }
         if self.editor.index_of(&path).is_some() {
-            self.open_file(path, focus);
+            self.open_file(path, true);
             self.goto_target(target);
         } else {
             self.pending_goto = Some((path.clone(), target));
-            self.open_file(path, focus);
+            self.open_file(path, true);
         }
     }
 
     /// Put the active buffer's caret at `target` (remembered for back).
-    fn goto_target(&mut self, target: GotoTarget) {
+    pub(super) fn goto_target(&mut self, target: GotoTarget) {
         let (line, col) = self.target_line_col(target);
         self.editor.goto_line(line + 1, col + 1);
     }
@@ -494,14 +491,20 @@ impl App {
             }
             return;
         }
+        self.read_file(path, focus, None);
+    }
+
+    /// Reads a file off the main loop, for `file_loaded` or, with a ticket, `debug_file_loaded`.
+    pub(super) fn read_file(&self, path: PathBuf, focus: bool, view: Option<u64>) {
         let (tx, generation) = (self.bus_tx.clone(), self.workspace.generation);
         tokio::task::spawn_blocking(move || {
             let result = std::fs::read(&path);
-            let _ = tx.send(AppMsg::FileLoaded { generation, path, result, focus });
+            let _ = tx.send(AppMsg::FileLoaded { generation, path, result, focus, view });
         });
     }
 
-    pub(super) fn file_loaded(&mut self, path: PathBuf, result: std::io::Result<Vec<u8>>, focus: bool) {
+    /// `target` is where the debugger wants the caret, and `None` takes `pending_goto`.
+    pub(super) fn file_loaded(&mut self, path: PathBuf, result: std::io::Result<Vec<u8>>, focus: bool, target: Option<GotoTarget>) {
         let bytes = match result {
             Ok(b) => b,
             Err(e) => {
@@ -530,7 +533,8 @@ impl App {
                 super::history::PendingRevert::Changes(rev) => self.apply_changes_revert(*rev),
             }
         }
-        if let Some((_, target)) = self.pending_goto.take_if(|(p, _)| *p == path) {
+        let target = target.or_else(|| self.pending_goto.take_if(|(p, _)| *p == path).map(|(_, t)| t));
+        if let Some(target) = target {
             // Opening the tab remembered the position left; the new tab's
             // first caret is not worth going back to.
             let (line, col) = self.target_line_col(target);

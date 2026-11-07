@@ -57,6 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Debug: a step or continue the adapter refuses no longer leaves the session looking as if it runs. If the program is still stopped the arrow, the frames and the step keys come back, with the adapter's error in a toast.
+- Debug: a file read for a stop or a chosen frame can no longer move the view after the program has moved on, or after a newer choice, and no longer takes the place of a Go To the user has in flight. Holding Down across unopened files in Frames ends on the last one and leaves no tabs for the ones passed.
 - Debug under gdb: a program that did not start now says so ("The program did not start: check launch.program and launch.cwd"), and a working directory that does not exist gets its own warning, since gdb would run the program from the project root instead. Tried under gdb only.
 - Debug under gdb: the Console no longer shows "No source file named" and "pending" on each start for a breakpoint that then works.
 - Debug Console: a breakpoint the adapter moves in a later event now says so (Breakpoint a.c:3 moved to line 4), and one still not placed at the first stop or at the program's end says "not placed: no code loaded for this line". Tried under gdb only.

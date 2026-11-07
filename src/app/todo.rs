@@ -49,7 +49,7 @@ mod tests {
         let g = app.workspace.generation;
         let a = root.join("a.txt");
         let bytes = std::fs::read(&a).unwrap();
-        app.handle_msg(AppMsg::FileLoaded { generation: g, path: a.clone(), result: Ok(bytes), focus: true });
+        app.handle_msg(AppMsg::FileLoaded { generation: g, path: a.clone(), result: Ok(bytes), focus: true, view: None });
         assert_eq!(app.editor.active_path(), Some(a.as_path()));
         assert_eq!(app.editor.status_position().as_deref(), Some("Ln 2, Col 8"));
         let _ = std::fs::remove_dir_all(&dir);

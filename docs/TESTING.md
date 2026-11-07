@@ -1141,6 +1141,31 @@ History and merge windows. The hop from a physical keyboard through the terminal
 user's to confirm (`send-keys` enters at tmux). Bare `F9` is taken by Omarchy's voxtype binding when voxtype is
 installed (it is not on the test machine); `Run > Resume` stays.
 
+### Scenario: a late file read for a stop
+
+Needs `gdb` 14 or newer and `gcc`. Directories, config, log and `pgrep` precondition as in `### Scenario: stepping and
+the execution point`, at 80x24 and at 120x40, with fresh `XDG_STATE_HOME` and `XDG_CACHE_HOME` before each step (the
+marks are saved on quit, and a second Ctrl+F8 on a restored mark would clear it). A FIFO source holds the read open for
+as long as the test wants, so the race is not left to chance. Fixture, rebuilt each run: `/tmp/jetl-dap-late/lib/helper.c`
+is `int helper(int a) {` / `    return a + 1;` / `}`; `/tmp/jetl-dap-late/app/main.c` is `int helper(int);` /
+`int main(void) {` / `    int x = helper(1);` / `    int y = x + 1;` / `    return y - 3;` / `}`; in `app`,
+`gcc -g -O0 -o main main.c /tmp/jetl-dap-late/lib/helper.c` (so that the debug info names `helper.c`) and a
+`.jetl/run.toml` with `[debug.main]` and `launch = { program = "${workspaceFolder}/main" }`. Then keep the text in
+`lib/helper.real`, `rm lib/helper.c` and `mkfifo lib/helper.c`. The source lies outside the root so that nothing indexes
+the FIFO. A blocked read holds a blocking thread: always feed the FIFO before quitting.
+
+1. A late read after a later stop. From `app`, `jetl main.c`, Ctrl+G, `3`, Enter, Ctrl+F8, Ctrl+G, `4`, Enter, Ctrl+F8,
+   Shift+F9: `3▶`. F7: the log has `dap: execution point .../helper.c:1`, no `helper.c` tab appears, `main.c` stays up.
+   F9: `4▶`. `cat lib/helper.real > lib/helper.c` from another shell, wait one second: no `helper.c` tab, `4▶`, the log
+   has `dropping the late read of`. F9: `exit code 0`, no `gdb` or `main` left. Recreate the FIFO.
+2. Positive control, a read that is still current. As step 1 up to F7, then feed the FIFO: a `helper.c` tab opens and
+   is active with its `▶` on line 2. F9 (`4▶`), F9 again: `exit code 0`. Recreate the FIFO.
+3. A late read after Stop. As step 1 up to F7, Ctrl+F2 (`Debug session stopped`, no `gdb` or `main` left), then feed the
+   FIFO: no `helper.c` tab, the log has `dropping the late read of`. Ctrl+Q: exit 0, empty stderr.
+
+gdb can show: a read overtaken by a later stop and by Stop, and a current read. Only the unit tests show: the frame and
+thread choices, the out-of-order landing and the user's pending Go To.
+
 ### Scenario: Debug window and Console
 
 Needs `gdb` 14 or newer and `gcc`. At 80x24 and at 120x40, a private tmux socket, `XDG_*` directories under `/tmp`,
