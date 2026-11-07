@@ -1569,7 +1569,7 @@ mod tests {
         assert_eq!(p.handle_action(&PaletteAction::DeleteItem), removed);
         assert_eq!(p.rows_selected(), (2, 1));
         assert_eq!(p.breakpoint_items().len(), 2);
-        // Nothing shown: Shift+Delete deletes in the query, as before.
+        // Nothing shown: Shift+Delete and Alt+Shift+F8 do nothing, as Shift+Delete on Recent Projects.
         p.set_query("zzz");
         assert_eq!(p.rows_selected().0, 0);
         assert_eq!(p.handle_action(&PaletteAction::DeleteItem), None);
