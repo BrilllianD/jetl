@@ -4,7 +4,9 @@
 //! does not force `expanded`, so a collapse while the request is out holds; there is no tree id, since the panel
 //! replaces the whole view when its selection seq rises; a node can hold a failure and a count of children left
 //! out; children are capped; a node's children can come in pages, asked by a load-more row that is a node of its
-//! own and not one of the children; and asks are queued here for the App to send, as the panel has no sender.
+//! own and not one of the children; and asks are queued here for the App to send, as the panel has no sender. What
+//! the user opened survives the tree: `KeptPaths` keeps name paths per function, and answers reopen them one level at
+//! a time within a budget.
 
 use super::protocol::Scope;
 use crate::ui::widgets::list::ListState;
@@ -15,6 +17,90 @@ pub const MAX_CHILDREN: usize = 1000;
 /// adapter is known to honour `start` and `count` (`Live::trusted_paging`, gdb only): an adapter that ignores them
 /// answers whole, gdb takes about 73 bytes an element, and a frame over `MAX_BODY` ends the session.
 pub const UNPAGED_LIMIT: i64 = 100_000;
+/// What one stop may spend on reopening, in about milliseconds of gdb's time. A step waits behind what is asked.
+pub const REOPEN_BUDGET: usize = 200;
+/// Paths kept per function, oldest dropped.
+pub const MAX_KEPT_PATHS: usize = 64;
+/// Functions kept, least recently changed dropped.
+pub const MAX_KEPT_FRAMES: usize = 32;
+
+/// What the user opened, closed and selected in one function's tree. Changed only by the user's actions, so a
+/// stop mid-reopen cannot shrink it. Holds names, never a reference: gdb reuses those after a stop.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct KeptFrame {
+    /// Name paths the user opened, oldest first.
+    pub open: Vec<Vec<String>>,
+    /// Scopes the user closed, which would open by themselves.
+    pub shut: Vec<String>,
+    pub selected: Option<Vec<String>>,
+}
+
+impl KeptFrame {
+    /// The user opened or closed `path`.
+    pub fn record(&mut self, path: Vec<String>, open: bool) {
+        self.open.retain(|p| *p != path);
+        if let [scope] = path.as_slice() {
+            self.shut.retain(|s| s != scope);
+            if !open {
+                self.shut.push(scope.clone());
+            }
+        }
+        if open {
+            self.open.push(path);
+            if self.open.len() > MAX_KEPT_PATHS {
+                self.open.remove(0);
+            }
+        }
+    }
+}
+
+/// One `KeptFrame` per function name, for one session.
+#[derive(Debug, Default)]
+pub struct KeptPaths {
+    /// Least recently changed first.
+    frames: Vec<(String, KeptFrame)>,
+}
+
+impl KeptPaths {
+    pub fn frame(&self, name: &str) -> Option<&KeptFrame> {
+        self.frames.iter().find(|(n, _)| n == name).map(|(_, f)| f)
+    }
+
+    pub fn frame_mut(&mut self, name: &str) -> &mut KeptFrame {
+        let kept = match self.frames.iter().position(|(n, _)| n == name) {
+            Some(i) => self.frames.remove(i).1,
+            None => KeptFrame::default(),
+        };
+        self.frames.push((name.to_owned(), kept));
+        if self.frames.len() > MAX_KEPT_FRAMES {
+            self.frames.remove(0);
+        }
+        &mut self.frames.last_mut().expect("just pushed").1
+    }
+
+    pub fn clear(&mut self) {
+        self.frames.clear();
+    }
+}
+
+/// A name without the ` #2` gdb adds to a name that repeats in one container.
+fn base_name(name: &str) -> &str {
+    match name.rsplit_once(" #") {
+        Some((base, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => base,
+        _ => name,
+    }
+}
+
+/// What asking this node's first page costs gdb, in about milliseconds, from what the hint and the value say:
+/// a page is 20 for 1000 rows. A printer (a non-empty value on a container) above one page builds all its
+/// children before it answers the first page, about 12.5 per 1000 rows for a `std::map`; a C array does not.
+/// Measured under gdb 17.2. A hint of 0 is priced as small, which no adapter is obliged to make true.
+fn reopen_price(item: &VarItem) -> usize {
+    let rows = item.children.max(0) as usize;
+    let page = 1 + rows.min(MAX_CHILDREN) / 50;
+    let printer = rows > MAX_CHILDREN && !item.value.is_empty();
+    page + if printer { rows / 80 } else { 0 }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct VarItem {
@@ -25,6 +111,8 @@ pub struct VarItem {
     pub reference: i64,
     /// The adapter's hint for the number of children: indexed plus named.
     pub children: i64,
+    /// A scope the adapter said is expensive to read, so it is never reopened by itself.
+    pub expensive: bool,
 }
 
 /// A request for the children of `node`, to be sent by the App.
@@ -204,6 +292,52 @@ impl VarTree {
     pub fn take_asks(&mut self) -> Vec<VarAsk> {
         std::mem::take(&mut self.asks)
     }
+
+    /// The names from the root down to `i`. Empty when `i` is no node.
+    pub fn path_of(&self, i: usize) -> Vec<String> {
+        let mut path = Vec::new();
+        let mut at = Some(i);
+        while let Some(n) = at.and_then(|i| self.nodes.get(i)) {
+            path.push(n.item.name.clone());
+            at = n.parent;
+        }
+        path.reverse();
+        path
+    }
+
+    /// `i`'s path, or `None` when a name on it is ambiguous, so the path cannot be told from another across stops.
+    pub fn stable_path_of(&self, i: usize) -> Option<Vec<String>> {
+        let mut at = Some(i);
+        while let Some(n) = at {
+            if self.ambiguous(n) {
+                return None;
+            }
+            at = self.nodes.get(n)?.parent;
+        }
+        Some(self.path_of(i))
+    }
+
+    /// Whether `i`'s name means more than one thing at its level. A literal repeat always does. Directly under a
+    /// scope, gdb's ` #2` does too: the innermost variable takes the bare name, so it changes with the block. Deeper,
+    /// a container's shape comes from its type, and ` #2` is stable.
+    fn ambiguous(&self, i: usize) -> bool {
+        let Some(n) = self.nodes.get(i) else { return true };
+        let siblings = match n.parent {
+            Some(p) => self.nodes[p].children.as_deref().unwrap_or_default(),
+            None => self.roots.as_slice(),
+        };
+        let (name, base) = (&n.item.name, base_name(&n.item.name));
+        let same = |s: &&usize| {
+            let other = &self.nodes[**s].item.name;
+            other == name || (n.depth == 1 && base_name(other) == base)
+        };
+        siblings.iter().filter(same).count() > 1
+    }
+
+    /// The first of `among` called `name`.
+    fn named_in(&self, among: &[usize], name: &str) -> Option<usize> {
+        among.iter().copied().find(|&c| self.nodes[c].item.name == name)
+    }
 }
 
 /// The scopes that open by themselves: those hinted `arguments` or `locals` that are not `expensive` and have a
@@ -242,9 +376,67 @@ pub struct VarsView {
     /// The node of the selected row; the selection follows it when rows appear above.
     pub node: usize,
     pub load: VarsLoad,
+    /// What this tree spent on reopening.
+    pub spent: usize,
 }
 
 impl VarsView {
+    /// The scopes arrived. `open` are the ones that open by themselves, for nothing from the budget, unless the
+    /// user closed them; then the saved root paths, and the selection if it is a root.
+    pub fn reopen_roots(&mut self, open: &[usize], kept: Option<&KeptFrame>) {
+        for &i in open {
+            let shut = kept.is_some_and(|k| self.tree.node(i).is_some_and(|n| k.shut.contains(&n.item.name)));
+            if !shut {
+                self.tree.expand(i);
+            }
+        }
+        let Some(kept) = kept else { return };
+        let roots = self.tree.roots.clone();
+        self.reopen_among(&roots, &[], kept);
+    }
+
+    /// An answer for `i` was stored, and its children from `before` on are new: the saved paths one level under
+    /// `i` open, and the selection moves if its path runs through one of them. A closed node is left alone.
+    pub fn reopen_under(&mut self, i: usize, before: usize, kept: &KeptFrame) {
+        let Some(n) = self.tree.node(i).filter(|n| n.expanded) else { return };
+        let Some(children) = n.children.as_ref() else { return };
+        let new = children[before.min(children.len())..].to_vec();
+        let prefix = self.tree.path_of(i);
+        self.reopen_among(&new, &prefix, kept);
+    }
+
+    fn reopen_among(&mut self, new: &[usize], prefix: &[String], kept: &KeptFrame) {
+        let depth = prefix.len();
+        if let Some(selected) = kept.selected.as_ref().filter(|s| s.len() > depth && s.starts_with(prefix))
+            && let Some(c) = self.tree.named_in(new, &selected[depth])
+        {
+            self.node = c;
+        }
+        // Newest first, so the budget goes to what the user opened last.
+        for path in kept.open.iter().rev().filter(|p| p.len() == depth + 1 && p.starts_with(prefix)) {
+            if let Some(c) = self.tree.named_in(new, &path[depth]) {
+                self.reopen_node(c, kept);
+            }
+        }
+    }
+
+    fn reopen_node(&mut self, c: usize, kept: &KeptFrame) {
+        let Some(n) = self.tree.node(c) else { return };
+        if n.item.reference <= 0 || n.item.expensive || self.tree.ambiguous(c) {
+            return;
+        }
+        if n.children.is_none() && !n.loading {
+            let price = reopen_price(&n.item);
+            if self.spent + price > REOPEN_BUDGET {
+                return;
+            }
+            self.spent += price;
+        }
+        self.tree.expand(c);
+        // Known children only when the user opened a node whose answer had already landed.
+        self.reopen_under(c, 0, kept);
+    }
+
     /// An answer for node `i`. A selection on its load-more row moves to the first new child, which takes the
     /// row's place on screen, or to the last child when none came.
     pub fn show_children(&mut self, i: usize, items: Vec<VarItem>) {
@@ -782,5 +974,412 @@ mod tests {
         let mut v = VarsView { tree: tree(), node: 42, ..VarsView::default() };
         v.sync();
         assert_eq!(v.node, 0, "a node that is not in the tree falls back to the first row");
+    }
+
+    fn view(names: &[&str]) -> VarsView {
+        let mut v = VarsView::default();
+        v.tree.set_roots(names.iter().enumerate().map(|(i, n)| item(n, 10 + i as i64)).collect());
+        v
+    }
+
+    fn path(p: &[&str]) -> Vec<String> {
+        p.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    fn open(paths: &[&[&str]]) -> KeptFrame {
+        KeptFrame { open: paths.iter().map(|p| path(p)).collect(), ..KeptFrame::default() }
+    }
+
+    /// The answer for `node` is stored, and the paths under it reopen, as the panel does.
+    fn stored(v: &mut VarsView, node: usize, items: Vec<VarItem>, kept: &KeptFrame) {
+        let before = v.tree.node(node).and_then(|n| n.children.as_ref()).map_or(0, Vec::len);
+        v.show_children(node, items);
+        v.reopen_under(node, before, kept);
+    }
+
+    /// `(node, reference, start)` of each ask since the last call.
+    fn asked(v: &mut VarsView) -> Vec<(usize, i64, usize)> {
+        v.tree.take_asks().into_iter().map(|a| (a.node, a.reference, a.start)).collect()
+    }
+
+    /// Node `i` of `v`, by name under the root `0`'s children: the child of `parent` called `name`.
+    fn child(v: &VarsView, parent: usize, name: &str) -> usize {
+        let children = v.tree.node(parent).unwrap().children.as_ref().unwrap();
+        v.tree.named_in(children, name).unwrap_or_else(|| panic!("no child {name}"))
+    }
+
+    #[test]
+    fn base_name_takes_only_a_counter() {
+        let table = [
+            ("x #2", "x"),
+            ("x #12", "x"),
+            ("x", "x"),
+            ("x #", "x #"),
+            ("x #a", "x #a"),
+            ("#2", "#2"),
+            ("a # 2", "a # 2"),
+            ("x #2 #3", "x #2"),
+        ];
+        let wrong: Vec<_> = table.iter().filter(|(name, want)| base_name(name) != *want).map(|(n, w)| (*n, *w, base_name(n))).collect();
+        assert!(wrong.is_empty(), "{wrong:?}");
+    }
+
+    #[test]
+    fn a_path_runs_from_the_scope() {
+        let mut v = view(&["Locals"]);
+        v.tree.expand(0);
+        v.show_children(0, vec![item("p", 20), item("q", 0)]);
+        v.tree.expand(1);
+        v.show_children(1, vec![item("x", 30)]);
+        let x = child(&v, 1, "x");
+        assert_eq!(v.tree.path_of(x), path(&["Locals", "p", "x"]));
+        assert_eq!(v.tree.path_of(0), path(&["Locals"]));
+        assert!(v.tree.path_of(99).is_empty());
+        let mut t = arr(2500);
+        t.set_children(0, from(0, 1000));
+        assert_eq!(t.path_of(row(&t)), path(&["r", ""]), "a load-more row's last name is empty");
+    }
+
+    #[test]
+    fn a_repeat_under_a_scope_is_ambiguous() {
+        let mut v = view(&["Locals"]);
+        v.tree.expand(0);
+        v.show_children(0, vec![item("p", 20), item("p #2", 21), item("q", 22)]);
+        let (p, p2, q) = (child(&v, 0, "p"), child(&v, 0, "p #2"), child(&v, 0, "q"));
+        let got = [v.tree.ambiguous(p), v.tree.ambiguous(p2), v.tree.ambiguous(q)];
+        assert_eq!(got, [true, true, false], "p, p #2, q");
+        v.tree.expand(p);
+        v.show_children(p, vec![item("x", 30)]);
+        let x = child(&v, p, "x");
+        assert_eq!(v.tree.stable_path_of(x), None, "under a name that means two things");
+        assert_eq!(v.tree.stable_path_of(q), Some(path(&["Locals", "q"])));
+    }
+
+    #[test]
+    fn a_repeat_in_a_container_is_not() {
+        let mut v = view(&["Locals"]);
+        v.tree.expand(0);
+        v.show_children(0, vec![item("der", 20)]);
+        v.tree.expand(1);
+        v.show_children(1, vec![item("Base", 30), item("d", 0), item("Base #2", 0)]);
+        let (a, b) = (child(&v, 1, "Base"), child(&v, 1, "Base #2"));
+        assert!(!v.tree.ambiguous(a) && !v.tree.ambiguous(b));
+        assert_eq!(v.tree.stable_path_of(b), Some(path(&["Locals", "der", "Base #2"])));
+        v.tree.expand(a);
+        v.show_children(a, vec![item("<anonymous union>", 40), item("<anonymous union>", 41)]);
+        let u = child(&v, a, "<anonymous union>");
+        assert_eq!(v.tree.node(u).unwrap().depth, 3);
+        assert!(v.tree.ambiguous(u), "a literal repeat");
+        assert_eq!(v.tree.stable_path_of(u), None);
+        let twice = view(&["Locals", "Locals"]);
+        assert!(twice.tree.ambiguous(0) && twice.tree.ambiguous(1), "two literal roots");
+    }
+
+    #[test]
+    fn the_price_is_the_measured_one() {
+        let table = [
+            (0, "", 1),
+            (2, "", 1),
+            (2, "0x1", 1),
+            (1000, "", 21),
+            (1000, "s", 21),
+            (3000, "", 21),
+            (2_000_000, "", 21),
+            (1001, "s", 33),
+            (5000, "s", 83),
+            (10_000, "s", 146),
+            (200_000, "s", 2521),
+            (400_000, "s", 5021),
+            (-5, "", 1),
+            (-5, "s", 1),
+        ];
+        let wrong: Vec<_> = table
+            .iter()
+            .filter_map(|&(hint, value, want)| {
+                let got = reopen_price(&VarItem { children: hint, value: value.into(), ..item("m", 5) });
+                (got != want).then_some((hint, value, want, got))
+            })
+            .collect();
+        assert!(wrong.is_empty(), "(hint, value, want, got): {wrong:?}");
+    }
+
+    #[test]
+    fn record_keeps_the_newest_and_forgets_the_oldest() {
+        let mut k = KeptFrame::default();
+        k.record(path(&["L", "a"]), true);
+        k.record(path(&["L", "b"]), true);
+        k.record(path(&["L", "a"]), true);
+        assert_eq!(k.open, [path(&["L", "b"]), path(&["L", "a"])], "once, as the newest");
+        k.record(path(&["L", "b"]), false);
+        assert_eq!(k.open, [path(&["L", "a"])]);
+        let mut k = KeptFrame::default();
+        for i in 0..=MAX_KEPT_PATHS {
+            k.record(path(&["L", &i.to_string()]), true);
+        }
+        assert_eq!(k.open.len(), MAX_KEPT_PATHS);
+        assert_eq!(k.open.first(), Some(&path(&["L", "1"])), "the first one went");
+        assert_eq!(k.open.last(), Some(&path(&["L", &MAX_KEPT_PATHS.to_string()])));
+    }
+
+    #[test]
+    fn a_scope_closed_is_shut_until_opened() {
+        let mut k = KeptFrame::default();
+        k.record(path(&["Locals"]), false);
+        k.record(path(&["Locals"]), false);
+        assert_eq!(k.shut, ["Locals"], "once");
+        assert!(k.open.is_empty());
+        k.record(path(&["Locals"]), true);
+        assert!(k.shut.is_empty());
+        assert_eq!(k.open, [path(&["Locals"])]);
+        k.record(path(&["Locals", "p"]), false);
+        assert!(k.shut.is_empty(), "a variable is not a scope");
+    }
+
+    #[test]
+    fn kept_frames_are_bounded_by_the_last_change() {
+        let mut kp = KeptPaths::default();
+        for i in 0..=MAX_KEPT_FRAMES {
+            kp.frame_mut(&format!("f{i}")).selected = Some(path(&["L"]));
+        }
+        assert!(kp.frame("f0").is_none() && kp.frame("f1").is_some(), "the first dropped");
+        let mut kp = KeptPaths::default();
+        for i in 0..MAX_KEPT_FRAMES {
+            kp.frame_mut(&format!("f{i}")).selected = Some(path(&["L"]));
+        }
+        kp.frame_mut("f0");
+        kp.frame_mut("new");
+        assert!(kp.frame("f0").is_some(), "changed again, so kept");
+        assert!(kp.frame("f1").is_none(), "the second went instead");
+        kp.frame("f2");
+        kp.frame_mut("newer");
+        assert!(kp.frame("f2").is_none(), "a read reorders nothing: f2 was the oldest");
+        kp.clear();
+        assert!(kp.frame("f0").is_none() && kp.frame("newer").is_none());
+    }
+
+    #[test]
+    fn a_chain_reopens_as_answers_arrive() {
+        let k = open(&[&["L"], &["L", "p"], &["L", "p", "x"]]);
+        let mut v = view(&["L"]);
+        v.reopen_roots(&[0], Some(&k));
+        assert_eq!(asked(&mut v), [(0, 10, 0)], "L");
+        stored(&mut v, 0, vec![item("p", 20), item("q", 21)], &k);
+        assert_eq!(asked(&mut v), [(1, 20, 0)], "p, with its new reference");
+        stored(&mut v, 1, vec![item("x", 30), item("y", 31)], &k);
+        assert_eq!(asked(&mut v), [(3, 30, 0)], "x");
+        stored(&mut v, 3, vec![item("a", 0)], &k);
+        assert!(asked(&mut v).is_empty());
+        let (q, y) = (child(&v, 0, "q"), child(&v, 1, "y"));
+        assert!(!v.tree.node(q).unwrap().expanded && !v.tree.node(y).unwrap().expanded);
+        assert_eq!(v.spent, 2, "p and x; the scope L is a default and costs nothing");
+    }
+
+    #[test]
+    fn a_vanished_name_does_nothing() {
+        let k = open(&[&["L"], &["L", "gone"]]);
+        let before = k.clone();
+        let mut v = view(&["L"]);
+        v.reopen_roots(&[0], Some(&k));
+        asked(&mut v);
+        stored(&mut v, 0, vec![item("p", 20)], &k);
+        assert!(asked(&mut v).is_empty());
+        assert_eq!((v.spent, k), (0, before), "nothing spent, nothing forgotten");
+    }
+
+    #[test]
+    fn a_shadowed_name_stays_closed_and_a_later_stop_opens_it() {
+        let k = open(&[&["L"], &["L", "p"]]);
+        let mut v = view(&["L"]);
+        v.reopen_roots(&[0], Some(&k));
+        asked(&mut v);
+        stored(&mut v, 0, vec![item("p", 20), item("p #2", 21)], &k);
+        assert!(asked(&mut v).is_empty(), "p means the inner one now");
+        assert!(v.tree.rows().len() == 3);
+        let mut v = view(&["L"]);
+        v.reopen_roots(&[0], Some(&k));
+        asked(&mut v);
+        stored(&mut v, 0, vec![item("p", 22)], &k);
+        assert_eq!(asked(&mut v), [(1, 22, 0)]);
+    }
+
+    #[test]
+    fn a_leaf_and_an_expensive_scope_are_not_opened() {
+        let k = open(&[&["L"], &["L", "leaf"]]);
+        let mut v = view(&["L"]);
+        v.reopen_roots(&[0], Some(&k));
+        asked(&mut v);
+        stored(&mut v, 0, vec![item("leaf", 0), item("neg", -1)], &k);
+        assert!(asked(&mut v).is_empty());
+        assert_eq!(v.spent, 0);
+        let k = open(&[&["E"]]);
+        let mut v = VarsView::default();
+        v.tree.set_roots(vec![VarItem { expensive: true, ..item("E", 10) }]);
+        v.reopen_roots(&[], Some(&k));
+        assert!(asked(&mut v).is_empty(), "an expensive scope is opened by hand each stop");
+        assert!(!v.tree.node(0).unwrap().expanded);
+    }
+
+    /// `L` with one child `m` of the hint and value, kept open; returns the asks and `spent`.
+    fn one_child(hint: i64, value: &str) -> (Vec<(usize, i64, usize)>, usize) {
+        let k = open(&[&["L"], &["L", "m"]]);
+        let mut v = view(&["L"]);
+        v.reopen_roots(&[0], Some(&k));
+        asked(&mut v);
+        stored(&mut v, 0, vec![VarItem { children: hint, value: value.into(), ..item("m", 20) }], &k);
+        (asked(&mut v), v.spent)
+    }
+
+    #[test]
+    fn the_budget_stops_a_big_printer_and_not_an_array() {
+        // (label, hint, value, asks, spent)
+        let table = [
+            ("a map of 200000", 400_000, "s", 0, 0),
+            ("an array of 400000, no value", 400_000, "", 1, 21),
+            ("the last that fits", 14_399, "s", 1, 200),
+            ("one over", 14_400, "s", 0, 0),
+        ];
+        let wrong: Vec<_> = table
+            .iter()
+            .filter_map(|&(label, hint, value, asks, spent)| {
+                let (got, got_spent) = one_child(hint, value);
+                (got.len() != asks || got_spent != spent).then_some((label, got, got_spent))
+            })
+            .collect();
+        assert!(wrong.is_empty(), "{wrong:?}");
+    }
+
+    #[test]
+    fn the_budget_runs_out_for_what_is_opened_first() {
+        // Oldest first: a small struct, then ten arrays.
+        let mut paths: Vec<Vec<String>> = vec![path(&["L"]), path(&["L", "small"])];
+        paths.extend((0..10).map(|i| path(&["L", &format!("a{i}")])));
+        let k = KeptFrame { open: paths, ..KeptFrame::default() };
+        let mut v = view(&["L"]);
+        v.reopen_roots(&[0], Some(&k));
+        asked(&mut v);
+        let mut items = vec![item("small", 19)];
+        items.extend((0..10).map(|i| VarItem { children: 3000, ..item(&format!("a{i}"), 20 + i) }));
+        stored(&mut v, 0, items, &k);
+        let got = asked(&mut v);
+        let names: Vec<&str> = got.iter().map(|a| v.tree.node(a.0).unwrap().item.name.as_str()).collect();
+        let want = ["a9", "a8", "a7", "a6", "a5", "a4", "a3", "a2", "a1", "small"];
+        assert_eq!(names, want, "the nine newest arrays, then the small one still fits");
+        assert_eq!(v.spent, 190);
+    }
+
+    #[test]
+    fn a_new_view_has_a_new_budget() {
+        assert_eq!(VarsView::default().spent, 0);
+    }
+
+    #[test]
+    fn the_default_scopes_cost_nothing() {
+        let mut v = view(&["Arguments", "Locals"]);
+        v.reopen_roots(&[0, 1], None);
+        assert_eq!(asked(&mut v), [(0, 10, 0), (1, 11, 0)]);
+        assert_eq!(v.spent, 0);
+    }
+
+    #[test]
+    fn a_closed_scope_stays_closed() {
+        let k = KeptFrame { shut: vec!["Arguments".into()], ..KeptFrame::default() };
+        let mut v = view(&["Arguments", "Locals"]);
+        v.reopen_roots(&[0, 1], Some(&k));
+        assert_eq!(asked(&mut v), [(1, 11, 0)], "only Locals");
+    }
+
+    #[test]
+    fn a_collapsed_node_opens_nothing_under_it() {
+        let k = open(&[&["L"], &["L", "p"], &["L", "p", "x"]]);
+        let mut v = view(&["L"]);
+        v.reopen_roots(&[0], Some(&k));
+        asked(&mut v);
+        stored(&mut v, 0, vec![item("p", 20)], &k);
+        asked(&mut v);
+        let p = child(&v, 0, "p");
+        v.tree.collapse(p);
+        v.node = p;
+        stored(&mut v, p, vec![item("x", 30)], &k);
+        assert!(asked(&mut v).is_empty());
+        assert_eq!(v.node, p, "the selection does not move into a closed node");
+    }
+
+    #[test]
+    fn the_selection_follows_to_the_deepest_row_there_is() {
+        let mut k = open(&[&["L"], &["L", "p"], &["L", "p", "x"]]);
+        k.selected = Some(path(&["L", "p", "x", "a"]));
+        let mut v = view(&["L"]);
+        v.reopen_roots(&[0], Some(&k));
+        assert_eq!(v.node, 0);
+        stored(&mut v, 0, vec![item("p", 20), item("q", 21)], &k);
+        let p = child(&v, 0, "p");
+        assert_eq!(v.node, p);
+        stored(&mut v, p, vec![item("x", 30)], &k);
+        let x = child(&v, p, "x");
+        assert_eq!(v.node, x);
+        stored(&mut v, x, vec![item("a", 0), item("b", 0)], &k);
+        assert_eq!(v.node, child(&v, x, "a"));
+        // x has no a.
+        let mut v = view(&["L"]);
+        v.reopen_roots(&[0], Some(&k));
+        stored(&mut v, 0, vec![item("p", 20)], &k);
+        stored(&mut v, 1, vec![item("x", 30)], &k);
+        stored(&mut v, 2, vec![item("b", 0)], &k);
+        assert_eq!(v.node, 2, "stays on x");
+        // p is gone.
+        let mut v = view(&["L"]);
+        v.reopen_roots(&[0], Some(&k));
+        stored(&mut v, 0, vec![item("q", 21)], &k);
+        assert_eq!(v.node, 0, "stays where it was");
+    }
+
+    #[test]
+    fn a_moved_selection_is_not_moved_back() {
+        let mut k = open(&[&["L"], &["L", "p"], &["L", "p", "x"]]);
+        k.selected = Some(path(&["L", "q"]));
+        let mut v = view(&["L"]);
+        v.reopen_roots(&[0], Some(&k));
+        stored(&mut v, 0, vec![item("p", 20), item("q", 21)], &k);
+        let q = child(&v, 0, "q");
+        assert_eq!(v.node, q);
+        stored(&mut v, 1, vec![item("x", 30)], &k);
+        assert_eq!(v.node, q, "the reopen under p leaves it on q");
+    }
+
+    /// `L` holding `arr` (hint 2500) reopened, its first page answered with no `1200`.
+    fn paged_reopen(k: &KeptFrame) -> VarsView {
+        let mut v = view(&["L"]);
+        v.reopen_roots(&[0], Some(k));
+        asked(&mut v);
+        stored(&mut v, 0, vec![VarItem { children: 2500, ..item("arr", 20) }], k);
+        v
+    }
+
+    #[test]
+    fn a_later_page_opens_what_it_brings() {
+        let k = open(&[&["L"], &["L", "arr"], &["L", "arr", "1200"]]);
+        let mut v = paged_reopen(&k);
+        assert_eq!(asked(&mut v), [(1, 20, 0)]);
+        stored(&mut v, 1, from(0, 1000), &k);
+        assert!(asked(&mut v).is_empty(), "no 1200 on the first page");
+        let r = v.tree.node(1).unwrap().more.expect("a load-more row");
+        assert!(v.tree.load_more(r));
+        assert_eq!(asked(&mut v), [(1, 20, 1000)]);
+        let mut page = from(1000, 1000);
+        page[200] = item("1200", 40);
+        stored(&mut v, 1, page, &k);
+        assert_eq!(asked(&mut v), [(child(&v, 1, "1200"), 40, 0)], "1200 opens, from its start");
+        let seven = child(&v, 1, "7");
+        assert!(!v.tree.node(seven).unwrap().expanded, "a row of page one the user never opened stays closed");
+    }
+
+    #[test]
+    fn a_stop_asks_no_later_page() {
+        let k = open(&[&["L"], &["L", "arr"], &["L", "arr", "1200"]]);
+        let mut v = paged_reopen(&k);
+        stored(&mut v, 1, from(0, 1000), &k);
+        assert_eq!(v.tree.node(1).unwrap().children.as_ref().map(Vec::len), Some(1000));
+        let all = v.tree.take_asks();
+        assert!(all.iter().all(|a| a.start == 0), "{all:?}");
     }
 }

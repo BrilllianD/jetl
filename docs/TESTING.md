@@ -1494,8 +1494,10 @@ matched by its shape (`[▸▾] big`), since the source pane holds the same name
 6. `over`, Right: `first 1000 of 1001 shown  int [1001]`. Sent paged, answer 72 898 (72 973 before). Left.
 7. `edge`, Right: `edge  int [1000]` with no note. Sent `{"variablesReference": N}`, with no `start` or `count`, answer
    72 898. Left.
-8. F8, then `big` again, Right: `paused (step)`, a fresh tree (every row closed and without a note), then
-   `first 1000 of 5000 shown`, and no `could not read` or `list index out of range` anywhere. Sent paged, answer 72 898.
+8. F8, then `big` again, Right: `paused (step)`, a fresh tree (every container closed by the `Left`s above, so not
+   reopened, and without a note), then `first 1000 of 5000 shown`, and no `could not read` or `list index out of range`
+   anywhere. Sent paged, answer 72 898. `dap.log` holds `variables` for Locals only until the Right, then `big` with
+   `"start": 0`.
 9. Ctrl+F2, Ctrl+Q, rewrite `run.toml` for `mapped`, and start jetl anew on `mapped.cc`. Breakpoint on line 7, Shift+F9,
    Variables, `m`, Right: `▾ m … = std::map with 100000 elements` during the wait, then
    `first 1000 of 200000 shown = std::map with 100000 elements`, and rows `[0] = 0  const int`, `[1] = 0  int`. Sent
@@ -1547,14 +1549,15 @@ requests: `grep -E '^READ.*"command": "variables"' dap.log | grep -o '"arguments
    exactly one new `"start": 1000` (2 lines before, 3 after), the row `1000 = 0  int` is selected, and `giant`'s row
    reads `first 2000 of 2000000 shown`.
 9. A failed page. End, Up six times (`load 1000 more  1998000 left`). Find gdb with
-   `pgrep -f '[d]ap-log-file <capture dir>'` and `kill -STOP` it. Enter: `reading 1000 more …`. After 9.76 s at 80x24
-   and 9.77 s at 120x40 (the limit is `REQUEST_TIMEOUT`, 10 s): `load 1000 more  could not read: timed out`, the selection on
+   `pgrep -f '[d]ap-log-file <capture dir>'` and `kill -STOP` it. Enter: `reading 1000 more …`. After 9.72 s at 80x24
+   and 9.67 s at 120x40 (the limit is `REQUEST_TIMEOUT`, 10 s): `load 1000 more  could not read: timed out`, the selection on
    the row, no toast. `kill -CONT` it and wait 2 s: the screen is identical, since the late answer is dropped. Enter:
    `2000 = 0  int`. `dap.log` holds `"start": 2000` three times in all, one of them for `big`; `giant`'s note reads
    `first 3000 of 2000000 shown`, not 4000.
 10. A step with a page out. End, Up six times, then Enter and F8 in one `send-keys`: `paused (step)`, a fresh tree with
-    `giant` closed, and nowhere `could not read`, `invalid variablesReference` or `list index out of range`. `big`,
-    Right: `first 1000 of 5000 shown`, rows `0 = 0  int`, `1 = 1  int`.
+    `giant` open again on its first page, `first 1000 of 2000000 shown`, sent `"start": 0` and no `"start": 1000`, and
+    nowhere `could not read`, `invalid variablesReference` or `list index out of range`. Home, Down, Left closes it
+    again, so that `big` is the third row. `big`, Right: `first 1000 of 5000 shown`, rows `0 = 0  int`, `1 = 1  int`.
 11. A stop with a page out. End, Up four times, then Enter and Ctrl+F2 in one `send-keys`: the title reads
     `Debug: paged · ended` and the pane `Variables show while the program is paused`; no gdb is left (0 after the stop).
 
@@ -1578,6 +1581,133 @@ Last run: `~/.claude/plans/backlog-run-25-S6b-evidence/live/<size>/`. Step 13's 
 What gdb cannot show, and the unit tests prove: a stale answer's timing, an adapter that ignores `start` or `count`, a
 short page before the end (gdb's hint is exact), and the empty page past the end through jetl (gdb's hint means jetl never
 asks there). Other adapters are unverified.
+
+### Scenario: Debug window, variables across stops
+
+Needs what `### Scenario: Debug window, paged variables` needs: `gdb` 14 or newer (the run used 17.2), `g++` with
+libstdc++'s printers, the same `config.toml` with `dap-log-file`, the wire proof, the keys and `mapped.cc`. Start jetl
+with `env -u CLAUDE_CODE_MESSAGING_TOKEN`: `dap.log` holds the launch environment. One more fixture, `kept.cc`, built
+`g++ -g -O0 -o kept kept.cc`, line 23 being `p.x.a = 10;`, line 32 `p.x.b = i;` and line 35 `sum += callee(p);`:
+
+    #include <cstdio>
+    #include <vector>
+    struct Inner { int a; int b; };
+    struct Pair { Inner x; Inner y; };
+    struct Base { int b0; };
+    struct Der : Base { int d; int Base; };
+    static int callee(Pair q) {
+        Pair r = q;
+        r.x.a += 1;
+        return r.x.a;
+    }
+    int main() {
+        static Pair pts[1500];
+        pts[1200].x.a = 42;
+        Pair p = {{1, 2}, {3, 4}};
+        Der der;
+        der.b0 = 1;
+        der.d = 2;
+        der.Base = 3;
+        Inner *ptr = &p.y;
+        std::vector<Inner> vec = {{5, 6}, {7, 8}};
+        int sum = 0;
+        p.x.a = 10;
+        p.x.a = 11;
+        {
+            Inner p = {20, 21};
+            sum += p.a;
+            sum += p.b;
+        }
+        sum += 1;
+        for (int i = 0; i < 200; i++) {
+            p.x.b = i;
+            sum += i;
+        }
+        sum += callee(p);
+        sum += ptr->a + (int)vec.size() + der.d;
+        printf("%d\n", sum);
+        return 0;
+    }
+
+The Debug window shows about nine rows at both sizes, so a row is read by moving to it: the selected row
+is the one with the highlight, which `capture-pane -e` shows as a background colour. Locals at line 23 read, in this
+order: `pts`, `p`, `der`, `ptr`, `vec`, `sum`, then `Registers`. F8 stops at lines 24, 26, 27, 28, 30, 31, 32, 33, 31.
+Wait about 3 s after each F8 and 4 s after 200 Downs (`send-keys -N 200 Down` is applied one key at a time, and a
+capture too soon shows a row on the way). Alt+F5 focuses the Debug window, and again hides it; Escape returns to the
+editor, where Ctrl+G and Ctrl+F8 set a breakpoint. Each step's error check: nowhere `could not read`,
+`invalid variablesReference` or `list index out of range`, and no toast.
+
+`kept`, breakpoint on line 23, Shift+F9, Variables, at each size:
+
+1. `p`, Right: `▾ p  Pair`, `▸ x  Inner`, `▸ y  Inner`. Down, Right: `a = 1  int`, `b = 2  int`. The selection is on `x`.
+2. F8: line 24, `paused (step)`. `▾ p`, `▾ x`, `a = 10  int`, the selection on `x` again. `dap.log`, this stop: `variables`
+   for Locals, `p` and `x`, in that order, one each. The numbers: Locals 1, `pts` 3, `p` 4 and `der` 5 at both
+   stops, so here the old number would also have done; step 4 shows that it does not always.
+3. Without a step, still at line 24: `der`, Right, `Base`, Right: `b0 = 1  int`, and `Base #2 = 3  int` on `Base`'s level,
+   with no marker. `ptr`, Right: `▸ value  Inner`. Right on it: `a = 3`, `b = 4`. `vec`, Right, `[1]`, Right: `a = 7`,
+   `b = 8`.
+4. F8: line 26, already inside the block. `▸ p  Inner`, `▸ pts` and `▸ p #2  Pair`, `p` and `p #2` closed though `p` was
+   saved. `dap.log`, this stop: Locals, then `der`, `Base`, `ptr`, `value`, `vec` and `[1]` (references 1, 8, 7, 6, 11,
+   12, 13), none for either `p`. This stop's Locals answer gives `pts` 4, `p` 5 and `der` 6, unlike the stops before
+   it. A name that repeats under a variable (`Base #2`) is not ambiguous; one under the scope is.
+5. Right on `p` (the `Inner`): `a = 0  int` and a `b` that is not. F8: line 27, `▸ p  Inner` closed again, since
+   nothing is recorded at this level.
+6. F8: line 28, the same.
+7. F8: line 30. `▾ p  Pair`, `▾ x`, `a = 11  int`. The outer `p` came back: a path saved before the block survives it.
+8. `x`, Left. F8 (line 31, `i` is the first row now): `▾ p`, `▸ x`, and `dap.log` shows no `variables` for `x`. Up to
+   `p`, Left, F8: `▸ p`, and `p` is not read: no `variables` for it. Right: `▸ x` closed.
+9. Home to `Locals`, Left: nothing under it. F8: `▸ Locals` and `▸ Registers`, and `dap.log` has `scopes` and no
+   `variables` at this stop. Right: all of it back, `p`, `der`, `ptr` and `vec` open (`variables` for Locals, `p`,
+   `der`, `Base`, `ptr`, `value`, `vec` and `[1]`, and none for `x`).
+10. `pts`, Right: `first 1000 of 1500 shown`. End and Up 19 times to the load-more row (`load 500 more`), Enter:
+    `1000  Pair`. `send-keys -N 200 Down` to `1200`, Right, Right, Right: `1200` open with `▾ x`. F8: `pts` open with
+    `first 1000 of 1500 shown` and its first rows, no `1200`, the selection on `pts`. `dap.log`, this stop: `pts`
+    with `"start": 0, "count": 1000`, and no `"start": 1000`.
+11. End and Up 19 times to the load-more row, Enter: `1200` comes back open with `▾ x` under it and `a = 42  int`, with
+    no key pressed on it. `dap.log`: `"start": 1000` for `pts`, then `1200`, then `x` (references 1223 and 1523).
+12. End (`Registers`), Right: rows `ymm15 …`. F8: open again, with one `variables` for it (reference 2) at this stop. Left
+    on a row, Left on `Registers` closes it. Home, Down twice, Left closes `pts`, so that `p` is on the screen for what
+    follows.
+
+`kept`, a breakpoint added on line 32 (Escape, Ctrl+G 32, Ctrl+F8), F9 to reach it, Alt+F5, and `x` open under `p` again
+(Home, Down four times, Right), with the rows of steps 3 to 12 left as they are:
+
+13. **A held step.** `send-keys -N 30 F8` in one command. When the screen settles, one line of the loop is marked, `i`
+    matches the count, `▾ p`, `▾ x`, and the error check holds. Observed, from `dap.log`: 28 `next` of the 30 keys at
+    120x40 (24 at 80x24; a key that comes while the program runs is ignored), 11 `variables` (9). The screen last
+    changed 0.47 s after the keys at 120x40 (0.24 s at 80x24). That is no more than three `variables` per `next`,
+    and far fewer: the chain is cut by each step.
+14. **A stop mid-reopen.** `send-keys F8 F8 F8` in one command. Then the same check. Observed: 3 `next` and 9
+    `variables` at both sizes; the screen last changed 0.24 s (0.13 s) after the keys.
+15. **Into a function and back.** Close `pts`'s row if it is open, clear the breakpoint on line 32 (Escape, Ctrl+G 32,
+    Ctrl+F8), set one on line 35, F9. F7: in `callee`, line 8, `paused (step)`. `▾ Arguments` and `▾ Locals` open, `▸ q`
+    and `▸ r` closed, though `main` has `p` open. Alt+F5, Home, Down three times to `r`, Right, Down, Right: `▾ r`,
+    `▾ x`, `a = 0  int`. F8 twice: line 9 with `a = 11`, line 10 with `a = 12`, and `r` stays open.
+16. **A frame choice.** Still in `callee`: Alt+Left (the Frames tab), Down to `main`, Alt+Right (back to Variables):
+    line 35, `▾ p`, `▾ x`. Alt+Left, Up to `callee`, Alt+Right: `▾ r`, `▾ x`, `a = 12`.
+17. **Back, and hidden.** Shift+F8: in `main`, line 35, with `▾ p`, `▾ x` as they were, and `r` nowhere; `dap.log` has
+    `scopes`, then nine `variables`: Locals and the eight open paths. Alt+F5 to hide (the Debug title is gone), F8 twice: `next` and `threads`, no `scopes` and no `variables`
+    in `dap.log`. Alt+F5 to show: `scopes`, Locals and the open paths follow, and the screen settled 0.24 s (0.13 s
+    at 80x24) after the key.
+18. Ctrl+F2, then Shift+F9 again: a new session, at line 23, `Debugging kept with gdb`. `p` is closed. A held step with
+    Locals only (`send-keys -N 30 F8`): the screen last changed after 0.69 s (0.58 s), 28 `next` of 30 (24), and 2
+    `variables` (1). Ctrl+F2.
+
+`mapped`, breakpoint on line 7, at each size:
+
+19. `m`, Right (2 s at `…`): `first 1000 of 200000 shown`. F8: within a second, `▸ m` closed, and `dap.log` has no
+    `variables` for `m` at this stop. Observed: the stop shows at line 8 0.12 s after the key at both sizes.
+20. Right: the 2 s again, `start` 0 (2.0 s at 120x40, 2.03 s at 80x24, against 1.98 s and 2.02 s the first time). The
+    user asked for it, and it works.
+21. Ctrl+F2, Ctrl+Q: exit 0, empty stderr, no gdb or debuggee left.
+
+Last run: `~/.claude/plans/backlog-run-25-S7-evidence/live/<size>/{kept,mapped}`; the changed steps of the two paged
+scenarios are in `paged-vars` and `paged-more`. The trees at each step are in `<step>.tree` (a walk of every row), and
+the requests since the step's key in `<step>-wire.txt`.
+
+What gdb cannot show, and the unit tests prove: an `expensive` scope, a literal repeat of a name, an old stop's answer
+at a chosen moment, and a budget run out by arrays. Other adapters are unverified: a hint of 0 prices as small, and an
+adapter need not honour that.
 
 ### Scenario: Debug build step
 

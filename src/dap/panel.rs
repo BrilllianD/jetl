@@ -20,7 +20,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::protocol::Thread;
 use super::session::{Phase, SessionId};
-use super::vars::{MAX_CHILDREN, VarAsk, VarItem, VarsLoad, VarsView};
+use super::vars::{KeptPaths, MAX_CHILDREN, VarAsk, VarItem, VarsLoad, VarsView};
 use crate::actions::DebugAction;
 use crate::app::Ctx;
 use crate::config::theme::Theme;
@@ -164,6 +164,9 @@ pub struct DebugPanel {
     /// Screen cells of the drawn tabs.
     tab_hits: Vec<(DebugTab, Rect)>,
     thread_rect: Rect,
+    /// What the user opened, closed and selected in the Variables tab, per function, for this session. `bump` does
+    /// not touch it: only the user's acts change it, so a stop never shrinks it.
+    kept: KeptPaths,
 }
 
 impl DebugPanel {
@@ -176,6 +179,7 @@ impl DebugPanel {
         self.reason = None;
         self.stage = None;
         self.clear_stack();
+        self.kept.clear();
     }
 
     pub fn tab(&self) -> DebugTab {
@@ -225,12 +229,11 @@ impl DebugPanel {
             return;
         }
         self.vars.tree.set_roots(items);
-        for &i in open {
-            self.vars.tree.expand(i);
-        }
-        self.vars.load = VarsLoad::Shown;
         self.vars.list = ListState::default();
         self.vars.node = 0;
+        let kept = self.selected_frame().map(|f| f.name.clone()).and_then(|name| self.kept.frame(&name));
+        self.vars.reopen_roots(open, kept);
+        self.vars.load = VarsLoad::Shown;
         self.vars.sync();
     }
 
@@ -242,7 +245,13 @@ impl DebugPanel {
     }
 
     pub fn show_children(&mut self, node: usize, items: Vec<VarItem>) {
+        let before = self.vars.tree.node(node).and_then(|n| n.children.as_ref()).map_or(0, Vec::len);
         self.vars.show_children(node, items);
+        if let Some(name) = self.selected_frame().map(|f| f.name.clone())
+            && let Some(kept) = self.kept.frame(&name)
+        {
+            self.vars.reopen_under(node, before, kept);
+        }
         self.vars.sync();
     }
 
@@ -721,7 +730,7 @@ impl DebugPanel {
             DebugAction::Expand => {
                 let node = self.vars.node;
                 match self.vars.tree.marker(node) {
-                    '▸' => self.vars.tree.expand(node),
+                    '▸' => self.vars_open(node),
                     '▾' => {
                         let first = self.vars.tree.node(node).and_then(|n| n.children.as_ref()).and_then(|c| c.first().copied());
                         if let Some(c) = first {
@@ -736,7 +745,7 @@ impl DebugPanel {
             DebugAction::Collapse => {
                 let node = self.vars.node;
                 if self.vars.tree.marker(node) == '▾' {
-                    self.vars.tree.collapse(node);
+                    self.vars_close(node);
                 } else if let Some(parent) = self.vars.tree.node(node).and_then(|n| n.parent) {
                     self.vars.node = parent;
                 }
@@ -751,6 +760,7 @@ impl DebugPanel {
             self.vars.node = n;
         }
         self.vars.sync();
+        self.keep_selection();
         true
     }
 
@@ -758,11 +768,45 @@ impl DebugPanel {
     fn vars_toggle(&mut self) {
         let node = self.vars.node;
         match self.vars.tree.marker(node) {
-            '▾' => self.vars.tree.collapse(node),
-            '▸' => self.vars.tree.expand(node),
+            '▾' => self.vars_close(node),
+            '▸' => self.vars_open(node),
             _ => {
                 self.vars.tree.load_more(node);
             }
+        }
+    }
+
+    /// The user opened `node`.
+    fn vars_open(&mut self, node: usize) {
+        self.vars.tree.expand(node);
+        self.keep_open(node, true);
+        if let Some(name) = self.selected_frame().map(|f| f.name.clone())
+            && let Some(kept) = self.kept.frame(&name)
+        {
+            self.vars.reopen_under(node, 0, kept);
+        }
+    }
+
+    /// The user closed `node`.
+    fn vars_close(&mut self, node: usize) {
+        self.vars.tree.collapse(node);
+        self.keep_open(node, false);
+    }
+
+    /// Records an open or a close. A name that repeats on the path records nothing: see `VarTree::ambiguous`.
+    fn keep_open(&mut self, node: usize, open: bool) {
+        let Some(name) = self.selected_frame().map(|f| f.name.clone()) else { return };
+        let Some(path) = self.vars.tree.stable_path_of(node) else { return };
+        self.kept.frame_mut(&name).record(path, open);
+    }
+
+    /// Records the selected row. On a load-more row, its container.
+    fn keep_selection(&mut self) {
+        let Some(name) = self.selected_frame().map(|f| f.name.clone()) else { return };
+        let node = self.vars.tree.more_of(self.vars.node).unwrap_or(self.vars.node);
+        let path = self.vars.tree.path_of(node);
+        if !path.is_empty() {
+            self.kept.frame_mut(&name).selected = Some(path);
         }
     }
 
@@ -776,6 +820,7 @@ impl DebugPanel {
         self.vars.node = node;
         if self.vars.tree.load_more(node) {
             self.vars.sync();
+            self.keep_selection();
             return true;
         }
         let depth = self.vars.tree.node(node).map_or(0, |n| n.depth);
@@ -784,6 +829,7 @@ impl DebugPanel {
             self.vars_toggle();
         }
         self.vars.sync();
+        self.keep_selection();
         true
     }
 
@@ -1466,7 +1512,7 @@ mod tests {
     // ---- the Variables tab
 
     fn vi(name: &str, value: &str, ty: &str, reference: i64) -> VarItem {
-        VarItem { name: name.into(), value: value.into(), ty: ty.into(), reference, children: 0 }
+        VarItem { name: name.into(), value: value.into(), ty: ty.into(), reference, children: 0, expensive: false }
     }
 
     /// Asks and shows the scopes of the selected frame: `Arguments` and `Locals` open, `Registers` closed.
@@ -2162,5 +2208,214 @@ mod tests {
             let row = row_text(&term, y, 30);
             assert_eq!(row.trim_matches(|c: char| c == '│' || c == ' '), "", "row {y} draws nothing past the border: {row}");
         }
+    }
+
+    // ---- what stays open across stops
+
+    fn named(p: &[&str]) -> Vec<String> {
+        p.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    /// The paths kept open for the function `add`, which `three()` and `with_vars` stop in.
+    fn kept_open(p: &DebugPanel) -> Vec<Vec<String>> {
+        p.kept.frame("add").map(|f| f.open.clone()).unwrap_or_default()
+    }
+
+    /// A stop in `frame` with nothing answered: `show_scopes` and its asks are the test's.
+    fn stopped_in(p: &mut DebugPanel, frame: &str) {
+        p.stop_began(Some(1));
+        p.set_threads(vec![Thread { id: 1, name: "t".into() }]);
+        p.show_stack(1, vec![row(0, frame, Some("demo.c:4"))]);
+    }
+
+    /// `stopped_in`, then the scopes asked and answered with the numbers of a new stop (11, 12, 13); the references
+    /// asked for since.
+    fn stopped_again(p: &mut DebugPanel, frame: &str) -> Vec<i64> {
+        stopped_in(p, frame);
+        p.scopes_wanted().expect("the tab asks");
+        p.show_scopes(vec![vi("Arguments", "", "", 11), vi("Locals", "", "", 12), vi("Registers", "", "", 13)], &[0, 1]);
+        p.take_var_asks().iter().map(|a| a.reference).collect()
+    }
+
+    /// The answers of a stop after `stopped_again`: Locals gives `p` and `arr` (hint 5000, reference 16), the
+    /// Arguments `a` and `b`. The references asked for since.
+    fn answer_locals(p: &mut DebugPanel) -> Vec<i64> {
+        p.show_children(0, vec![vi("a", "1", "int", 0), vi("b", "2", "int", 0)]);
+        let arr = VarItem { children: 5000, ..vi("arr", "", "int [5000]", 16) };
+        p.show_children(1, vec![vi("p", "", "struct point", 15), arr]);
+        p.take_var_asks().iter().map(|a| a.reference).collect()
+    }
+
+    /// Locals (node 0, reference 2) holding `children`, open, on the Variables tab of a stop in `add`.
+    fn locals_panel(children: Vec<VarItem>) -> DebugPanel {
+        let mut p = suspended_with(three());
+        p.set_tab(DebugTab::Variables);
+        p.scopes_wanted().expect("the tab asks");
+        p.show_scopes(vec![vi("Locals", "", "", 2)], &[0]);
+        p.take_var_asks();
+        p.show_children(0, children);
+        p
+    }
+
+    #[test]
+    fn right_and_left_are_recorded() {
+        let mut p = with_vars();
+        go_to(&mut p, "arr");
+        key_in(&mut p, DebugAction::Expand);
+        assert_eq!(kept_open(&p), [named(&["Locals", "arr"])], "Right");
+        key_in(&mut p, DebugAction::Collapse);
+        assert!(kept_open(&p).is_empty(), "Left");
+        key_in(&mut p, DebugAction::Open);
+        assert_eq!(kept_open(&p), [named(&["Locals", "arr"])], "Enter opens");
+        key_in(&mut p, DebugAction::Open);
+        assert!(kept_open(&p).is_empty(), "Enter closes");
+        // A click on the marker.
+        draw(&mut p, 60, 12, Some(Phase::Suspended));
+        let (x, y) = (p.list_rect.x + 1 + 2, p.list_rect.y + 5);
+        with_cx(|cx| assert!(p.handle_mouse(&press(x, y, 1), Some(Phase::Suspended), cx)));
+        assert_eq!(kept_open(&p), [named(&["Locals", "arr"])], "a click on the marker opens");
+        with_cx(|cx| assert!(p.handle_mouse(&press(x, y, 1), Some(Phase::Suspended), cx)));
+        assert!(kept_open(&p).is_empty(), "and closes");
+    }
+
+    #[test]
+    fn only_the_users_acts_are_recorded() {
+        let mut p = with_vars();
+        assert!(p.take_var_asks().is_empty());
+        assert!(p.kept.frame("add").is_none(), "the default scopes opened and answered: nothing kept");
+        key_in(&mut p, DebugAction::Down);
+        let kept = p.kept.frame("add").expect("a move is the user's act");
+        assert!(kept.open.is_empty() && kept.shut.is_empty());
+        assert_eq!(kept.selected, Some(named(&["Arguments", "a"])));
+    }
+
+    #[test]
+    fn a_stop_with_nothing_answered_keeps_the_paths() {
+        type Stop = fn(&mut DebugPanel);
+        let stops: [(&str, Stop); 2] = [
+            ("three stops and a clear", |p| {
+                for _ in 0..3 {
+                    p.stop_began(Some(1));
+                }
+                p.clear_stack();
+                stopped_in(p, "add");
+            }),
+            ("a thread choice and a frame choice", |p| {
+                stopped_in(p, "add");
+                p.select_thread(1);
+                p.show_stack(1, three());
+                p.frames_state.select(1);
+                p.bump();
+                p.frames_state.select(0);
+                p.bump();
+            }),
+        ];
+        for (what, stop) in stops {
+            let mut p = with_vars();
+            go_to(&mut p, "arr");
+            key_in(&mut p, DebugAction::Expand);
+            stop(&mut p);
+            p.scopes_wanted().expect("the tab asks");
+            p.show_scopes(vec![vi("Arguments", "", "", 11), vi("Locals", "", "", 12)], &[0, 1]);
+            p.take_var_asks();
+            assert_eq!(answer_locals(&mut p), [16], "{what}: arr asks");
+        }
+    }
+
+    #[test]
+    fn the_tree_comes_back_after_a_stop() {
+        let mut p = with_vars();
+        go_to(&mut p, "arr");
+        key_in(&mut p, DebugAction::Expand);
+        p.take_var_asks();
+        assert_eq!(stopped_again(&mut p, "add"), [11, 12]);
+        assert_eq!(answer_locals(&mut p), [16], "by name, with the new reference");
+        let rows = p.var_rows();
+        assert!(rows.iter().any(|r| r.starts_with("  ▾ arr")), "{rows:?}");
+        assert!(p.var_selected().starts_with("▾ arr"), "{}", p.var_selected());
+    }
+
+    #[test]
+    fn a_closed_scope_stays_closed_across_a_stop() {
+        let mut p = with_vars();
+        go_to(&mut p, "Locals");
+        key_in(&mut p, DebugAction::Collapse);
+        assert_eq!(stopped_again(&mut p, "add"), [11], "only Arguments");
+        assert!(p.var_rows().contains(&"▸ Locals".to_owned()), "{:?}", p.var_rows());
+        go_to(&mut p, "Locals");
+        key_in(&mut p, DebugAction::Expand);
+        p.take_var_asks();
+        assert_eq!(stopped_again(&mut p, "add"), [11, 12], "opened by hand again");
+    }
+
+    #[test]
+    fn a_user_opened_scope_stays_open() {
+        let mut p = with_vars();
+        go_to(&mut p, "Registers");
+        key_in(&mut p, DebugAction::Expand);
+        assert_eq!(p.take_var_asks().iter().map(|a| a.reference).collect::<Vec<_>>(), [3]);
+        assert_eq!(stopped_again(&mut p, "add"), [11, 12, 13]);
+    }
+
+    #[test]
+    fn each_function_has_its_tree() {
+        let mut p = with_vars();
+        go_to(&mut p, "arr");
+        key_in(&mut p, DebugAction::Expand);
+        assert_eq!(stopped_again(&mut p, "callee"), [11, 12]);
+        assert!(answer_locals(&mut p).is_empty(), "callee has an arr of its own, closed");
+        assert_eq!(stopped_again(&mut p, "add"), [11, 12]);
+        assert_eq!(answer_locals(&mut p), [16], "back in add: open");
+    }
+
+    #[test]
+    fn opened_in_a_shadow_records_nothing() {
+        let mut p = locals_panel(vec![vi("p", "", "struct inner", 5), vi("p #2", "", "struct pair", 7), vi("q", "", "int", 0)]);
+        p.kept.frame_mut("add").record(named(&["Locals", "p"]), true);
+        go_to(&mut p, "p  ");
+        key_in(&mut p, DebugAction::Expand);
+        p.show_children(1, vec![vi("x", "1", "int", 8)]);
+        go_to(&mut p, "x");
+        key_in(&mut p, DebugAction::Expand);
+        assert_eq!(kept_open(&p), [named(&["Locals", "p"])], "opening in a shadow adds nothing");
+        go_to(&mut p, "p  ");
+        key_in(&mut p, DebugAction::Collapse);
+        assert_eq!(kept_open(&p), [named(&["Locals", "p"])], "and closing removes nothing");
+    }
+
+    #[test]
+    fn a_load_more_row_records_nothing_and_saves_its_container() {
+        let mut p = paged_panel(5000);
+        key_in(&mut p, DebugAction::End);
+        key_in(&mut p, DebugAction::Open);
+        assert_eq!(p.take_var_asks().iter().map(|a| a.start).collect::<Vec<_>>(), [1000]);
+        assert!(kept_open(&p).is_empty());
+        assert_eq!(p.kept.frame("add").and_then(|f| f.selected.clone()), Some(named(&["Locals", "arr"])));
+    }
+
+    #[test]
+    fn a_new_session_forgets() {
+        let mut p = with_vars();
+        go_to(&mut p, "arr");
+        key_in(&mut p, DebugAction::Expand);
+        p.start("demo", SessionId(2));
+        p.set_tab(DebugTab::Variables);
+        assert!(p.kept.frame("add").is_none());
+        assert_eq!(stopped_again(&mut p, "add"), [11, 12]);
+        assert!(answer_locals(&mut p).is_empty(), "arr is closed");
+    }
+
+    #[test]
+    fn opening_a_node_with_known_children_opens_what_was_saved_below() {
+        let mut p = locals_panel(vec![vi("a", "", "struct a", 30)]);
+        go_to(&mut p, "a");
+        key_in(&mut p, DebugAction::Expand);
+        assert_eq!(p.take_var_asks().iter().map(|a| a.reference).collect::<Vec<_>>(), [30]);
+        p.show_children(1, vec![vi("b", "", "struct b", 31)]);
+        key_in(&mut p, DebugAction::Collapse);
+        assert_eq!(p.vars.tree.marker(1), '▸');
+        p.kept.frame_mut("add").record(named(&["Locals", "a", "b"]), true);
+        key_in(&mut p, DebugAction::Expand);
+        assert_eq!(p.take_var_asks().iter().map(|a| a.reference).collect::<Vec<_>>(), [31], "b asks with no stop");
     }
 }

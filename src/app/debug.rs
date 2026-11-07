@@ -279,7 +279,7 @@ fn var_text(raw: &str) -> String {
 }
 
 fn var_item_of_scope(s: &Scope) -> VarItem {
-    VarItem { name: var_text(&s.name), reference: s.variables_reference, ..VarItem::default() }
+    VarItem { name: var_text(&s.name), reference: s.variables_reference, expensive: s.expensive, ..VarItem::default() }
 }
 
 fn var_item(v: &Variable) -> VarItem {
@@ -289,6 +289,7 @@ fn var_item(v: &Variable) -> VarItem {
         ty: var_text(&v.ty),
         reference: v.variables_reference,
         children: v.indexed_variables.max(0).saturating_add(v.named_variables.max(0)),
+        ..VarItem::default()
     }
 }
 
@@ -1063,6 +1064,8 @@ impl App {
             (TagKind::Variables { node, .. }, Ok(body)) => {
                 let variables = body_of::<VariablesBody>("variables", body).variables;
                 self.debug_panel.show_children(node, variables.iter().map(var_item).collect());
+                // A reopened level asks the next without waiting for the tick.
+                self.debug_sync_vars();
             }
             (TagKind::Variables { node, .. }, Err(e)) => {
                 tracing::debug!("dap: variables failed: {e}");
@@ -6085,11 +6088,448 @@ pub(crate) mod tests {
                 json!({"variables": [{"name": "arr", "value": "", "type": "int []", "variablesReference": 6, "indexedVariables": 5000}]});
             fake.respond(&req, arr);
             pump_until(&mut app, |a| a.debug_panel.var_count() == 2).await;
+            // `arr` was opened by hand, so it opens again, on its first page: no row of the old stop's pages.
+            let req = fake.recv("variables").await;
+            assert_eq!(req["arguments"], json!({"variablesReference": 6, "start": 0, "count": 1000}), "{order}");
+            fake.respond(&req, leaves_from(0, 1000));
+            pump_until(&mut app, |a| a.debug_panel.var_count() == 2 + 1000 + 1).await;
             let rows = var_rows(&mut app);
-            assert_eq!(rows.get(1).map(String::as_str), Some("  ▸ arr  int []"), "{order}: {rows:?}");
+            assert_eq!(rows.get(1).map(String::as_str), Some("  ▾ arr  first 1000 of 5000 shown  int []"), "{order}: {:?}", rows.get(1));
+            assert_eq!(rows.last().map(String::as_str), Some("      load 1000 more  4000 left"), "{order}");
+            assert!(rows.iter().all(|r| !r.contains("could not read")), "{order}: {rows:?}");
             assert!(texts(&app).iter().all(|t| !t.contains("could not read")), "{order}: {:?}", texts(&app));
             let _ = std::fs::remove_dir_all(dir);
         }
+    }
+
+    // ---- what stays open across stops (yman 433)
+
+    /// What gdb answers `scopes` with at the second stop: the same names, other numbers.
+    fn new_scopes() -> Value {
+        json!({"scopes": [
+            {"name": "Arguments", "presentationHint": "arguments", "variablesReference": 11, "expensive": false},
+            {"name": "Locals", "presentationHint": "locals", "variablesReference": 12, "expensive": false},
+            {"name": "Registers", "presentationHint": "registers", "variablesReference": 13, "namedVariables": 59, "expensive": false}]})
+    }
+
+    fn leaf(name: &str, value: &str) -> Value {
+        json!({"name": name, "value": value, "type": "int", "variablesReference": 0})
+    }
+
+    /// The children at the first stop of what `reopened` opens: `p` (5) holds `x` and `inner` (7); at the second
+    /// stop the numbers are 15 and 17.
+    fn p_children(inner: i64) -> Value {
+        json!({"variables": [leaf("x", "1"), {"name": "inner", "value": "", "type": "struct in", "variablesReference": inner, "namedVariables": 1}]})
+    }
+
+    fn new_children(reference: i64) -> Value {
+        match reference {
+            11 => gdb_children(1),
+            12 => json!({"variables": [
+                {"name": "p", "value": "", "type": "struct point", "variablesReference": 15, "namedVariables": 2},
+                {"name": "arr", "value": "", "type": "int [3]", "variablesReference": 16, "indexedVariables": 3}]}),
+            15 => p_children(17),
+            17 => json!({"variables": [leaf("z", "9")]}),
+            _ => json!({"variables": []}),
+        }
+    }
+
+    /// `vars_paused`, the tree read (rows Arguments, a, b, Locals, p, arr, Registers), `p` opened by hand and answered
+    /// with `x` and `inner`.
+    async fn reopened(name: &str) -> (App, PathBuf, FakeAdapter, PathBuf) {
+        let (mut app, dir, mut fake, c) = vars_paused(name).await;
+        read_vars(&mut app, &mut fake).await;
+        var_go_to(&mut app, "p");
+        press(&mut app, KeyCode::Right);
+        app.debug_sync_vars();
+        let req = fake.recv("variables").await;
+        assert_eq!(req["arguments"]["variablesReference"], 5);
+        fake.respond(&req, p_children(7));
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 9).await;
+        (app, dir, fake, c)
+    }
+
+    /// The next request with that command; the commands of the others it passed go to `seen`.
+    async fn recv_noting(fake: &mut FakeAdapter, command: &str, seen: &mut Vec<String>) -> Value {
+        loop {
+            let m = fake.next().await;
+            if m["type"] != "request" {
+                continue;
+            }
+            if m["command"] == command {
+                return m;
+            }
+            seen.push(m["command"].as_str().unwrap_or_default().to_owned());
+        }
+    }
+
+    /// The step's `next` is answered and the program stops in `add` at `line` (1-based, unlike the stop before). The
+    /// commands of any other request the client sent on the way: the stack and the thread list are expected.
+    async fn step_stop(app: &mut App, fake: &mut FakeAdapter, c: &Path, line: i64) -> Vec<String> {
+        let mut seen = Vec::new();
+        let req = recv_noting(fake, "next", &mut seen).await;
+        fake.respond(&req, json!({}));
+        let before = epoch_of(app);
+        fake.event("stopped", json!({"reason": "breakpoint", "threadId": 7}));
+        // The thread is known again once the stop is handled; the `next` answer alone also raises the epoch.
+        pump_until(app, |a| epoch_of(a) > before && a.debug_panel.thread() == Some(7)).await;
+        for _ in 0..2 {
+            let m = fake.next().await;
+            match m["command"].as_str() {
+                Some("stackTrace") => fake.respond(&m, json!({"stackFrames": [frame_at(0, "add", c, line)]})),
+                Some("threads") => fake.respond(&m, json!({"threads": [{"id": 7, "name": "t"}]})),
+                other => seen.push(other.unwrap_or_default().to_owned()),
+            }
+        }
+        pump_until(app, |a| !a.debug_panel.threads().is_empty()).await;
+        let want = (c.to_path_buf(), (line - 1) as usize);
+        pump_until(app, |a| point(a).as_ref() == Some(&want)).await;
+        seen
+    }
+
+    /// F8, and the stop that follows.
+    async fn next_stop(app: &mut App, fake: &mut FakeAdapter, c: &Path, line: i64) {
+        press(app, F8);
+        step_stop(app, fake, c, line).await;
+    }
+
+    /// The tick asks `scopes` of the new stop and the answer is read, the two open scopes asked and answered. With
+    /// `p` saved, the chain goes on by itself: its ask (15) is the next `variables` request, not yet answered.
+    async fn read_new(app: &mut App, fake: &mut FakeAdapter) {
+        app.debug_sync_vars();
+        let req = fake.recv("scopes").await;
+        fake.respond(&req, new_scopes());
+        pump_until(app, |a| a.debug_panel.var_count() == 3).await;
+        let mut refs = Vec::new();
+        for _ in 0..2 {
+            let req = fake.recv("variables").await;
+            let reference = req["arguments"]["variablesReference"].as_i64().unwrap();
+            refs.push(reference);
+            fake.respond(&req, new_children(reference));
+        }
+        refs.sort();
+        assert_eq!(refs, [11, 12], "never the first stop's 1 and 2");
+        pump_until(app, |a| a.debug_panel.var_count() == 7).await;
+    }
+
+    /// The next `variables` request is answered from `new_children`; its reference.
+    async fn answer_next(fake: &mut FakeAdapter) -> i64 {
+        let req = fake.recv("variables").await;
+        let reference = req["arguments"]["variablesReference"].as_i64().unwrap();
+        fake.respond(&req, new_children(reference));
+        reference
+    }
+
+    /// The commands of the requests the client sends within a moment.
+    async fn sent_since(fake: &mut FakeAdapter) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Ok(m) = tokio::time::timeout(std::time::Duration::from_millis(150), fake.next()).await {
+            if m["type"] == "request" {
+                out.push(m["command"].as_str().unwrap_or_default().to_owned());
+            }
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn a_stop_reopens_by_name_with_the_new_reference() {
+        let (mut app, dir, mut fake, c) = reopened("reopen-name").await;
+        let before = texts(&app);
+        next_stop(&mut app, &mut fake, &c, 5).await;
+        read_new(&mut app, &mut fake).await;
+        app.debug_sync_vars();
+        let req = fake.recv("variables").await;
+        assert_eq!(req["arguments"]["variablesReference"], 15, "p's number at this stop, never 5");
+        fake.respond(&req, new_children(15));
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 9).await;
+        let rows = var_rows(&mut app);
+        assert_eq!(rows[4], "  ▾ p  struct point", "{rows:?}");
+        assert_eq!(rows[5], "      x = 1  int");
+        assert!(rows[6].starts_with("    ▸ inner"), "{rows:?}");
+        assert_eq!(texts(&app), before, "no toast");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_chain_does_not_wait_for_the_tick() {
+        let (mut app, dir, mut fake, c) = reopened("reopen-chain").await;
+        var_go_to(&mut app, "inner");
+        press(&mut app, KeyCode::Right);
+        app.debug_sync_vars();
+        let req = fake.recv("variables").await;
+        assert_eq!(req["arguments"]["variablesReference"], 7);
+        fake.respond(&req, json!({"variables": [leaf("z", "9")]}));
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 10).await;
+        next_stop(&mut app, &mut fake, &c, 5).await;
+        // `read_new` calls `debug_sync_vars` once, for `scopes`. After that each answer asks the next level by itself.
+        read_new(&mut app, &mut fake).await;
+        assert_eq!(answer_next(&mut fake).await, 15);
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 9).await;
+        assert_eq!(answer_next(&mut fake).await, 17, "inner, one level further");
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 10).await;
+        let rows = var_rows(&mut app);
+        assert!(rows[6].starts_with("    ▾ inner") && rows[7] == "        z = 9  int", "{rows:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_old_stops_answer_opens_nothing() {
+        let (mut app, dir, mut fake, c) = reopened("reopen-old").await;
+        let old = app.debug_panel.selection_seq();
+        next_stop(&mut app, &mut fake, &c, 5).await;
+        read_new(&mut app, &mut fake).await;
+        assert_eq!(answer_next(&mut fake).await, 15);
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 9).await;
+        let (rows, before) = (var_rows(&mut app), texts(&app));
+        // The old stop's `p` answer: node 5 is `p` in this tree too, with a child that has a reference.
+        let tag = vars_tag(&app, 5, old);
+        let with_ref = json!({"variables": [{"name": "stale", "value": "9", "type": "struct", "variablesReference": 99}]});
+        inject(&mut app, DapBody::Response { tag, result: Ok(with_ref) });
+        let tag = vars_tag(&app, 5, old);
+        inject(&mut app, DapBody::Response { tag, result: Err("list index out of range".into()) });
+        assert_eq!(var_rows(&mut app), rows);
+        assert_eq!(texts(&app), before);
+        app.debug_sync_vars();
+        let sent = sent_since(&mut fake).await;
+        assert!(sent.is_empty(), "no ask came of it: {sent:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_step_mid_reopen_sends_no_further_level() {
+        let (mut app, dir, mut fake, c) = reopened("reopen-step-mid").await;
+        var_go_to(&mut app, "inner");
+        press(&mut app, KeyCode::Right);
+        app.debug_sync_vars();
+        let req = fake.recv("variables").await;
+        fake.respond(&req, json!({"variables": [leaf("z", "9")]}));
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 10).await;
+        next_stop(&mut app, &mut fake, &c, 5).await;
+        read_new(&mut app, &mut fake).await;
+        let late = fake.recv("variables").await;
+        assert_eq!(late["arguments"]["variablesReference"], 15, "p is out");
+        press(&mut app, F8);
+        pump_until(&mut app, |a| a.debug.phase() == Some(Phase::Running)).await;
+        // gdb answers it anyway; `inner` (17) would be the next level.
+        fake.respond(&late, new_children(15));
+        let req = fake.recv("next").await;
+        fake.respond(&req, json!({}));
+        let sent = sent_since(&mut fake).await;
+        assert!(sent.is_empty(), "no further level: {sent:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_stop_mid_reopen_keeps_the_paths() {
+        let (mut app, dir, mut fake, c) = reopened("reopen-stop-mid").await;
+        var_go_to(&mut app, "inner");
+        press(&mut app, KeyCode::Right);
+        app.debug_sync_vars();
+        let req = fake.recv("variables").await;
+        fake.respond(&req, json!({"variables": [leaf("z", "9")]}));
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 10).await;
+        next_stop(&mut app, &mut fake, &c, 5).await;
+        read_new(&mut app, &mut fake).await;
+        let _late = fake.recv("variables").await;
+        press(&mut app, F8);
+        pump_until(&mut app, |a| a.debug.phase() == Some(Phase::Running)).await;
+        step_stop(&mut app, &mut fake, &c, 6).await;
+        read_new(&mut app, &mut fake).await;
+        assert_eq!(answer_next(&mut fake).await, 15);
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 9).await;
+        assert_eq!(answer_next(&mut fake).await, 17, "inner too: the cut chain lost nothing");
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 10).await;
+        let rows = var_rows(&mut app);
+        assert!(rows[4].starts_with("  ▾ p") && rows[6].starts_with("    ▾ inner"), "{rows:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_held_step_asks_nothing_for_a_tree_it_never_saw() {
+        let (mut app, dir, mut fake, c) = reopened("reopen-held").await;
+        for line in [5, 6, 7] {
+            press(&mut app, F8);
+            let seen = step_stop(&mut app, &mut fake, &c, line).await;
+            assert!(seen.is_empty(), "line {line}: only the step's own requests: {seen:?}");
+        }
+        assert_eq!(app.debug_panel.var_count(), 0);
+        let sent = sent_since(&mut fake).await;
+        assert!(sent.is_empty(), "no tick, nothing asked: {sent:?}");
+        press(&mut app, F8);
+        step_stop(&mut app, &mut fake, &c, 8).await;
+        read_new(&mut app, &mut fake).await;
+        assert_eq!(answer_next(&mut fake).await, 15, "with a tick: scopes, Locals, p");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_hidden_window_reads_nothing_until_shown() {
+        let (mut app, dir, mut fake, c) = reopened("reopen-hidden").await;
+        let alt_f5 = key(KeyCode::F(5), KeyModifiers::ALT);
+        app.handle_key(alt_f5);
+        assert!(!app.layout.is_visible(ToolWindowId::Debug));
+        press(&mut app, F8);
+        step_stop(&mut app, &mut fake, &c, 5).await;
+        app.debug_sync_vars();
+        quiet_twice(&mut app, &mut fake, "q-reopen-hidden.log").await;
+        app.handle_key(alt_f5);
+        assert!(app.layout.is_visible(ToolWindowId::Debug));
+        in_vars(&mut app);
+        read_new(&mut app, &mut fake).await;
+        assert_eq!(answer_next(&mut fake).await, 15);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_failed_reopen_stays_on_its_row() {
+        let (mut app, dir, mut fake, c) = reopened("reopen-failed").await;
+        let before = texts(&app);
+        next_stop(&mut app, &mut fake, &c, 5).await;
+        read_new(&mut app, &mut fake).await;
+        let req = fake.recv("variables").await;
+        assert_eq!(req["arguments"]["variablesReference"], 15);
+        fake.respond_error(&req, "Cannot access memory");
+        handle_next(&mut app, |m| matches!(m, AppMsg::Dap(_))).await;
+        let rows = var_rows(&mut app);
+        assert_eq!(rows[4], "  ▸ p  could not read: Cannot access memory", "{rows:?}");
+        assert_eq!(texts(&app), before, "no toast");
+        assert_eq!(app.debug.phase(), Some(Phase::Suspended));
+        next_stop(&mut app, &mut fake, &c, 6).await;
+        read_new(&mut app, &mut fake).await;
+        assert_eq!(answer_next(&mut fake).await, 15, "the path stayed saved");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_big_printer_stays_closed_and_asks_nothing() {
+        let (mut app, dir, mut fake, _a, c) = paused_in_two("reopen-printer").await;
+        app.debug.session.as_mut().unwrap().trusted_paging = true;
+        in_vars(&mut app);
+        let only_locals =
+            |reference: i64| json!({"scopes": [{"name": "Locals", "presentationHint": "locals", "variablesReference": reference}]});
+        let map = |reference: i64| {
+            json!({"variables": [{"name": "m", "value": "std::map with 200000 elements", "type": "std::map<int, int>",
+                "variablesReference": reference, "indexedVariables": 400_000}]})
+        };
+        app.debug_sync_vars();
+        let req = fake.recv("scopes").await;
+        fake.respond(&req, only_locals(2));
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 1).await;
+        let req = fake.recv("variables").await;
+        fake.respond(&req, map(6));
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 2).await;
+        var_go_to(&mut app, "m");
+        press(&mut app, KeyCode::Right);
+        app.debug_sync_vars();
+        let req = fake.recv("variables").await;
+        assert_eq!(req["arguments"], json!({"variablesReference": 6, "start": 0, "count": 1000}), "by hand, it works");
+        fake.respond(&req, leaves_from(0, 1000));
+        pump_until(&mut app, |a| a.debug_panel.var_count() > 2).await;
+        next_stop(&mut app, &mut fake, &c, 5).await;
+        app.debug_sync_vars();
+        let req = fake.recv("scopes").await;
+        fake.respond(&req, only_locals(12));
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 1).await;
+        let req = fake.recv("variables").await;
+        assert_eq!(req["arguments"]["variablesReference"], 12);
+        fake.respond(&req, map(16));
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 2).await;
+        let rows = var_rows(&mut app);
+        assert!(rows[1].starts_with("▸ m") || rows[1].starts_with("  ▸ m"), "{rows:?}");
+        quiet_twice(&mut app, &mut fake, "q-reopen-printer.log").await;
+        in_vars(&mut app);
+        var_go_to(&mut app, "m");
+        press(&mut app, KeyCode::Right);
+        app.debug_sync_vars();
+        let req = fake.recv("variables").await;
+        assert_eq!(req["arguments"], json!({"variablesReference": 16, "start": 0, "count": 1000}));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_big_array_reopens_on_its_first_page() {
+        let (mut app, dir, mut fake) = open_big("reopen-array", 5000).await;
+        let req = ask_page(&mut app, &mut fake).await;
+        assert_eq!(req["arguments"]["start"], 1000);
+        fake.respond(&req, leaves_from(1000, 1000));
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 2 + 2000 + 1).await;
+        let c = app.editor.active_path().map(Path::to_path_buf).unwrap();
+        next_stop(&mut app, &mut fake, &c, 5).await;
+        app.debug_sync_vars();
+        let req = fake.recv("scopes").await;
+        fake.respond(&req, json!({"scopes": [{"name": "Locals", "presentationHint": "locals", "variablesReference": 12}]}));
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 1).await;
+        let req = fake.recv("variables").await;
+        let arr =
+            json!({"variables": [{"name": "arr", "value": "", "type": "int []", "variablesReference": 16, "indexedVariables": 5000}]});
+        fake.respond(&req, arr);
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 2).await;
+        let req = fake.recv("variables").await;
+        assert_eq!(req["arguments"], json!({"variablesReference": 16, "start": 0, "count": 1000}), "the first page only");
+        fake.respond(&req, leaves_from(0, 1000));
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 2 + 1000 + 1).await;
+        let rows = var_rows(&mut app);
+        assert!(rows[1].starts_with("  ▾ arr  first 1000 of 5000 shown"), "{:?}", rows.get(1));
+        app.debug_sync_vars();
+        let sent = sent_since(&mut fake).await;
+        assert!(sent.is_empty(), "no second page: {sent:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_shadowed_local_stays_closed() {
+        let (mut app, dir, mut fake, c) = reopened("reopen-shadow").await;
+        next_stop(&mut app, &mut fake, &c, 5).await;
+        app.debug_sync_vars();
+        let req = fake.recv("scopes").await;
+        fake.respond(&req, new_scopes());
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 3).await;
+        for _ in 0..2 {
+            let req = fake.recv("variables").await;
+            let reference = req["arguments"]["variablesReference"].as_i64().unwrap();
+            let body = match reference {
+                12 => json!({"variables": [
+                    {"name": "p", "value": "", "type": "struct inner", "variablesReference": 15, "namedVariables": 2},
+                    {"name": "p #2", "value": "", "type": "struct point", "variablesReference": 18, "namedVariables": 2},
+                    {"name": "arr", "value": "", "type": "int [3]", "variablesReference": 16, "indexedVariables": 3}]}),
+                r => new_children(r),
+            };
+            fake.respond(&req, body);
+        }
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 8).await;
+        let rows = var_rows(&mut app);
+        assert!(rows[4].starts_with("  ▸ p  ") && rows[5].starts_with("  ▸ p #2"), "both closed: {rows:?}");
+        let sent = sent_since(&mut fake).await;
+        assert!(sent.is_empty(), "p means the inner one here: {sent:?}");
+        next_stop(&mut app, &mut fake, &c, 6).await;
+        read_new(&mut app, &mut fake).await;
+        assert_eq!(answer_next(&mut fake).await, 15, "p alone again: open");
+        pump_until(&mut app, |a| a.debug_panel.var_count() == 9).await;
+        assert!(var_rows(&mut app)[4].starts_with("  ▾ p"), "{:?}", var_rows(&mut app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn stop_mid_reopen_is_silent() {
+        let (mut app, dir, mut fake, c) = reopened("reopen-stopping").await;
+        next_stop(&mut app, &mut fake, &c, 5).await;
+        read_new(&mut app, &mut fake).await;
+        let ask = fake.recv("variables").await;
+        assert_eq!(ask["arguments"]["variablesReference"], 15, "a reopen ask is out");
+        let (rows, before) = (var_rows(&mut app), texts(&app));
+        app.perform(Action::Debug(DebugAction::Stop));
+        pump_until(&mut app, |a| a.debug.phase() == Some(Phase::Stopping)).await;
+        let _ = sent_since(&mut fake).await;
+        let seq = app.debug_panel.selection_seq();
+        let tag = vars_tag(&app, 5, seq);
+        inject(&mut app, DapBody::Response { tag, result: Ok(new_children(15)) });
+        let tag = vars_tag(&app, 5, seq);
+        inject(&mut app, DapBody::Response { tag, result: Err("not available".into()) });
+        assert_eq!(var_rows(&mut app), rows, "Stop does not change the seq, so only the phase drops these");
+        assert_eq!(texts(&app), before);
+        let sent = sent_since(&mut fake).await;
+        assert!(sent.is_empty(), "nothing sent: {sent:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

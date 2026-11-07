@@ -4541,6 +4541,7 @@ async fn variables_window(
         ty: ty.into(),
         reference,
         children: 0,
+        expensive: false,
     };
     app.debug_panel.set_tab(DebugTab::Variables);
     app.debug_panel.set_threads(vec![Thread { id: 1, name: "main".into() }, Thread { id: 7, name: "t".into() }]);
@@ -4627,6 +4628,7 @@ async fn variables_more_window(
         ty: ty.into(),
         reference,
         children: 0,
+        expensive: false,
     };
     app.debug_panel.set_tab(DebugTab::Variables);
     app.debug_panel.set_threads(vec![Thread { id: 1, name: "main".into() }, Thread { id: 7, name: "t".into() }]);
