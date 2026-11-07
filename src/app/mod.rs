@@ -351,6 +351,31 @@ pub struct App {
     started: Instant,
 }
 
+/// Redraws asked for by the bus or the tick come at most once per this; a terminal event draws at once.
+const FRAME_BUDGET: Duration = Duration::from_millis(16);
+
+/// When the last frame was drawn, so the loop can hold a background redraw until `FRAME_BUDGET` has passed.
+#[derive(Default)]
+struct FramePacer {
+    last: Option<Instant>,
+}
+
+impl FramePacer {
+    /// Whether a pending frame should be drawn now: always when `urgent`, and when no frame was drawn yet.
+    fn due(&self, urgent: bool, now: Instant) -> bool {
+        urgent || self.last.is_none_or(|t| now.duration_since(t) >= FRAME_BUDGET)
+    }
+
+    /// When a held frame becomes due; `None` before the first frame.
+    fn next(&self) -> Option<Instant> {
+        self.last.map(|t| t + FRAME_BUDGET)
+    }
+
+    fn drawn(&mut self, now: Instant) {
+        self.last = Some(now);
+    }
+}
+
 impl App {
     pub fn new(root: PathBuf, config: Config, paths: Paths, open: Option<(PathBuf, usize, usize)>) -> Self {
         let (bus_tx, bus_rx) = mpsc::unbounded_channel();
@@ -651,19 +676,31 @@ impl App {
         Ok(())
     }
 
+    /// Draws after every turn that left `dirty_frame` set. A turn woken by a terminal event, or one that cleared
+    /// the screen, draws at once. A turn woken by the bus or the tick draws only when [`FRAME_BUDGET`] has passed
+    /// since the last frame (a flood of adapter messages would otherwise cost a frame each); the frame it holds is
+    /// drawn by the `sleep_until` branch when the budget runs out, without waiting for another message.
     async fn event_loop(&mut self, term: &mut Term) -> Result<()> {
         let mut events = EventStream::new();
         let mut tick = tokio::time::interval(Duration::from_millis(100));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut pacer = FramePacer::default();
         loop {
+            let wake = pacer.next().filter(|_| self.dirty_frame);
+            let mut urgent = false;
             tokio::select! {
-                ev = events.next() => match ev {
-                    Some(Ok(ev)) => self.handle_term_event(ev),
-                    Some(Err(e)) => { tracing::error!("terminal event error: {e}"); }
-                    None => { self.should_quit = true; }
+                ev = events.next() => {
+                    urgent = true;
+                    match ev {
+                        Some(Ok(ev)) => self.handle_term_event(ev),
+                        Some(Err(e)) => { tracing::error!("terminal event error: {e}"); }
+                        None => { self.should_quit = true; }
+                    }
                 },
                 Some(msg) = self.bus_rx.recv() => self.handle_msg(msg),
                 _ = tick.tick() => self.on_tick(),
+                // A frame held back by the budget; tokio builds a disabled branch's future too, hence the `unwrap_or_else`.
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(wake.unwrap_or_else(Instant::now))), if wake.is_some() => {}
             }
             while let Ok(msg) = self.bus_rx.try_recv() {
                 self.handle_msg(msg);
@@ -677,11 +714,14 @@ impl App {
                 term.clear()?;
                 self.needs_clear = false;
                 self.dirty_frame = true;
+                urgent = true;
             }
-            if self.dirty_frame {
+            let now = Instant::now();
+            if self.dirty_frame && pacer.due(urgent, now) {
                 term.draw(|f| crate::ui::render(self, f))?;
                 crate::tui::set_caret_style(self.caret_style());
                 self.dirty_frame = false;
+                pacer.drawn(now);
             }
         }
         Ok(())
@@ -1733,6 +1773,33 @@ pub(crate) mod tests {
     use super::*;
     use crate::git::GitMsg;
     use crate::ui::dialog::{DialogId, DialogResult};
+
+    #[test]
+    fn frame_pacer_draws_the_first_frame() {
+        let t0 = Instant::now();
+        let pacer = FramePacer::default();
+        assert!(pacer.due(false, t0));
+        assert_eq!(pacer.next(), None);
+    }
+
+    #[test]
+    fn frame_pacer_holds_a_background_frame_for_the_budget() {
+        let t0 = Instant::now();
+        let mut pacer = FramePacer::default();
+        pacer.drawn(t0);
+        assert!(!pacer.due(false, t0 + Duration::from_millis(15)));
+        assert!(pacer.due(false, t0 + Duration::from_millis(16)));
+        assert_eq!(pacer.next(), Some(t0 + Duration::from_millis(16)));
+    }
+
+    #[test]
+    fn frame_pacer_never_holds_an_urgent_frame() {
+        let t0 = Instant::now();
+        let mut pacer = FramePacer::default();
+        pacer.drawn(t0);
+        assert!(pacer.due(true, t0 + Duration::from_millis(1)));
+        assert!(pacer.due(true, t0));
+    }
 
     /// An app rooted at a fresh temp directory with config and state under
     /// it, so tests never touch the user's files.

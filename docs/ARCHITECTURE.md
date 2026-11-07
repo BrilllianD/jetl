@@ -144,7 +144,11 @@ and backlog are in `docs/ROADMAP.md`; settings in `docs/CONFIG.md`; keys in
 ## Event flow
 
 `App::run` is a `tokio::select!` over three sources, then drains the bus and
-redraws when `dirty_frame` is set:
+redraws when `dirty_frame` is set. A turn woken by a terminal event (or one that
+cleared the screen) draws at once; a turn woken by the bus or the tick draws at
+most once per `FRAME_BUDGET` (16 ms, `FramePacer` in `app/mod.rs`), and a fourth
+`select!` branch sleeps until the budget runs out so the held frame is drawn
+without another message (yman 443):
 
 1. **Terminal events** (`EventStream`). Keys go to the open dialog (Tab in a
    path-completing input goes to `App::complete_dialog_path`), else the

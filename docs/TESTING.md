@@ -1538,6 +1538,16 @@ Steps, at 80x24 and 120x40, a private tmux socket and `XDG_*` under `/tmp`, `RUS
 2. `spew`: after 3 s of output Alt+F5 hides the window at once; Alt+F5 shows it; Ctrl+F2 gives `Debug session stopped` within 10 s and no `spew` or `gdb` is left. jetl stays near 40 MB.
 3. `long16k`: Shift+F9, then poll `capture-pane` every 100 ms for up to 60 s until `of output dropped` is there (it can be on screen only for a moment: the Console shows the end of each 50 ms batch). The row starts with a number of bytes, is in the warning colour (`capture-pane -e`: the colour of `important` text) and at 80x24 the words `of output dropped` fit. Ctrl+F2 gives `Debug session stopped`, Ctrl+Q exits 0 with empty stderr, and no `gdb` or `long16k` is left. jetl stays near 250 to 320 MB.
 
+Frames per second (yman 443). Every frame ends with ratatui writing the cursor sequence `ESC [ ? 25 h` or `ESC [ ? 25 l`, even when the diff is empty, so the probe counts those two sequences in the pty stream (the last 5 bytes of a chunk are carried over, so none is counted twice) and prints the frames per second of each phase. Release build, 120x40 unless noted, `run` phase (29 s; the base `long16k` run stopped at 16 s, when gdb passed the 3 GB guard):
+
+| Fixture, free | Base (draw per message) | After (`FRAME_BUDGET` 16 ms) |
+|---|---|---|
+| `long16k` | 1333 fps, main thread 48% | 52 fps, 20% (80x24: 54 fps, 11%) |
+| `spew5` | 529 fps, 0% | 55 fps, 43% |
+| `sleepy` | 1.1 fps | 0.8 fps |
+
+Acceptance: at most 63 fps in the `run` phase of `long16k` (both sizes) and `spew5`, `sleepy` no more than the base plus 1, each Ctrl+G key latency at most `max(base + 5 ms, 20 ms)` (observed 2 ms, base 2 ms), jetl's `VmHWM` for `long16k` at most 1.25 times the base's (275 MB against 319 MB). The `flood` step above gives the same result with the budget (the Console's last line 0.01 s after the exit toast, 80x24 and 120x40): it shows that a held frame is not lost, not that the wake branch draws it, since the 100 ms tick would draw it too. The wake branch is not covered by any test; it is read by hand.
+
 What the gate cannot do, by design: gdb's own memory grows 50 to 67 MB/s under a printing program (2 GB in 30 s for `spew5`) whatever jetl does, so a probe that runs `spew5` or `long16k` for half a minute can pass the 3 GB guard in gdb (27.5 s from the session's start, once); read `VmHWM` of jetl, not the guard. Unit tests prove the rest: the gate's limit and hysteresis, the notice's order and text, the give-back of a hidden line, the matcher's budget. The fake adapter stands in for none of the figures above.
 
 ### Scenario: Debug window, threads and frames
