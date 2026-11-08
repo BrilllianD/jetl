@@ -687,13 +687,14 @@ impl App {
         }
     }
 
-    /// The diagnostics of `b`'s file whose range overlaps `range`, as LSP sends them.
+    /// The diagnostics of `b`'s file from its own server whose range overlaps `range`, as LSP sends them.
     pub(super) fn diagnostics_overlapping(&self, b: &Buffer, range: lsp_types::Range) -> Vec<lsp_types::Diagnostic> {
         let key = |p: lsp_types::Position| (p.line, p.character);
-        b.path
-            .as_deref()
-            .map(|p| self.lsp.diagnostics.get(p))
-            .unwrap_or_default()
+        // Diagnostics go back to the server that sent them.
+        let (Some(path), Some(doc)) = (b.path.as_deref(), self.lsp.docs.get(&b.id)) else { return Vec::new() };
+        self.lsp
+            .diagnostics
+            .of_server(path, &doc.server)
             .iter()
             .filter(|d| key(d.range.start) <= key(range.end) && key(range.start) <= key(d.range.end))
             .map(|d| d.to_lsp())
@@ -1520,6 +1521,30 @@ mod tests {
         ];
         preferred_first(&mut items);
         assert_eq!(items.iter().map(title).collect::<Vec<_>>(), ["p1", "p2", "cmd", "a", "b"]);
+    }
+
+    #[tokio::test]
+    async fn context_actions_send_only_the_buffer_servers_diagnostics() {
+        let (mut app, dir) = test_app("lsp-actions-own-server");
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        let a = app.workspace.root.join("a.rs");
+        server.notify(
+            "textDocument/publishDiagnostics",
+            json!({"uri": uri(&a), "diagnostics": [{"range": range(1, 16, 1, 21), "severity": 1, "message": "mismatched types"}]}),
+        );
+        handle_next(&mut app, is_lsp).await;
+        // A second server's diagnostics on the same line.
+        let spelling = crate::lsp::diagnostics::tests::diag(1, 16, 1, 21, crate::lsp::diagnostics::Severity::Warning, "spelling");
+        app.lsp.diagnostics.publish("typos", a.clone(), vec![spelling], 1000);
+        assert_eq!(app.lsp.diagnostics.get(&a).len(), 2, "the editor shows both");
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 18);
+        app.perform(Action::Lsp(LspAction::ContextActions));
+        let req = server.recv("textDocument/codeAction").await;
+        let sent = req["params"]["context"]["diagnostics"].as_array().unwrap().clone();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0]["message"], "mismatched types");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

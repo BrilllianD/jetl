@@ -1,5 +1,6 @@
-//! Diagnostics from `textDocument/publishDiagnostics`: the store (per file,
-//! each publish replacing that file's list, capped and sorted, with a
+//! Diagnostics from `textDocument/publishDiagnostics`: the store (per file
+//! and per server, each publish replacing that server's list for the file,
+//! capped and sorted, readers seeing the servers' lists merged, with a
 //! `version` that every change bumps) and the marks a buffer draws from it
 //! (char ranges in the current text, the worst severity per line, and
 //! non-overlapping underline spans).
@@ -331,11 +332,20 @@ impl Counts {
     }
 }
 
-/// One file's diagnostics and the server that published them.
-#[derive(Debug, Clone)]
+/// One file's diagnostics: each server's own list, and all of them merged
+/// and sorted (what readers get).
+#[derive(Debug, Clone, Default)]
 struct FileDiagnostics {
-    server: String,
+    by_server: BTreeMap<String, Vec<Diagnostic>>,
     items: Vec<Diagnostic>,
+}
+
+impl FileDiagnostics {
+    /// Rebuild `items` from the servers' lists.
+    fn merge(&mut self) {
+        self.items = self.by_server.values().flatten().cloned().collect();
+        sort_items(&mut self.items);
+    }
 }
 
 /// Diagnostics of every file, by path.
@@ -385,15 +395,25 @@ impl DiagnosticStore {
         c
     }
 
-    /// Replace `path`'s diagnostics with what `server` published: at most
-    /// `per_file` (and what is left of `MAX_TOTAL`), the most severe kept,
-    /// sorted by position. True the first time the total cap cuts a list.
+    /// `server`'s diagnostics for `path`, sorted by position; empty when it
+    /// published none.
+    pub fn of_server(&self, path: &Path, server: &str) -> &[Diagnostic] {
+        self.files.get(path).and_then(|f| f.by_server.get(server)).map(Vec::as_slice).unwrap_or_default()
+    }
+
+    /// Replace `server`'s diagnostics for `path` (the other servers' stay):
+    /// at most what `per_file` leaves after them (and what is left of
+    /// `MAX_TOTAL`), the most severe kept, sorted by position. True the
+    /// first time the total cap cuts a list.
     pub fn publish(&mut self, server: &str, path: PathBuf, mut items: Vec<Diagnostic>, per_file: usize) -> bool {
-        let old = self.files.remove(&path).map_or(0, |f| f.items.len());
+        let mut file = self.files.remove(&path).unwrap_or_default();
+        let old = file.by_server.remove(server).map_or(0, |l| l.len());
+        let others = file.items.len() - old;
         self.total -= old;
         let room = MAX_TOTAL.saturating_sub(self.total);
-        let cap = per_file.min(room);
-        let over_total = items.len() > room && room < per_file;
+        let file_room = per_file.saturating_sub(others);
+        let cap = file_room.min(room);
+        let over_total = items.len() > room && room < file_room;
         if items.len() > cap {
             items.sort_by_key(|d| (d.severity, d.range.start.line, d.range.start.character));
             items.truncate(cap);
@@ -404,25 +424,35 @@ impl DiagnosticStore {
         }
         self.total += items.len();
         if !items.is_empty() {
-            self.files.insert(path, FileDiagnostics { server: server.to_string(), items });
+            file.by_server.insert(server.to_string(), items);
+        }
+        if !file.by_server.is_empty() {
+            file.merge();
+            self.files.insert(path, file);
         }
         let note = over_total && !self.overflow_noted;
         self.overflow_noted |= over_total;
         note
     }
 
-    /// Move `path`'s diagnostics through `edits` (just sent to its server,
-    /// in order), dropping those whose text went; bumps the version when
-    /// anything moved.
+    /// Move `path`'s diagnostics (every server's) through `edits` (just
+    /// sent to its server, in order), dropping those whose text went;
+    /// bumps the version once when anything moved.
     pub fn shift(&mut self, path: &Path, edits: &[DocEdit]) {
         if edits.is_empty() {
             return;
         }
         let Some(f) = self.files.get_mut(path) else { return };
         let before = f.items.len();
-        if !shift_all(&mut f.items, path, edits) {
+        let mut changed = false;
+        for list in f.by_server.values_mut() {
+            changed |= shift_all(list, path, edits);
+        }
+        if !changed {
             return;
         }
+        f.by_server.retain(|_, l| !l.is_empty());
+        f.merge();
         self.total -= before - f.items.len();
         if f.items.is_empty() {
             self.files.remove(path);
@@ -430,11 +460,19 @@ impl DiagnosticStore {
         self.version += 1;
     }
 
-    /// Forget what `server` published (it stopped or exited).
+    /// Forget what `server` published (it stopped or exited); the other
+    /// servers' lists stay.
     pub fn clear_server(&mut self, server: &str) {
-        let before = self.files.len();
-        self.files.retain(|_, f| f.server != server);
-        if self.files.len() != before {
+        let mut changed = false;
+        self.files.retain(|_, f| {
+            if f.by_server.remove(server).is_none() {
+                return true;
+            }
+            changed = true;
+            f.merge();
+            !f.by_server.is_empty()
+        });
+        if changed {
             self.total = self.files.values().map(|f| f.items.len()).sum();
             self.version += 1;
         }
@@ -680,6 +718,75 @@ pub(crate) mod tests {
         assert_eq!(s.version(), v + 1, "nothing to clear, no bump");
         s.clear();
         assert_eq!((s.version(), s.total()), (v + 2, 0));
+    }
+
+    fn msgs(items: &[Diagnostic]) -> Vec<&str> {
+        items.iter().map(|d| d.message.as_str()).collect()
+    }
+
+    #[test]
+    fn two_servers_on_one_path_are_kept_apart_and_merged() {
+        let mut s = DiagnosticStore::default();
+        let p = PathBuf::from("/r/a.rs");
+        let e = || diag(3, 0, 3, 1, Severity::Error, "e");
+        s.publish("ra", p.clone(), vec![e()], 1000);
+        s.publish("typos", p.clone(), vec![diag(1, 0, 1, 1, Severity::Hint, "h"), diag(3, 0, 3, 1, Severity::Warning, "w")], 1000);
+        assert_eq!(msgs(s.get(&p)), ["h", "e", "w"]);
+        assert_eq!(s.counts(&p), Counts { errors: 1, warnings: 1, infos: 0, hints: 1 });
+        assert_eq!((s.total(), s.files().count()), (3, 1));
+        assert_eq!(msgs(s.of_server(&p, "ra")), ["e"]);
+        assert_eq!(msgs(s.of_server(&p, "typos")), ["h", "w"]);
+        assert!(s.of_server(&p, "none").is_empty());
+        // One server publishing nothing leaves the other's list.
+        let v = s.version();
+        s.publish("ra", p.clone(), vec![], 1000);
+        assert_eq!(msgs(s.get(&p)), ["h", "w"]);
+        assert_eq!(s.version(), v + 1);
+        // Clearing a server with nothing left changes nothing.
+        s.clear_server("ra");
+        assert_eq!((s.version(), msgs(s.get(&p))), (v + 1, vec!["h", "w"]));
+        s.publish("ra", p.clone(), vec![e()], 1000);
+        let v = s.version();
+        s.clear_server("typos");
+        assert_eq!(msgs(s.get(&p)), ["e"]);
+        assert_eq!((s.total(), s.version()), (1, v + 1));
+        s.publish("ra", p.clone(), vec![], 1000);
+        assert_eq!(s.files().count(), 0);
+    }
+
+    #[test]
+    fn the_per_file_cap_counts_every_server() {
+        let mut s = DiagnosticStore::default();
+        let p = PathBuf::from("/r/a.rs");
+        let many = |n: u32, sev| (0..n).map(|i| diag(i, 0, i, 1, sev, "x")).collect::<Vec<_>>();
+        s.publish("ra", p.clone(), many(2, Severity::Error), 3);
+        s.publish("typos", p.clone(), many(3, Severity::Hint), 3);
+        assert_eq!(s.get(&p).len(), 3);
+        assert_eq!(s.counts(&p), Counts { errors: 2, warnings: 0, infos: 0, hints: 1 });
+        s.publish("ra", p.clone(), many(1, Severity::Error), 3);
+        assert_eq!((s.of_server(&p, "ra").len(), s.of_server(&p, "typos").len()), (1, 1));
+        s.publish("typos", p.clone(), many(3, Severity::Hint), 3);
+        assert_eq!((s.of_server(&p, "ra").len(), s.of_server(&p, "typos").len()), (1, 2));
+        assert_eq!(s.total(), 3);
+    }
+
+    #[test]
+    fn shift_moves_every_servers_list() {
+        let mut s = DiagnosticStore::default();
+        let p = PathBuf::from("/r/a.rs");
+        s.publish("ra", p.clone(), vec![diag(2, 0, 2, 3, Severity::Error, "e")], 1000);
+        s.publish("typos", p.clone(), vec![diag(2, 4, 2, 6, Severity::Hint, "h")], 1000);
+        let v = s.version();
+        s.shift(&p, &[edit(0, 0, 0, 0, "\n")]);
+        assert_eq!(s.version(), v + 1, "one bump for both lists");
+        assert_eq!(s.of_server(&p, "ra")[0].range.start.line, 3);
+        assert_eq!(s.of_server(&p, "typos")[0].range.start.line, 3);
+        assert_eq!(s.get(&p)[1].range.start.line, 3, "the merged list follows");
+        // Deleting the hint's text removes that server's list only.
+        s.shift(&p, &[edit(3, 4, 3, 6, "")]);
+        assert!(s.of_server(&p, "typos").is_empty());
+        assert_eq!(msgs(s.get(&p)), ["e"]);
+        assert_eq!(s.total(), 1);
     }
 
     #[test]
