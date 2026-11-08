@@ -127,13 +127,6 @@ fn literal_kind(kind: &str) -> bool {
     kind.contains("string") || kind.contains("comment") || kind == "char_literal"
 }
 
-/// Nodes `depths` does not look into: literals, and Markdown's `inline`
-/// (prose and link text, whose grammar makes tokens of its parentheses and
-/// brackets).
-fn uncoloured_kind(kind: &str) -> bool {
-    literal_kind(kind) || kind == "inline"
-}
-
 fn in_literal(node: Node) -> bool {
     let mut n = Some(node);
     while let Some(x) = n {
@@ -192,7 +185,7 @@ pub fn depths(rope: &Rope, tree: &Tree, bytes: Range<usize>, out: &mut Vec<(usiz
                     out.push((rope.byte_to_char(node.start_byte()), *d));
                 }
             }
-            None if node.end_byte() > bytes.start && !uncoloured_kind(node.kind()) => {
+            None if node.end_byte() > bytes.start && !literal_kind(node.kind()) => {
                 let base = *d;
                 if cur.goto_first_child() {
                     level.push(base);
@@ -403,11 +396,8 @@ mod tests {
         use crate::config::theme::Theme;
         let def = super::super::syntax::language_for_name("markdown").expect("markdown grammar");
         let mut syn = super::super::syntax::Syntax::new(def, &Theme::default()).unwrap();
-        let src = "# T\n\nprose (a) [b](http://c.d)\n";
+        let src = "# T\n\nprose (a) [b](http://c.d)\n\n[foo]: /url (title)\n";
         let r = Rope::from_str(src);
-        syn.reparse(&r);
-        let mut out = Vec::new();
-        depths(&r, syn.tree().unwrap(), 0..r.len_bytes(), &mut out);
-        assert_eq!(out, [], "no bracket token in prose or link text");
+        assert_eq!(syn.bracket_depths(&r, 0, r.len_lines()), [], "no bracket in prose, link text or a link definition");
     }
 }

@@ -1569,7 +1569,11 @@ impl Syntax {
         let Some(tree) = &self.tree else { return Vec::new() };
         let bytes = window_bytes(rope, first_line, rows);
         let mut out = Vec::new();
-        super::brackets::depths(rope, tree, bytes.clone(), &mut out);
+        // Markdown's own brackets are prose, link labels and link titles;
+        // only its injected code is coloured.
+        if self.def.name != "markdown" {
+            super::brackets::depths(rope, tree, bytes.clone(), &mut out);
+        }
         for inj in &self.injections {
             let s = span(&inj.bytes);
             if s.end <= bytes.start || s.start >= bytes.end {
