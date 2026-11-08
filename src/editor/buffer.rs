@@ -321,14 +321,16 @@ impl Buffer {
         }
         let syms = self.scopes.symbols(self.syntax.as_mut(), &self.rope, self.version);
         let callable = |s: &&crate::symbols::Symbol| crate::symbols::graph::CALLABLE.contains(&s.kind);
-        // The C and C++ tags query ranges a function over its declarator line only, so no symbol encloses a line of
-        // its body: the nearest callable above the frame line stands in.
+        // The C and C++ tags query ranges a function over its declarator only, so no symbol encloses a line of its
+        // body: there the nearest callable above the frame line stands in. Other languages range a function over its
+        // body, so a callable that ends above the frame line does not hold it (module-level code).
+        let declarator_only = matches!(self.syntax.as_ref().map(|s| s.def.name), Some("c" | "cpp"));
         let start = crate::symbols::enclosing(syms, frame_line)
             .into_iter()
             .rev()
             .find(callable)
             .map(|s| s.start_line)
-            .or_else(|| syms.iter().filter(callable).map(|s| s.start_line).filter(|&l| l <= frame_line).max())
+            .or_else(|| syms.iter().filter(|_| declarator_only).filter(callable).map(|s| s.start_line).filter(|&l| l <= frame_line).max())
             .unwrap_or(frame_line);
         let start = start.max(frame_line + 1 - MAX_VALUE_LINES.min(frame_line + 1));
         if let Some(s) = &mut self.syntax {
@@ -2025,6 +2027,19 @@ mod tests {
         buf.set_frame_values(6, &[("t", "9", false), ("a", "1", false)]);
         let got: Vec<usize> = buf.inline_values.iter().map(|(l, _)| l).collect();
         assert_eq!(got, [6], "`main` starts at line 5; `t` is written on line 6 only");
+    }
+
+    #[cfg(feature = "lang-python")]
+    #[test]
+    fn frame_values_outside_a_function_stay_on_the_frame_line() {
+        // Python ranges a function over its whole body, so the C fallback must not pick `f` for module-level code.
+        let src = "x = 1\ndef f(x):\n    return x\ny = f(x)\nprint(y)\n";
+        let mut buf = b(src);
+        let def = super::super::syntax::language_for_name("python").unwrap();
+        buf.syntax = super::super::syntax::Syntax::new(def, &crate::config::theme::Theme::default());
+        buf.set_frame_values(3, &[("x", "1", false), ("y", "2", false)]);
+        let got: Vec<usize> = buf.inline_values.iter().map(|(l, _)| l).collect();
+        assert_eq!(got, [3], "module-level frame: `def f(x)` above does not take the global `x`");
     }
 
     #[cfg(feature = "lang-rust")]
