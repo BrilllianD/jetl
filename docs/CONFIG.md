@@ -173,6 +173,8 @@ show_ignored = false           # show files ignored by .gitignore in the Project
                                # (same session rule for the tree)
 watch = true                   # follow changes made outside jetl (tree, git state, open files); also feeds
                                # language servers' file change events
+hot_exit = true                # quitting keeps unsaved changes and restores them, still unsaved, when the
+                               # project opens again; false: quitting asks Save all / Discard
 
 [clipboard]
 paste_command = ""             # prints the system clipboard; "" = detect, "none" = jetl's own last copy only
@@ -283,6 +285,26 @@ under `.git` (commits, checkouts, staging from a shell) refresh the Git
 window. If the watch cannot start (for example the inotify watch limit,
 `fs.inotify.max_user_watches`), jetl warns and falls back to refreshing when
 the terminal regains focus.
+
+Hot exit (`[files] hot_exit`, on by default): quitting with unsaved changes
+asks nothing. The text of every tab with unsaved edits, untitled tabs
+included, is written to `state/hot_exit/<16 hex digits>/` (one directory per
+project, the same files as a crash dump; the state directory is
+`$XDG_STATE_HOME/jetl`, by default `~/.local/state/jetl`) and the files on
+disk do not change. The next time that project opens, the tabs come back
+silently, still unsaved, with a status line saying how many, and the
+directory is removed. Restored tabs are not autosaved until you save them
+explicitly; Undo takes a file's tab back to its disk text; untitled tabs
+keep their name. The conflict resolver still asks first when it has edits,
+and its scratch tabs are never kept. Switching project is not a hot exit.
+A kept dump is restored even when `hot_exit` was turned off since: the
+setting decides only what quitting does. With two jetl processes on one
+project, the last one to quit owns the directory and the earlier one's text
+is offered by crash recovery ("Recover Unsaved Changes") instead. Dumps of
+projects that never open again are not removed; delete their directories
+under `state/hot_exit/` to drop them. With `hot_exit = false` quitting asks
+Save all and exit / Discard and exit / Cancel. Closing the terminal window
+(SIGHUP) kills jetl without running any of this, as before.
 
 Autosave writes every modified tab that has a file, silently (errors are
 still shown), and applies `trim_trailing_whitespace` and `final_newline` like

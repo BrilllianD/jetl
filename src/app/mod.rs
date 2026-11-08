@@ -179,6 +179,8 @@ pub struct App {
     pub dispatcher: Dispatcher,
     pub mode: Mode,
     pub should_quit: bool,
+    /// The quit dialog's "Discard and exit" was chosen: no hot exit at the loop's end.
+    pub(crate) quit_discards: bool,
     pub dirty_frame: bool,
     needs_clear: bool,
     pub bus_tx: UnboundedSender<AppMsg>,
@@ -417,6 +419,7 @@ impl App {
             dispatcher,
             mode,
             should_quit: false,
+            quit_discards: false,
             dirty_frame: true,
             needs_clear: false,
             bus_tx,
@@ -667,11 +670,14 @@ impl App {
         v
     }
 
-    /// The event loop until a quit, then [`App::shutdown`]. An error (a
-    /// failed draw or clear) returns at once, skipping the quit prompt and
-    /// the shutdown: `main.rs` then calls [`App::finish_after_error`].
+    /// The event loop until a quit, then [`App::shutdown`]. Unsaved buffers
+    /// are kept for the next session when hot exit is on
+    /// ([`App::hot_exit_on_exit`]). An error (a failed draw or clear)
+    /// returns at once, skipping the quit prompt and the shutdown:
+    /// `main.rs` then calls [`App::finish_after_error`].
     pub async fn run(&mut self, term: &mut Term) -> Result<()> {
         self.event_loop(term).await?;
+        self.hot_exit_on_exit();
         // Quitting on purpose: a panic from here on writes nothing.
         self.recorder.clear();
         self.shutdown().await;
@@ -2222,6 +2228,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn quit_dirty_save_all_quits_only_when_everything_saved() {
         let (mut app, dir) = test_app("quit-dirty");
+        app.config.files.hot_exit = false;
         let a = load(&mut app, "a.txt", "a\n");
         type_text(&mut app, "1");
         app.perform(Action::App(AppAction::Quit));
@@ -2244,6 +2251,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn quit_dirty_discard_quits_without_writing() {
         let (mut app, dir) = test_app("quit-discard");
+        app.config.files.hot_exit = false;
         let a = load(&mut app, "a.txt", "a\n");
         type_text(&mut app, "1");
         app.perform(Action::App(AppAction::Quit));
@@ -2420,6 +2428,7 @@ pub(crate) mod tests {
     async fn dialog_takes_keys_before_the_keymap() {
         use crossterm::event::KeyModifiers;
         let (mut app, dir) = test_app("dialog-keys");
+        app.config.files.hot_exit = false;
         load(&mut app, "a.txt", "a\n");
         type_text(&mut app, "1");
         app.perform(Action::App(AppAction::Quit));
@@ -2475,6 +2484,7 @@ pub(crate) mod tests {
     async fn outside_change_never_replaces_an_open_dialog() {
         use crate::files::watch::Changes;
         let (mut app, dir) = test_app("outside-change-dialog");
+        app.config.files.hot_exit = false;
         let g = app.workspace.generation;
         let a = load(&mut app, "a.txt", "a\n");
         type_text(&mut app, "mine ");

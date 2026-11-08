@@ -782,6 +782,50 @@ Then repeat the crash with two modified files (type in notes.txt, Ctrl+N
   (`mkdir -p /tmp/jt-other; echo x > /tmp/jt-other/x.txt`, run it on
   `/tmp/jt-other/x.txt`): no dialog, and the `$T` dump is still there.
 
+### Scenario: hot exit
+
+At 80x24 and at 120x40 (`-x 120 -y 40`), private socket `/tmp/tm.sh`,
+everything under `/tmp`:
+
+```sh
+T=/tmp/jt-hot; H=/tmp/jt-hot-home; rm -rf $T $H; mkdir -p $T && git -C $T init -q
+printf 'one\ntwo\n' > $T/notes.txt; printf 'alpha\n' > $T/b.txt
+cargo build --no-default-features --features lang-rust
+run() { /tmp/tm.sh -f /dev/null new-session -d -s ${2:-jetl} -x 80 -y 24 \
+  "XDG_CONFIG_HOME=$H/config XDG_STATE_HOME=$H/state XDG_CACHE_HOME=$H/cache $PWD/target/debug/jetl ${1:-$T/notes.txt} 2>$H/stderr-${2:-jetl}.txt; echo EXIT=\$?; sleep 600"; }
+run; sleep 2
+/tmp/tm.sh send-keys -t jetl -l 'HOT '
+/tmp/tm.sh send-keys -t jetl C-q; sleep 1
+/tmp/tm.sh capture-pane -t jetl -p                 # a shell screen with EXIT=0, no dialog was shown
+cat $H/state/jetl/hot_exit/*/manifest.json         # root $T, one entry notes.txt, "untitled": false
+cat $T/notes.txt                                   # still one, two
+/tmp/tm.sh kill-server; run; sleep 2
+/tmp/tm.sh capture-pane -t jetl -p                 # no dialog; tab *notes.txt with "HOT one"; status bar "Restored unsaved changes of 1 file from the last session"
+ls $H/state/jetl/hot_exit/                         # empty
+sleep 6; cat $T/notes.txt                          # still one, two: not autosaved
+/tmp/tm.sh send-keys -t jetl C-z                   # back to the disk text, the tab clean
+/tmp/tm.sh send-keys -t jetl C-q; sleep 1; /tmp/tm.sh capture-pane -t jetl -p   # EXIT=0, nothing kept
+ls $H/state/jetl/hot_exit/; /tmp/tm.sh kill-server
+```
+
+Then, one start each:
+
+- Off: `mkdir -p $H/config/jetl; printf '[files]\nhot_exit = false\n[lsp]\nenabled = false\n' > $H/config/jetl/config.toml`,
+  `run`, type, Ctrl+Q: the "Unsaved changes" dialog with Save all and exit,
+  Discard and exit, Cancel; Tab Enter: EXIT=0, `ls $H/state/jetl/hot_exit`
+  shows nothing for `$T`; notes.txt unchanged. Remove the config file afterwards.
+- Two processes: `run $T/notes.txt one; run $T/b.txt two; sleep 2`; type
+  `FIRST ` in `one`, `SECOND ` in `two`; Ctrl+Q in `one`, then in `two`.
+  `ls $H/state/jetl/recovery/` shows one `<pid>-<secs>` directory (the first
+  process's dump), `hot_exit/<key>/manifest.json` names b.txt.
+  `/tmp/tm.sh kill-server; run`: `*b.txt` is restored silently with
+  `SECOND alpha`, and "Recover Unsaved Changes" lists notes.txt; Enter
+  restores it too.
+- Terminal closed: start, type, then `/tmp/tm.sh kill-session -t jetl`
+  (SIGHUP). jetl has no signal handler, so nothing is kept (as for crash
+  recovery); the next start shows no dialog and the original text.
+- `/tmp/tm.sh kill-server; /tmp/tm.sh ls` reports no server.
+
 ### Scenario: worker panic
 
 At 80x24 and at 120x40, debug build only (`JETL_DEBUG_WORKER_PANIC=<n>`
@@ -793,7 +837,7 @@ XDG directories live under `/tmp`:
 ```sh
 cargo build --no-default-features --features lang-rust
 R=/tmp/jt-wp; rm -rf $R; mkdir -p $R/cfg/jetl $R/repo
-printf '[lsp]\nenabled = false\n' > $R/cfg/jetl/config.toml
+printf '[lsp]\nenabled = false\n[files]\nhot_exit = false\n' > $R/cfg/jetl/config.toml
 (cd $R/repo && git init -q && echo 'fn main() {}' > a.rs && git add . && git commit -qm i)
 /tmp/tm.sh kill-server
 /tmp/tm.sh new-session -d -s jetl -x 80 -y 24 "cd $R/repo; XDG_CONFIG_HOME=$R/cfg XDG_STATE_HOME=$R/state XDG_CACHE_HOME=$R/cache JETL_DEBUG_WORKER_PANIC=2 $PWD/target/debug/jetl a.rs 2>$R/stderr.txt; echo EXIT=\$? > $R/exit.txt; sleep 30"
@@ -2543,7 +2587,10 @@ scenario), `chmod 000 $T/notes.txt`, `run`, Restore all: the tab is
   crash, both `chmod 000`). Ctrl+Q, Enter ("Save all and exit"): a prompt
   for notes.txt (recovered); type `n2.txt`, Enter; a prompt for b.txt
   (recovered); Esc: jetl stays open, n2.txt is written. Ctrl+Q, Enter, then
-  `b2.txt` Enter at the one prompt left: EXIT=0.
+  `b2.txt` Enter at the one prompt left: EXIT=0. This part runs with
+  `[files] hot_exit = false` (and `[lsp] enabled = false`) in
+  `/tmp/jt-home/config/jetl/config.toml`, or Ctrl+Q would keep the buffers
+  and ask nothing.
 
 `chmod 644` the files afterwards, so `rm -rf $T` works.
 

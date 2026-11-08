@@ -81,6 +81,11 @@ impl Paths {
     pub fn recovery_dir(&self) -> PathBuf {
         self.state_dir.join("recovery")
     }
+
+    /// Unsaved buffers kept by a quit (hot exit), one directory per root (`recovery.rs`).
+    pub fn hot_exit_dir(&self) -> PathBuf {
+        self.state_dir.join("hot_exit")
+    }
 }
 
 /// Install a file logger. Returns a guard that must live until exit so the
@@ -268,6 +273,8 @@ pub struct FilesConfig {
     pub show_ignored: bool,
     /// Watch the project for changes made outside jetl.
     pub watch: bool,
+    /// Quitting keeps unsaved changes for the next session instead of asking (hot exit).
+    pub hot_exit: bool,
 }
 
 /// System clipboard tools for paste (`util::clipboard`). Empty means
@@ -370,7 +377,7 @@ impl Default for KeymapConfig {
 }
 impl Default for FilesConfig {
     fn default() -> Self {
-        Self { show_hidden: true, show_ignored: false, watch: true }
+        Self { show_hidden: true, show_ignored: false, watch: true, hot_exit: true }
     }
 }
 

@@ -12,6 +12,13 @@
 //! processes that are gone (a live owner's directory is never offered nor
 //! removed; dumps of other roots are left for when that project opens) and
 //! the app offers to restore them (`app/recovery.rs`).
+//!
+//! Hot exit reuses the dump format for a quit with unsaved buffers
+//! ([`write_hot_exit`]): `state/hot_exit/<root_key>/`, one per root,
+//! published by a rename so a failed write leaves the old dump alone. The
+//! next session load of that root takes it ([`take_hot_exit`]) and restores
+//! it silently. The last process to quit owns the directory; an earlier
+//! process's dump is moved to the crash dumps and offered the usual way.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -200,19 +207,116 @@ pub fn scan(recovery_dir: &Path, root: &Path) -> Option<Found> {
     let mut entries: Vec<FoundEntry> = Vec::new();
     let mut dirs = Vec::with_capacity(dumps.len());
     for (_, _, dir, m) in dumps {
-        for e in m.buffers {
-            // Only a plain file name inside the dump directory.
-            if Path::new(&e.file).file_name().and_then(|n| n.to_str()) != Some(e.file.as_str()) {
-                continue;
-            }
-            if e.path.is_some() && entries.iter().any(|f| f.path == e.path) {
-                continue;
-            }
-            entries.push(FoundEntry { text_file: dir.join(&e.file), path: e.path, name: e.name });
-        }
+        push_entries(&dir, m, &mut entries);
         dirs.push(dir);
     }
     Some(Found { root: root.to_path_buf(), dirs, entries })
+}
+
+/// Add the entries of the dump `m` in `dir` to `entries`: only those whose
+/// text file is a plain file name inside `dir`, and for a path only the
+/// first (newest) one.
+fn push_entries(dir: &Path, m: Manifest, entries: &mut Vec<FoundEntry>) {
+    for e in m.buffers {
+        // Only a plain file name inside the dump directory.
+        if Path::new(&e.file).file_name().and_then(|n| n.to_str()) != Some(e.file.as_str()) {
+            continue;
+        }
+        if e.path.is_some() && entries.iter().any(|f| f.path == e.path) {
+            continue;
+        }
+        entries.push(FoundEntry { text_file: dir.join(&e.file), path: e.path, name: e.name });
+    }
+}
+
+/// The name of `root`'s directory under the hot-exit dir (and of its
+/// session file): its path's FNV-1a hash in 16 hex digits.
+pub fn root_key(root: &Path) -> String {
+    format!("{:016x}", crate::workspace::fnv1a64(root.as_os_str().as_encoded_bytes()))
+}
+
+/// Keep `snap` for the next session of its root (hot exit): the dump goes
+/// into `hot_dir/<root_key>/` in the [`write_dump`] layout, written whole
+/// into a staging directory and renamed over, so a failure leaves any
+/// existing dump untouched. Returns the number of buffers written;
+/// `Ok(0)` and nothing touched when `snap` is empty; an error when not
+/// every buffer was written.
+///
+/// The last process to quit owns the directory: a dump found there that
+/// another process wrote (`pid` differs) is moved to
+/// `recovery_dir/<its pid>-<its time>`, where [`scan`] offers it as a dead
+/// owner's crash dump; one of this `pid` is replaced; a directory without a
+/// readable manifest is removed.
+pub fn write_hot_exit(hot_dir: &Path, recovery_dir: &Path, snap: &RecoverySnapshot, pid: u32, time: u64) -> std::io::Result<usize> {
+    if snap.buffers.is_empty() {
+        return Ok(0);
+    }
+    let key = root_key(&snap.root);
+    let target = hot_dir.join(&key);
+    let staging = hot_dir.join(format!(".{key}-{pid}.tmp"));
+    remove_dumps(std::slice::from_ref(&staging));
+    let n = match write_dump(&staging, snap, pid, time) {
+        Ok(n) if n == snap.buffers.len() => n,
+        Ok(n) => {
+            remove_dumps(std::slice::from_ref(&staging));
+            return Err(std::io::Error::other(format!("{n} of {} buffers written", snap.buffers.len())));
+        }
+        Err(e) => {
+            remove_dumps(std::slice::from_ref(&staging));
+            return Err(e);
+        }
+    };
+    let published = demote_earlier(&target, recovery_dir, pid).and_then(|()| std::fs::rename(&staging, &target));
+    if let Err(e) = published {
+        remove_dumps(std::slice::from_ref(&staging));
+        return Err(e);
+    }
+    Ok(n)
+}
+
+/// Clear `target` for a new hot-exit dump: another process's dump moves to
+/// `recovery_dir`, anything else goes.
+fn demote_earlier(target: &Path, recovery_dir: &Path, pid: u32) -> std::io::Result<()> {
+    if !target.exists() {
+        return Ok(());
+    }
+    match read_manifest(target) {
+        Some(m) if m.pid != pid => {
+            std::fs::create_dir_all(recovery_dir)?;
+            for n in 0..=100 {
+                let to = recovery_dir.join(format!("{}-{}", m.pid, m.time + n));
+                if to.exists() {
+                    continue;
+                }
+                std::fs::rename(target, &to)?;
+                tracing::info!("hot exit: an earlier dump of {} moved to {}", m.root.display(), to.display());
+                return Ok(());
+            }
+            Err(std::io::Error::other("no free name in the recovery directory for an earlier dump"))
+        }
+        _ => std::fs::remove_dir_all(target),
+    }
+}
+
+/// The hot-exit dump of `root` kept by an earlier quit: its entries, with
+/// `dirs` holding the directory to remove once restored. `None` when there
+/// is none or it belongs to another root (a key collision; left alone). A
+/// directory without a readable manifest is removed. A dump with a manifest
+/// is never removed here.
+pub fn take_hot_exit(hot_dir: &Path, root: &Path) -> Option<Found> {
+    let dir = hot_dir.join(root_key(root));
+    let Some(m) = read_manifest(&dir) else {
+        if dir.is_dir() {
+            remove_dumps(std::slice::from_ref(&dir));
+        }
+        return None;
+    };
+    if m.root != root {
+        return None;
+    }
+    let mut entries = Vec::new();
+    push_entries(&dir, m, &mut entries);
+    Some(Found { root: root.to_path_buf(), dirs: vec![dir], entries })
 }
 
 /// How long a dump is kept for a project that never opens again.
@@ -607,5 +711,97 @@ mod tests {
         assert_eq!(r.stored(), 4);
         r.clear();
         assert!(r.last().buffers.is_empty() && !r.dir.exists());
+    }
+
+    fn hot_snap(root: &Path, buffers: Vec<SnapBuffer>) -> RecoverySnapshot {
+        RecoverySnapshot { root: root.to_path_buf(), buffers }
+    }
+
+    fn dir_names(dir: &Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn hot_exit_round_trip() {
+        let base = temp_dir("hot-round-trip");
+        let (hot, rec) = (base.join("hot"), base.join("recovery"));
+        let root = PathBuf::from("/tmp/project");
+        let a = root.join("a.txt");
+        let snap = hot_snap(&root, vec![snap_buffer(3, Some(&a), "a.txt", "mine\n"), snap_buffer(7, None, "notes", "note\n")]);
+        assert_eq!(write_hot_exit(&hot, &rec, &snap, DEAD, 100).unwrap(), 2);
+        let dir = hot.join(root_key(&root));
+        assert!(dir.join(MANIFEST).is_file());
+        assert_eq!(std::fs::read_to_string(dir.join("3.txt")).unwrap(), "mine\n");
+        assert_eq!(std::fs::read_to_string(dir.join("7.txt")).unwrap(), "note\n");
+        assert_eq!(dir_names(&hot), vec![root_key(&root)], "no staging leftovers");
+        let found = take_hot_exit(&hot, &root).unwrap();
+        assert_eq!(found.dirs, vec![dir.clone()]);
+        assert_eq!(found.entries.len(), 2);
+        assert_eq!((found.entries[0].path.as_deref(), found.entries[0].name.as_str()), (Some(a.as_path()), "a.txt"));
+        assert_eq!(found.entries[0].text_file, dir.join("3.txt"));
+        assert_eq!((found.entries[1].path.as_deref(), found.entries[1].name.as_str()), (None, "notes"));
+        assert_eq!(found.entries[1].text_file, dir.join("7.txt"));
+        assert!(take_hot_exit(&hot, Path::new("/tmp/other")).is_none());
+        assert!(dir.is_dir(), "taking does not remove a dump with a manifest");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_later_quit_moves_the_earlier_dump_to_recovery() {
+        let base = temp_dir("hot-demote");
+        let (hot, rec) = (base.join("hot"), base.join("recovery"));
+        let root = PathBuf::from("/tmp/project");
+        let a = root.join("a.txt");
+        let one = |text: &str| hot_snap(&root, vec![snap_buffer(1, Some(&a), "a.txt", text)]);
+        let kept = |hot: &Path| std::fs::read_to_string(hot.join(root_key(&root)).join("1.txt")).unwrap();
+        write_hot_exit(&hot, &rec, &one("first"), DEAD, 100).unwrap();
+        write_hot_exit(&hot, &rec, &one("second"), DEAD - 1, 200).unwrap();
+        assert_eq!(kept(&hot), "second");
+        assert!(rec.join(format!("{DEAD}-100")).is_dir());
+        let offered = scan(&rec, &root).unwrap();
+        assert_eq!(offered.entries.len(), 1);
+        assert_eq!(std::fs::read_to_string(&offered.entries[0].text_file).unwrap(), "first");
+        write_hot_exit(&hot, &rec, &one("third"), DEAD - 1, 300).unwrap();
+        assert_eq!(kept(&hot), "third");
+        assert_eq!(dir_names(&rec), vec![format!("{DEAD}-100")], "same pid replaces, no second recovery dir");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn empty_snapshot_keeps_the_existing_dump() {
+        let base = temp_dir("hot-empty");
+        let (hot, rec) = (base.join("hot"), base.join("recovery"));
+        let root = PathBuf::from("/tmp/project");
+        let snap = hot_snap(&root, vec![snap_buffer(1, None, "n", "text\n")]);
+        write_hot_exit(&hot, &rec, &snap, DEAD, 100).unwrap();
+        let dir = hot.join(root_key(&root));
+        let before = (std::fs::read(dir.join(MANIFEST)).unwrap(), std::fs::read(dir.join("1.txt")).unwrap());
+        assert_eq!(write_hot_exit(&hot, &rec, &hot_snap(&root, vec![]), DEAD - 1, 200).unwrap(), 0);
+        assert_eq!((std::fs::read(dir.join(MANIFEST)).unwrap(), std::fs::read(dir.join("1.txt")).unwrap()), before);
+        assert!(!rec.exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn failed_write_creates_nothing() {
+        let base = temp_dir("hot-fail");
+        std::fs::create_dir_all(&base).unwrap();
+        let hot = base.join("hot");
+        std::fs::write(&hot, "not a directory").unwrap();
+        let root = PathBuf::from("/tmp/project");
+        let snap = hot_snap(&root, vec![snap_buffer(1, None, "n", "text\n")]);
+        assert!(write_hot_exit(&hot, &base.join("recovery"), &snap, DEAD, 100).is_err());
+        assert!(hot.is_file());
+        assert_eq!(std::fs::read_to_string(&hot).unwrap(), "not a directory");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn root_key_matches_the_session_file() {
+        let root = PathBuf::from("/tmp/some/project");
+        let file = crate::workspace::Session::file_for(Path::new("/tmp/sessions"), &root);
+        assert_eq!(file.file_name().unwrap().to_string_lossy(), format!("{}.json", root_key(&root)));
     }
 }

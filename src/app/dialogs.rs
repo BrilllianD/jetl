@@ -89,6 +89,15 @@ impl App {
             return;
         }
         if self.editor.has_dirty() {
+            if self.config.files.hot_exit {
+                match self.hot_exit_write() {
+                    Ok(_) => {
+                        self.should_quit = true;
+                        return;
+                    }
+                    Err(e) => self.notify(Level::Error, format!("Hot exit failed ({e}); choose how to quit")),
+                }
+            }
             self.dialog = Some(Dialog::confirm(
                 DialogId::QuitDirty,
                 "Unsaved changes",
@@ -148,6 +157,7 @@ impl App {
             (DialogId::QuitDirty, DialogResult::Button(0)) => self.save_then(AfterSave::Quit),
             (DialogId::QuitDirty, DialogResult::Button(1)) => {
                 self.snapshot_discarded(None);
+                self.quit_discards = true;
                 self.should_quit = true;
             }
             (DialogId::CloseTabDirty(id), DialogResult::Button(0)) => self.save_then(AfterSave::CloseTab(id)),

@@ -399,6 +399,7 @@ mod tests {
     async fn failing_formatter_saves_unformatted_and_warns() {
         let script = "cat >/dev/null; echo 'error: expected item' >&2; echo ' --> <stdin>:2:1' >&2; exit 1";
         let (mut app, dir, path) = app_with("format-fail", script, "fn a() {}\n");
+        app.config.files.hot_exit = false;
         act(&mut app, EditorAction::InsertText("x".into()));
         act(&mut app, EditorAction::Save);
         handle_next(&mut app, formatted).await;
@@ -526,6 +527,7 @@ mod tests {
         #[tokio::test]
         async fn a_server_that_does_not_answer_in_time_saves_unformatted() {
             let (mut app, mut server, dir, path) = setup("format-lsp-timeout", true).await;
+            app.config.files.hot_exit = false;
             act(&mut app, EditorAction::InsertText("// x\n".into()));
             act(&mut app, EditorAction::Save);
             let req = server.recv("textDocument/formatting").await;

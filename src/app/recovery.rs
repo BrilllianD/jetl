@@ -1,7 +1,9 @@
 //! Crash recovery in the app: keeping the panic hook's snapshot of dirty
 //! buffers current, offering a root's crash dumps once its session is
 //! loaded, and restoring them (`recovery.rs` has the dump format, the scan
-//! and the hook side).
+//! and the hook side). Hot exit keeps the dirty buffers over a quit and
+//! restores them silently at the next load of the root (`hot_exit_write`,
+//! `hot_exit_on_exit`, `restore_hot_exit`).
 
 use std::path::Path;
 
@@ -88,6 +90,60 @@ impl App {
         let saved = self.dump_after_error();
         self.shutdown().await;
         saved
+    }
+
+    /// Keep the dirty buffers for the next session of this root (hot exit;
+    /// the same set as [`App::recovery_snapshot`]). Returns the number of
+    /// buffers kept, or why the write failed.
+    pub(super) fn hot_exit_write(&mut self) -> Result<usize, String> {
+        let ed = &self.editor;
+        let buffers = ed.buffers.iter().filter(|b| b.dirty() && !ed.is_merge_buffer(b.id)).map(SnapBuffer::of).collect();
+        let snap = RecoverySnapshot { root: self.workspace.root.clone(), buffers };
+        let (hot, rec) = (self.paths.hot_exit_dir(), self.paths.recovery_dir());
+        let n = crate::recovery::write_hot_exit(&hot, &rec, &snap, std::process::id(), crate::recent_projects::now())
+            .map_err(|e| e.to_string())?;
+        if n > 0 {
+            tracing::info!("hot exit: {n} unsaved buffer(s) kept in {}", hot.display());
+        }
+        Ok(n)
+    }
+
+    /// The run loop ended: write the dirty buffers again when hot exit is on
+    /// and they were not discarded, so text that changed after
+    /// [`App::request_quit`] wrote (late messages) and quits that never
+    /// asked (the terminal closed its event stream) are kept too.
+    pub(crate) fn hot_exit_on_exit(&mut self) {
+        if self.config.files.hot_exit
+            && !self.quit_discards
+            && self.editor.has_dirty()
+            && let Err(e) = self.hot_exit_write()
+        {
+            tracing::error!("hot exit: {e}");
+        }
+    }
+
+    /// Restore the buffers kept by a hot exit of this root, silently, then
+    /// remove the dump (also when nothing could be restored; the setting
+    /// does not matter, the text is the user's). The active tab stays the
+    /// one the session chose.
+    pub(crate) fn restore_hot_exit(&mut self) {
+        let Some(found) = crate::recovery::take_hot_exit(&self.paths.hot_exit_dir(), &self.workspace.root) else { return };
+        let active = self.editor.active_buffer().map(|b| b.id);
+        let n = found.entries.iter().filter(|e| self.restore_recovered(e)).count();
+        crate::recovery::remove_dumps(&found.dirs);
+        // Restoring is not navigation.
+        self.editor.clear_nav();
+        match active.filter(|&id| self.editor.index_of_id(id).is_some()) {
+            Some(id) => {
+                self.editor.focus_buffer_tab(id);
+            }
+            None if n > 0 => self.focus.set(PanelId::Editor),
+            None => {}
+        }
+        if n > 0 {
+            self.notify(Level::Info, format!("Restored unsaved changes of {n} {} from the last session", files(n)));
+        }
+        self.dirty_frame = true;
     }
 
     /// Offer the crash dumps of the current root (the end of every session
@@ -512,6 +568,190 @@ pub(crate) mod tests {
         app.perform(Action::Editor(EditorAction::Save));
         app.recovery_snapshot();
         assert!(app.recorder.last().buffers.is_empty(), "saved: nothing to recover");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Hot exit (yman 458).
+
+    fn hot_dir(app: &App) -> PathBuf {
+        app.paths.hot_exit_dir().join(crate::recovery::root_key(&app.workspace.root))
+    }
+
+    fn manifest(app: &App) -> crate::recovery::Manifest {
+        crate::recovery::read_manifest(&hot_dir(app)).expect("a hot-exit manifest")
+    }
+
+    fn insert(app: &mut App, text: &str) {
+        app.perform(Action::Editor(EditorAction::InsertText(text.into())));
+    }
+
+    /// `a.txt` (`"disk\n"`) with "mine " typed and an untitled `notes`.
+    fn dirty_a_and_notes(app: &mut App) {
+        std::fs::write(app.workspace.root.join("a.txt"), "disk\n").unwrap();
+        load(app, "a.txt", "disk\n");
+        insert(app, "mine ");
+        app.editor.open_untitled("notes");
+        insert(app, "note\n");
+    }
+
+    fn infos(app: &App) -> Vec<String> {
+        app.notifications.iter().filter(|n| n.level == crate::event::Level::Info).map(|n| n.text.clone()).collect()
+    }
+
+    #[tokio::test]
+    async fn quit_keeps_unsaved_buffers_without_asking() {
+        let (mut app, dir) = test_app("hot-exit-quit");
+        dirty_a_and_notes(&mut app);
+        app.perform(Action::App(crate::actions::AppAction::Quit));
+        assert!(app.dialog.is_none() && app.should_quit);
+        let m = manifest(&app);
+        assert_eq!(m.buffers.len(), 2);
+        let root = app.workspace.root.clone();
+        assert_eq!((m.buffers[0].path.as_deref(), m.buffers[0].name.as_str()), (Some(root.join("a.txt").as_path()), "a.txt"));
+        assert_eq!((m.buffers[1].path.as_deref(), m.buffers[1].name.as_str()), (None, "notes"));
+        assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "disk\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn next_session_restores_silently() {
+        let (mut app, dir) = test_app("hot-exit-restore");
+        dirty_a_and_notes(&mut app);
+        app.perform(Action::App(crate::actions::AppAction::Quit));
+        assert!(app.should_quit);
+        app.should_quit = false;
+        app.editor.force_close_all();
+        app.notifications.clear();
+        app.handle_msg(session_with(&app, &["a.txt"]));
+        assert!(app.dialog.is_none());
+        let a = buffer(&app, "a.txt");
+        assert_eq!(a.text(), "mine disk\n");
+        assert!(a.dirty() && a.recovered);
+        let n = buffer(&app, "notes");
+        assert_eq!((n.path.as_deref(), n.text().as_str(), n.dirty()), (None, "note\n", true));
+        assert!(!hot_dir(&app).exists());
+        assert_eq!(app.editor.active_buffer().map(|b| b.name.as_str()), Some("a.txt"));
+        assert_eq!(infos(&app), ["Restored unsaved changes of 2 files from the last session"]);
+        // Undo returns the file to its disk text.
+        app.perform(Action::Editor(EditorAction::Undo));
+        assert_eq!(buffer(&app, "a.txt").text(), "disk\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn hot_exit_off_keeps_the_dialog() {
+        let (mut app, dir) = test_app("hot-exit-off");
+        app.config.files.hot_exit = false;
+        dirty_a_and_notes(&mut app);
+        app.request_quit();
+        assert_eq!(app.dialog.as_ref().map(|d| d.id.clone()), Some(DialogId::QuitDirty));
+        answer(&mut app, DialogId::QuitDirty, DialogResult::Button(1));
+        assert!(app.should_quit);
+        app.hot_exit_on_exit();
+        assert!(!app.paths.hot_exit_dir().exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn failed_hot_exit_falls_back_to_the_dialog() {
+        let (mut app, dir) = test_app("hot-exit-fail");
+        dirty_a_and_notes(&mut app);
+        std::fs::create_dir_all(&app.paths.state_dir).unwrap();
+        let blocker = app.paths.hot_exit_dir();
+        std::fs::write(&blocker, "not a directory").unwrap();
+        app.request_quit();
+        assert_eq!(app.dialog.as_ref().map(|d| d.id.clone()), Some(DialogId::QuitDirty));
+        assert!(!app.should_quit);
+        assert!(app.notifications.iter().any(|n| n.level == crate::event::Level::Error && n.text.starts_with("Hot exit failed")));
+        answer(&mut app, DialogId::QuitDirty, DialogResult::Button(1));
+        std::fs::remove_file(&blocker).unwrap();
+        app.hot_exit_on_exit();
+        assert!(!blocker.exists(), "Discard writes nothing");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn loop_end_writes_when_the_terminal_closes() {
+        let (mut app, dir) = test_app("hot-exit-loop-end");
+        dirty_a_and_notes(&mut app);
+        app.should_quit = true;
+        app.hot_exit_on_exit();
+        assert_eq!(manifest(&app).buffers.len(), 2);
+        assert_eq!(std::fs::read_to_string(hot_dir(&app).join(&manifest(&app).buffers[1].file)).unwrap(), "note\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn merge_work_still_asks_and_stays_out() {
+        let (mut app, dir) = test_app("hot-exit-merge");
+        let a = load(&mut app, "a.txt", "a\n");
+        let texts = crate::git::merge::MergeTexts { base: "x\n".into(), ours: "y\n".into(), theirs: "z\n".into() };
+        app.editor.open_merge(a, "a.txt".into(), texts, ["main".into(), "dev".into()], "x\n".into(), &app.theme);
+        app.perform(Action::Editor(EditorAction::Merge(crate::actions::MergeAction::AcceptLeft)));
+        app.editor.open_untitled("notes");
+        insert(&mut app, "note\n");
+        assert!(
+            app.editor.buffers.iter().any(|b| b.dirty() && app.editor.is_merge_buffer(b.id)),
+            "the resolver has a dirty scratch buffer"
+        );
+        assert_eq!(app.hot_exit_write(), Ok(1), "only the untitled buffer is kept while the resolver is open");
+        app.request_quit();
+        answer(&mut app, DialogId::MergeQuit, DialogResult::Button(0));
+        assert!(app.should_quit && app.dialog.is_none());
+        let m = manifest(&app);
+        assert_eq!(m.buffers.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["notes"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn restore_keeps_a_dirty_open_buffer() {
+        let (mut app, dir) = test_app("hot-exit-dirty-open");
+        let root = app.workspace.root.clone();
+        let a = root.join("a.txt");
+        let snap = RecoverySnapshot {
+            root: root.clone(),
+            buffers: vec![SnapBuffer {
+                id: 1,
+                path: Some(a),
+                name: "a.txt".into(),
+                version: 1,
+                saved_state: 0,
+                text: ropey::Rope::from_str("kept\n"),
+            }],
+        };
+        crate::recovery::write_hot_exit(&app.paths.hot_exit_dir(), &app.paths.recovery_dir(), &snap, DEAD_PID, 100).unwrap();
+        load(&mut app, "a.txt", "disk\n");
+        insert(&mut app, "mine ");
+        app.restore_hot_exit();
+        assert_eq!(buffer(&app, "a.txt").text(), "mine disk\n");
+        let copy = buffer(&app, "a.txt (recovered)");
+        assert_eq!((copy.path.as_deref(), copy.text().as_str(), copy.dirty()), (None, "kept\n", true));
+        assert!(!hot_dir(&app).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn hot_exit_text_survives_a_crash_dump_of_the_same_file() {
+        let (mut app, dir) = test_app("hot-exit-and-crash");
+        let root = app.workspace.root.clone();
+        std::fs::write(root.join("a.txt"), "disk\n").unwrap();
+        let snap = RecoverySnapshot {
+            root: root.clone(),
+            buffers: vec![SnapBuffer {
+                id: 1,
+                path: Some(root.join("a.txt")),
+                name: "a.txt".into(),
+                version: 1,
+                saved_state: 0,
+                text: ropey::Rope::from_str("hot\n"),
+            }],
+        };
+        crate::recovery::write_hot_exit(&app.paths.hot_exit_dir(), &app.paths.recovery_dir(), &snap, DEAD_PID, 100).unwrap();
+        seed_dump(&app, 200, &[(Some("a.txt"), "a.txt", "crash\n")]);
+        app.handle_msg(session_with(&app, &["a.txt"]));
+        answer(&mut app, DialogId::Recover, DialogResult::Button(0));
+        assert_eq!(buffer(&app, "a.txt").text(), "hot\n", "the hot-exit text is not overwritten by the crash dump");
+        assert_eq!(buffer(&app, "a.txt (recovered)").text(), "crash\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

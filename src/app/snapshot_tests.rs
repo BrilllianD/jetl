@@ -2115,6 +2115,7 @@ async fn recovery_review_dialog() {
 async fn save_as_dialog() {
     let mut fx = stable_app("save-as-dialog");
     let app = &mut fx.app;
+    app.config.files.hot_exit = false;
     // A buffer restored after a crash that has no file: quitting saves the
     // files, then asks where this one goes.
     let i = app.editor.open_untitled("notes (recovered)");

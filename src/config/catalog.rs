@@ -325,6 +325,13 @@ pub static SETTINGS: &[Setting] = &[
         Kind::Bool,
         |c| Value::Bool(c.files.watch)
     ),
+    row!(
+        "files.hot_exit",
+        "Keep unsaved changes on exit",
+        "Quitting with unsaved changes asks nothing: they are kept and come back, still unsaved, when this project opens again. Off: quitting asks Save all / Discard.",
+        Kind::Bool,
+        |c| Value::Bool(c.files.hot_exit)
+    ),
     row!("terminal.shell", "Shell", "The Terminal window's shell. Empty means $SHELL, else /bin/sh.", Kind::Text, |c| s(&c.terminal.shell)),
     row!("terminal.args", "Shell arguments", "Arguments of the shell, e.g. -l for a login shell.", Kind::List, |c| Value::List(
         c.terminal.args.clone()
@@ -525,7 +532,7 @@ pub static PAGES: &[Page] = &[
     page!("Version Control", None, []),
     page!("Git", Some(8), ["git.pull_mode", "git.log_all", "git.log_page"]),
     page!("Worktrees", Some(8), ["worktree.default_dir", "worktree.switch_closes_tabs"]),
-    page!("Files", None, ["files.show_hidden", "files.show_ignored", "files.watch"]),
+    page!("Files", None, ["files.show_hidden", "files.show_ignored", "files.watch", "files.hot_exit"]),
     page!("Tools", None, []),
     page!("Terminal", Some(12), ["terminal.shell", "terminal.args", "terminal.scrollback"]),
     page!("Run", Some(12), ["run.tasks", "run.configs", "run.debug", "debug.adapters", "debug.inline_values"]),

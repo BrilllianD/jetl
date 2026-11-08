@@ -192,7 +192,7 @@ Ranked after 0.9.0 against JetBrains, Zed, Helix and VS Code; tracked as yman ep
 | 3 | Right margin and column rulers (`editor.rulers`) | S | indent guide paint. Done: │ in theme style ruler after each column of editor.rulers (Live) on the cells a row's text leaves empty, after horizontal scroll |
 | 4 | LSP document highlight (read/write kinds) | S | `highlight_occurrences`. Done: `textDocument/documentHighlight` after 200 ms on the caret word, kinds on `occurrence_read` / `occurrence_write` / `occurrence_bg`, textual fallback |
 | 5 | Inline values while debugging | M | inlay hint virtual text, Variables. Done: `[debug] inline_values` (Live), a second virtual-text layer `InlineValues` in `editor/inlay.rs` drawn in the `inlay_hint` style after the line-end hints, rebuilt from the Variables tree at each stop (the window may be hidden), cleared on resume, stop and edit |
-| 6 | Hot exit: unsaved buffers kept across quit | M | `recovery.rs`, session, Local History |
+| 6 | Hot exit: unsaved buffers kept across quit | M | Done: `[files] hot_exit` (on): quit asks nothing, dirty buffers kept in `state/hot_exit/<key>/` (crash-dump format), restored silently and unsaved at the next session load; last process to quit owns the dump, an earlier one goes to crash recovery |
 | 7 | Custom folding regions, fold selection | S-M | Done: custom regions from comment markers (`region`/`endregion`, `#region`/`#endregion`, `<editor-fold>`); fold selection was already Ctrl+. / Alt+Shift+F |
 | 8 | Preserve case in replace | S | editor search, Replace in Files |
 | 9 | Bracket pair colours | S | tree-sitter brackets, theme keys |

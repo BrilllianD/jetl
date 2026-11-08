@@ -319,6 +319,7 @@ mod tests {
     #[tokio::test]
     async fn quit_asks_for_each_untitled_buffer_in_turn() {
         let (mut app, dir) = fresh_app("save-as-quit");
+        app.config.files.hot_exit = false;
         let a = load(&mut app, "a.txt", "a\n");
         edit(&mut app, "1");
         let u1 = untitled(&mut app, "one", "1\n");
@@ -769,6 +770,7 @@ mod tests {
         #[tokio::test]
         async fn save_as_waited_on_by_quit_or_close_does_not_format() {
             let (mut app, dir) = fmt_app("save-as-fmt-quit", false);
+            app.config.files.hot_exit = false;
             let id = untitled(&mut app, "u", "fn a() {}\n");
             app.perform(Action::App(AppAction::Quit));
             assert_eq!(app.dialog.take().map(|d| d.id), Some(DialogId::QuitDirty));

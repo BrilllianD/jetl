@@ -1117,6 +1117,8 @@ impl App {
             self.layout.show(ToolWindowId::Project);
             self.focus.set(PanelId::Project);
         }
+        // Hot exit first: its buffers are restored silently, then crash dumps are offered.
+        self.restore_hot_exit();
         self.offer_recovery();
         self.dirty_frame = true;
     }
