@@ -755,11 +755,16 @@ impl App {
 
     /// `run.debug_test_at_caret`: debug the Rust test (or module of tests) around the caret.
     pub(super) fn debug_test_at_caret(&mut self) {
-        if self.editor.active_buffer().and_then(|b| b.language()).is_none_or(|l| l.name != "rust") {
-            return self.notify(Level::Info, DEBUG_TEST_RUST_ONLY);
-        }
-        match self.caret_test("Debug Test at Caret", &["rust"], DEBUG_TEST_RUST_ONLY) {
-            Ok((mut task, Some(test))) => {
+        let rust = self.editor.active_buffer().and_then(|b| b.language()).is_some_and(|l| l.name == "rust");
+        // One refusal text for a buffer that is not Rust and for a result that holds no Rust test.
+        let found = if rust {
+            self.caret_test("Debug Test at Caret", &["rust"], DEBUG_TEST_RUST_ONLY)
+                .and_then(|(task, test)| test.map(|t| (task, t)).ok_or_else(|| DEBUG_TEST_RUST_ONLY.to_string()))
+        } else {
+            Err(DEBUG_TEST_RUST_ONLY.to_string())
+        };
+        match found {
+            Ok((mut task, test)) => {
                 // The full path, not the module path inside the file as Run names it.
                 task.name = format!("Test {}", test.filter.trim_end_matches("::"));
                 if let Some(b) = self.editor.active_buffer().filter(|b| b.dirty()) {
@@ -769,7 +774,6 @@ impl App {
                 let block = test_block(&test);
                 self.debug_start_with(Some(TestStart { task, block, test }));
             }
-            Ok((_, None)) => self.notify(Level::Info, DEBUG_TEST_RUST_ONLY),
             Err(e) => self.notify(Level::Info, e),
         }
     }
@@ -4871,6 +4875,56 @@ pub(crate) mod tests {
         assert_eq!(last(&app), (Level::Info, "No test at the caret".to_string()));
         assert!(!app.debug.starting());
         assert!(fakes.try_recv().is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A Rust file under a Cargo root, the caret at `at` in `src`; the buffer is dirty when `edit`.
+    #[cfg(feature = "lang-rust")]
+    fn rust_caret(name: &str, src: &str, at: &str, edit: bool) -> (App, PathBuf) {
+        let (mut app, dir, _fakes) = setup(name, Order::LaunchDeferred);
+        std::fs::write(app.workspace.root.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        std::fs::create_dir_all(app.workspace.root.join("src")).unwrap();
+        crate::app::tests::load(&mut app, "src/lib.rs", src);
+        if edit {
+            app.perform(Action::Editor(EditorAction::InsertText("// edit\n".into())));
+        }
+        let head = app.editor.active_buffer().unwrap().rope.to_string().find(at).unwrap();
+        app.editor.active_buffer_mut().unwrap().view.sels.primary_mut().head = head;
+        (app, dir)
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[tokio::test]
+    async fn debug_test_at_caret_names_the_task_by_its_full_path() {
+        // A test: `Test <module path>::<test>`; a module: no trailing `::`.
+        for (src, at, name) in [
+            ("#[cfg(test)]\nmod m {\n    #[test]\n    fn t() {}\n}\n", "fn t", "Test m::t"),
+            ("#[cfg(test)]\nmod m {\n    #[test]\n    fn t() {}\n}\n", "mod m", "Test m"),
+        ] {
+            let (mut app, dir) = rust_caret("dtac-name", src, at, false);
+            app.perform(Action::Run(RunAction::DebugTestAtCaret));
+            assert!(app.debug.starting(), "{name}: {:?}", texts(&app));
+            console_until(&mut app, |a| !a.debug.starting() || a.debug.building.is_some()).await;
+            assert!(title(&app).starts_with(&format!(" Debug: {name} ")), "{}: {} {:?}", name, title(&app), texts(&app));
+            app.debug.retire();
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[tokio::test]
+    async fn debug_test_at_caret_says_when_it_debugs_the_saved_version() {
+        let src = "#[test]\nfn t() {}\n";
+        let (mut app, dir) = rust_caret("dtac-dirty", src, "fn t", true);
+        app.perform(Action::Run(RunAction::DebugTestAtCaret));
+        assert!(texts(&app).contains(&"Debugging the saved version of lib.rs".to_string()), "{:?}", texts(&app));
+        app.debug.retire();
+        let _ = std::fs::remove_dir_all(&dir);
+        let (mut app, dir) = rust_caret("dtac-clean", src, "fn t", false);
+        app.perform(Action::Run(RunAction::DebugTestAtCaret));
+        assert!(app.debug.starting());
+        assert!(texts(&app).iter().all(|t| !t.starts_with("Debugging the saved")), "{:?}", texts(&app));
+        app.debug.retire();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
