@@ -437,11 +437,17 @@ impl DebugPanel {
         self.frames.get(self.frames_state.selected)
     }
 
-    /// Alt+F10 shows the execution point: when row 0 is that place and another row is selected, select it.
-    pub fn select_top_at(&mut self, path: &Path, line: usize) {
-        let at_top = self.frames.first().and_then(|f| f.location.as_ref()).is_some_and(|(p, l)| p == path && *l == line);
-        if at_top && self.frames_state.selected != 0 {
-            self.frames_state.select(0);
+    /// The stop's own choice of row, made right after `show_stack` before anything was asked for these frames, so
+    /// the seq stays.
+    pub fn select_stop_frame(&mut self, index: usize) {
+        self.frames_state.select(index);
+    }
+
+    /// Alt+F10 shows the execution point: select the first row at that place when it is not selected already.
+    pub fn select_point_row(&mut self, path: &Path, line: usize) {
+        let row = self.frames.iter().position(|f| f.location.as_ref().is_some_and(|(p, l)| p == path && *l == line));
+        if let Some(row) = row.filter(|r| *r != self.frames_state.selected) {
+            self.frames_state.select(row);
             self.bump();
         }
     }
@@ -1708,9 +1714,9 @@ mod tests {
             ("select_thread", |p| {
                 p.select_thread(4);
             }),
-            ("select_top_at moving", |p| {
+            ("select_point_row moving", |p| {
                 p.frames_state.select(1);
-                p.select_top_at(Path::new("/tmp/demo.c"), 0);
+                p.select_point_row(Path::new("/tmp/demo.c"), 0);
             }),
             ("a Frames key", |p| {
                 p.set_tab(DebugTab::Frames);
@@ -1736,8 +1742,8 @@ mod tests {
         }
         // Nothing moved: nothing dropped.
         let mut p = with_vars();
-        p.select_top_at(Path::new("/tmp/demo.c"), 0);
-        p.select_top_at(Path::new("/tmp/elsewhere.c"), 0);
+        p.select_point_row(Path::new("/tmp/demo.c"), 0);
+        p.select_point_row(Path::new("/tmp/elsewhere.c"), 0);
         assert_eq!(p.var_rows().len(), 7, "row 0 is selected already, and another place is not row 0's");
     }
 
@@ -1750,6 +1756,32 @@ mod tests {
         assert_eq!(p.selection_seq(), seq);
         assert_eq!(p.var_rows().len(), 7, "the stack answer leaves the tree alone");
         assert!(matches!(p.vars.load, VarsLoad::Shown));
+    }
+
+    #[test]
+    fn select_stop_frame_selects_the_row_and_keeps_the_seq() {
+        let mut p = with_vars();
+        let seq = p.selection_seq();
+        p.select_stop_frame(1);
+        assert_eq!(p.selected_frame().unwrap().id, 1);
+        assert_eq!(p.selection_seq(), seq);
+        assert_eq!(p.var_rows().len(), 7, "the tree stays");
+    }
+
+    #[test]
+    fn select_point_row_picks_the_first_matching_row() {
+        let at =
+            |id, name: &str| FrameRow { id, name: name.into(), place: Some("x".into()), location: Some((PathBuf::from("/tmp/demo.c"), 4)) };
+        let mut p = suspended_with(vec![row(0, "lib", None), at(1, "a"), at(2, "b")]);
+        let seq = p.selection_seq();
+        p.select_point_row(Path::new("/tmp/demo.c"), 4);
+        assert_eq!(p.selected_frame().unwrap().id, 1, "the first of the two");
+        assert_eq!(p.selection_seq(), seq + 1, "bumped once");
+        p.select_point_row(Path::new("/tmp/demo.c"), 4);
+        assert_eq!(p.selection_seq(), seq + 1, "already selected: nothing");
+        p.select_point_row(Path::new("/tmp/demo.c"), 99);
+        assert_eq!(p.selected_frame().unwrap().id, 1, "no match: nothing");
+        assert_eq!(p.selection_seq(), seq + 1);
     }
 
     #[test]

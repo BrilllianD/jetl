@@ -1491,13 +1491,18 @@ presses Alt+F5 and then Alt+Right first (the Debug window opens on its Console t
    `C++ exceptions, when thrown`, `C++ exceptions, when re-thrown`, `C++ exceptions, when caught`; the count `5` and
    the whole placeholder `filter · Space toggles · Shift+Del removes · Alt+Shift+F8 edits` (it fits at 80x24).
 3. Down twice to `when thrown`, Space: `[x]`, the list stays open. Esc, Shift+F9: the Debug window reads `paused
-   (breakpoint)`, the toast `Paused in __cxa_throw, no source`, and `dap.log` has `"filters": ["throw"]` before
-   `configurationDone`, then a `stopped` with `"reason": "breakpoint"`. Frames: `__cxa_throw  no source`, `depth
-   thrower.cpp:5`, `depth thrower.cpp:6` twice, `main thrower.cpp:12`; Down once puts the caret on `Ln 5`. F9: the
-   second stop has `main  thrower.cpp:18` in the rows. F9: `exit code 0`.
+   (breakpoint)`, no `Paused in __cxa_throw, no source` toast, the editor shows `thrower.cpp` with `5▶` and the status
+   bar says `Ln 5`, and `dap.log` has `"filters": ["throw"]` before `configurationDone`, then a `stopped` with `"reason":
+   "breakpoint"`. Frames, in gdb's order: `__cxa_throw  no source`, `depth  thrower.cpp:5`, `depth  thrower.cpp:6`
+   twice, `main  thrower.cpp:12`, with `depth  thrower.cpp:5` selected (the stop frame is the first one with a file).
+   Up selects `__cxa_throw` and moves nothing (the caret stays on `Ln 5`); Alt+F10 selects `depth  thrower.cpp:5`
+   again. On the Variables tab (Alt+F5 first when the window lost focus) `Arguments` holds `n = 0  int`, and `dap.log`
+   has a `scopes` with `"frameId": 1`, the `depth` frame (not 0, `__cxa_throw`). F9: the second stop is at `5▶` again
+   with `main  thrower.cpp:18` among the rows. F9: `exit code 0`.
 4. Mid-session: Shift+F9 stops at the throw. Ctrl+Shift+F8, Down twice, Space: `[x]` becomes `[ ]`; Down twice, Space on
    `when caught`: `[x]`. `dap.log` has two more `setExceptionBreakpoints`, `"filters": []` and `"filters": ["catch"]`,
-   sent as the keys were pressed. Esc, F9: it stops in `__cxa_begin_catch` with `main  thrower.cpp:13`; F9: `:18`; F9:
+   sent as the keys were pressed. Esc, F9: it stops with `13▶`; Frames has `__cxa_begin_catch  no source` and `main  thrower.cpp:13`, and `main` is the
+   selected row; F9: `:18`; F9:
    `:19`; F9: `exit code 0`.
 5. In the list type `thrown`: two rows are left (`when thrown` and `when re-thrown`, since the query is a substring),
    count `2`. Space makes the query `thrown ` (the cursor moves one column right) and toggles nothing. Backspace, then
@@ -1505,7 +1510,7 @@ presses Alt+F5 and then Alt+Right first (the Debug window opens on its Console t
 6. Ctrl+Q: exit 0, empty stderr. The session JSON under `XDG_STATE_HOME/jetl/sessions` has `exception_filters.gdb` with
    five entries, only `catch` with `"on": true`. Start jetl again with the same `XDG_STATE_HOME`: Ctrl+Shift+F8 with
    no session shows the five rows with `[x] C++ exceptions, when caught`. Esc, Shift+F9: `"filters": ["catch"]` is the
-   first `setExceptionBreakpoints`, and it stops in `__cxa_begin_catch`. Ctrl+F2: `Debug session stopped`.
+   first `setExceptionBreakpoints`, and it stops with `13▶`, `main  thrower.cpp:13` selected. Ctrl+F2: `Debug session stopped`.
 7. An Ada filter on a C++ program: Ctrl+Shift+F8, Down, Space (`Ada exceptions` `[x]`), Down three times, Space (`when
    caught` `[ ]`), Esc, Shift+F9. `dap.log` has `"filters": ["exception"]`, answered `{"breakpoints": [{"id": 1,
    "verified": false, "reason": "pending"}]}`. The program runs to `Debug session ended, exit code 0`: no stop, no
@@ -1564,7 +1569,7 @@ exactly one is the pass.
     The title is `paused (breakpoint)` again, one `▶` on line 3 once the toast is gone. F8: `-> next`, `4▶`.
     F9: `exit code 0`, no `gdb` left.
 12. A refused step, program not stopped. In `/tmp/jetl-dap-demo`, `launch = { program =
-    "${workspaceFolder}/demo", stopOnEntry = true }`: Shift+F9, the toast `Paused in`, no source. Shift+F8: a
+    "${workspaceFolder}/demo", stopOnEntry = true }`: Shift+F9, the toast `Paused in ???, no source` and no point (gdb's entry stack is all `???  no source` rows, so the stop-frame rule finds no file and keeps row 0; checked again for yman 479). Shift+F8: a
     toast `stepOut: Command aborted.`, `-> stackTrace` once and `<- response stackTrace success false` in the log (the
     log does not print the text, `notStopped`; no `dap: execution point` follows), the title says `running`, not `paused`,
     and no toast starts with `Could not read`. Ctrl+F2: `Debug session stopped`, no `gdb` or `demo`

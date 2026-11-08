@@ -631,6 +631,13 @@ fn frame_location(frame: &StackFrame, root: &Path) -> Option<(PathBuf, usize)> {
     Some((root.join(path), (frame.line - 1) as usize))
 }
 
+/// The index of the frame a stop shows: the first one, in the adapter's order, that `frame_location` places in a
+/// file; 0 when none does. gdb 17.2 stops a C++ exception catchpoint in libstdc++ (`__cxa_throw`,
+/// `__cxa_begin_catch`), which has no source, so the user's own frame below it is the one to show.
+fn stop_frame(frames: &[StackFrame], root: &Path) -> usize {
+    frames.iter().position(|f| frame_location(f, root).is_some()).unwrap_or(0)
+}
+
 /// Reads the project files, picks the configuration and the adapter, and resolves the launch arguments.
 fn prepare(job: Job) -> Result<Prepared, String> {
     let (tasks, blocks);
@@ -1661,7 +1668,7 @@ impl App {
     /// epoch (rule 7). `Stop` does not bump the epoch, so a frame answer is applied only while `Suspended`. One already
     /// on the bus when a step is sent is applied too, and the step's `Running` then clears the point.
     ///
-    /// There are two stack answers. The stop's (`StackTrace`) always sets the execution point, and opens the file and
+    /// There are two stack answers. The stop's (`StackTrace`) always sets the execution point at the stop frame (`stop_frame`), and opens the file and
     /// fills the list only if the user has not chosen since the stop (`Live::stop_seq`). A chosen thread's (`Frames`)
     /// fills the list and shows row 0, and is dropped unless it carries the panel's current selection seq.
     fn debug_response(&mut self, tag: DapTag, result: Result<Value, String>) {
@@ -1764,7 +1771,9 @@ impl App {
                 }
                 let stands = self.debug_stop_stands();
                 let frames = body_of::<StackTraceBody>("stackTrace", body).stack_frames;
-                match frames.first() {
+                let root = self.workspace.root.clone();
+                let at = stop_frame(&frames, &root);
+                match frames.get(at) {
                     Some(frame) => self.debug_show_frame(frame, stands),
                     None => {
                         self.editor.set_execution_point(None);
@@ -1772,8 +1781,8 @@ impl App {
                     }
                 }
                 if stands {
-                    let root = self.workspace.root.clone();
                     self.debug_panel.show_stack(thread, frames.iter().map(|f| frame_row(f, &root)).collect());
+                    self.debug_panel.select_stop_frame(at);
                 }
             }
             TagKind::Frames { thread, .. } => {
@@ -2128,7 +2137,7 @@ impl App {
             return self.notify(Level::Info, "No execution point");
         };
         self.editor.set_selected_frame(None);
-        self.debug_panel.select_top_at(&p.path, p.line);
+        self.debug_panel.select_point_row(&p.path, p.line);
         self.debug_open_view(p.path, p.line, true);
     }
 
@@ -6639,6 +6648,57 @@ pub(crate) mod tests {
         app.handle_key(key(KeyCode::F(10), KeyModifiers::ALT));
         in_vars(&mut app);
         quiet_twice(&mut app, &mut fake, "q-alt-f10.log").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_stop_without_a_source_shows_the_first_frame_with_one() {
+        let (mut app, dir, mut fakes) = setup("stop-first-source", Order::LaunchEarly);
+        let c = load(&mut app, "c.log", TWELVE);
+        let _ = six(&mut app);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        in_vars(&mut app);
+        app.debug_sync_vars();
+        let frames = vec![
+            json!({"id": 30, "name": "__cxa_throw", "line": 0, "column": 0}),
+            frame_at(31, "depth", &c, 5),
+            frame_at(32, "main", &c, 12),
+        ];
+        stop_listed(&mut app, &mut fake, 7, frames, json!([{"id": 7, "name": "t"}])).await;
+        pump_until(&mut app, |x| point(x).is_some()).await;
+        assert_eq!(point(&app), Some((c.clone(), 4)));
+        assert_eq!(names(&app), ["__cxa_throw", "depth", "main"], "the adapter's order is kept");
+        assert_eq!(app.debug_panel.selected_frame().unwrap().id, 31);
+        assert_eq!(selected(&app), None, "the stop row is the point, so no frame line mark");
+        assert_eq!(caret(&app), 4);
+        assert!(texts(&app).iter().all(|t| !t.starts_with("Paused in")), "{:?}", texts(&app));
+        app.debug_sync_vars();
+        assert_eq!(fake.recv("scopes").await["arguments"], json!({"frameId": 31}));
+        // Alt+F10 returns to the stop row.
+        in_frames(&mut app);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.debug_panel.selected_frame().unwrap().id, 30);
+        assert_eq!(selected(&app), None, "a row without a file moves nothing");
+        app.handle_key(key(KeyCode::F(10), KeyModifiers::ALT));
+        assert_eq!(app.debug_panel.selected_frame().unwrap().id, 31);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_stop_with_no_source_anywhere_toasts_the_top_frame() {
+        let (mut app, dir, mut fakes) = setup("stop-no-source-anywhere", Order::LaunchEarly);
+        let _ = six(&mut app);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        let frames = vec![
+            json!({"id": 0, "name": "_start", "line": 0}),
+            json!({"id": 1, "name": "__libc_start_main", "line": 0, "source": {"name": "x"}}),
+        ];
+        stop_listed(&mut app, &mut fake, 7, frames, json!([{"id": 7, "name": "t"}])).await;
+        let toast = (Level::Info, "Paused in _start, no source".to_string());
+        pump_until(&mut app, |x| x.notifications.iter().any(|n| (n.level, n.text.clone()) == toast)).await;
+        assert_eq!(last(&app), toast);
+        assert_eq!(point(&app), None);
+        assert_eq!(app.debug_panel.selected_frame().unwrap().id, 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
