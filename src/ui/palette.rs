@@ -895,7 +895,7 @@ impl Palette {
                 return Some(PaletteResult::Accept(Accept::EditBreakpoint { path: b.path.clone(), line: b.line }));
             }
             PaletteAction::EditItem => {}
-            // A filter row toggles with an empty query; every other case types the space the key stands for.
+            // A filter row toggles with an empty or blank query; every other case types the space the key stands for.
             PaletteAction::ToggleItem => {
                 let on_filter = self.source() == Source::Breakpoints
                     && self.input.text.trim().is_empty()
