@@ -1553,6 +1553,37 @@ Acceptance: at most 63 fps in the `run` phase of `long16k` (both sizes) and `spe
 
 What the gate cannot do, by design: gdb's own memory grows 50 to 67 MB/s under a printing program (2 GB in 30 s for `spew5`) whatever jetl does, so a probe that runs `spew5` or `long16k` for half a minute can pass the 3 GB guard in gdb (27.5 s from the session's start, once); read `VmHWM` of jetl, not the guard. Unit tests prove the rest: the gate's limit and hysteresis, the notice's order and text, the give-back of a hidden line, the matcher's budget. The fake adapter stands in for none of the figures above. jetl warns once per session when the adapter's memory passes 1 GiB, and does nothing else about it: gdb keeps growing until the session is stopped.
 
+### Scenario: Run window pressure
+
+Release build (`CARGO_PROFILE_RELEASE_LTO=false` builds faster; the figures hold either way), no gdb (yman 442). Needs at least 7000 MB available (`free -m`), no `cargo test` beside it, and `/tmp` is tmpfs. The method is the Console scenario's: one sample per second of jetl's `VmRSS` and `VmHWM`, the task's `wchar` and state and the main thread's state, on a pty; `stall` stops reading the pty master, so jetl's main thread blocks in its terminal write (`wait_woken`) while the task's reader thread keeps going; key latency is Ctrl+G until `Go to Line` appears. A guard stops the run when jetl passes 3 GB or `MemAvailable` falls under 3 GB.
+
+Start key: a task is started with Alt+Shift+F10 (`run.pick`) and Enter on the picker. Shift+F10 (`run.run_selected`) with nothing selected only opens the picker and runs nothing, which is what stopped run 25's attempt to measure this path.
+
+Fixtures (`cc -O0 -o p p.c`, `.jetl/run.toml` with `[[configs]]`, `name = "p"`, `command = ["./p"]`): `sleepy` (`puts("idle")`, then `sleep`), `spew5` (`for(;;)puts("spew")`), `uniq` (`printf("x%ld.c:1\n",i)` forever), `long16k` (16 KiB lines forever), `flood` (`flood %d` for 100 000 lines), and `burst`: `sleep(1)`, then `printf("burst %d\n",i)` 16 000 000 times, then exit, so the task is over before the stall ends (a probe with `before` 2 s, stall 25 s).
+
+jetl's `VmHWM`, 120x40 (the `long16k` stall also at 80x24), before and after `RunGate`:
+
+| Fixture, mode | Before | After |
+|---|---|---|
+| `spew5` stall 30 s | 2984 MB, guard fired after 21 s; `resume_now` key 1311 ms | 105 MB, flat, 23 ms |
+| `long16k` stall 30 s | 1867 MB, 99 MB/s growth (80x24: 1851 MB) | 219 MB, flat (80x24: 219 MB) |
+| `burst` stall 25 s | 667 MB | 120 MB (80x24: 117 MB), `of output dropped` on screen |
+| `long16k` free 30 s | 195 MB | 193 MB |
+| `spew5` free 30 s | 125 MB | 118 MB |
+| `uniq` free 30 s | 48 MB | 49 MB |
+| `sleepy` | 30 MB | 30 MB |
+| `flood` | 48 MB | 51 MB |
+
+Each run: Ctrl+F2 until the task is gone at most 1 s, Ctrl+Q exits 0. The `of output dropped` row is on screen after the `burst` stall (its end notice stays at the end of the log). Under `long16k` and `spew5` it is not caught: the task keeps printing after the stall so the notice is probably pushed off the screen and the 10 000-line store before a frame holds it (not verified). Its text, severity and order come from the unit tests.
+
+Steps, at 80x24 and 120x40, a private tmux socket and `XDG_*` under `/tmp`, `[lsp] enabled = false` and `[ui] toolbar = false`, a project with `flood` and `spew` configurations:
+
+1. Alt+Shift+F9, `flood`, Enter, then Shift+F10: `flood 99999` is the Run window's last line within 5 s (observed 0.14 s), and no `of output dropped` is on screen.
+2. The same for `spew`; after 3 s Ctrl+F2: `stopped` in the Run window, no `spew` left, and jetl stays under 150 MB (observed 117 MB and 111 MB).
+3. Ctrl+Q exits 0 with empty stderr.
+
+The stall cannot be made under tmux, whose server always reads the pane. Evidence: `~/.claude/plans/backlog-run-26-S5b-evidence/442/`.
+
 ### Scenario: Debug window, threads and frames
 
 Needs `gdb` 14 or newer (the run used 17.2) and `gcc`. At 80x24 and at 120x40, a private tmux socket, `XDG_*`

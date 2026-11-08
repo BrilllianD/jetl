@@ -12,7 +12,7 @@ use crate::event::{AppMsg, Level};
 use crate::run::caret;
 use crate::run::matcher::{Matcher, RunLine};
 use crate::run::panel::Status;
-use crate::run::process::{self, RunEnd, Spec};
+use crate::run::process::{self, RunEnd, RunGate, Spec};
 use crate::run::testing::{Runner, rerun_failed};
 use crate::run::{MatcherKind, Origin, RunTask, TaskCommand, quote_word};
 use crate::ui::focus::{PanelId, ToolWindowId};
@@ -63,6 +63,8 @@ struct Job {
     /// The process group; 0 once its leader was reaped.
     pid: Arc<AtomicU32>,
     task: tokio::task::AbortHandle,
+    /// The gauge over the output lines on their way to the panel; `run_output` gives their charge back.
+    gate: Arc<RunGate>,
     /// `run.stop` killed it.
     stopped: bool,
 }
@@ -96,7 +98,14 @@ impl RunState {
     pub(crate) fn fake_running(&mut self, name: &str) {
         self.seq += 1;
         let task = tokio::spawn(std::future::pending::<()>()).abort_handle();
-        self.job = Some(Job { run: self.seq, name: name.to_string(), pid: Arc::new(AtomicU32::new(0)), task, stopped: false });
+        self.job = Some(Job {
+            run: self.seq,
+            name: name.to_string(),
+            pid: Arc::new(AtomicU32::new(0)),
+            task,
+            gate: Arc::new(RunGate::new(process::MAX_QUEUED)),
+            stopped: false,
+        });
     }
 
     /// `run.stop` was pressed on the running job (the exit may not have arrived).
@@ -164,8 +173,9 @@ impl App {
             _ => Some(Matcher::new(&cwd, &root)),
         };
         let (generation, tx) = (self.workspace.generation, self.bus_tx.clone());
-        let handle = tokio::spawn(process::drive(spawned, matcher, generation, run, tx, pid.clone()));
-        self.run.job = Some(Job { run, name: task.name, pid, task: handle.abort_handle(), stopped: false });
+        let gate = Arc::new(RunGate::new(process::MAX_QUEUED));
+        let handle = tokio::spawn(process::drive(spawned, matcher, gate.clone(), generation, run, tx, pid.clone()));
+        self.run.job = Some(Job { run, name: task.name, pid, task: handle.abort_handle(), gate, stopped: false });
     }
 
     /// Show the Run window; it takes the focus only from the window it
@@ -286,6 +296,9 @@ impl App {
         if !self.current_run(generation, run) {
             tracing::debug!("dropping output of an old run");
             return;
+        }
+        if let Some(job) = &self.run.job {
+            job.gate.release(&lines);
         }
         self.run_panel.push(lines);
     }
@@ -513,6 +526,19 @@ mod tests {
         assert!(!app.run.running());
         assert!(matches!(app.run_panel.status(), Some(Status::Failed(e)) if e.starts_with("cannot run jetl-no-such-program")));
         assert_eq!(errors(&app).len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn run_output_gives_every_charge_back() {
+        let (mut app, dir) = test_app("run-gate");
+        app.run_task(shell("t", "for i in $(seq 1 2000); do echo line$i; done"));
+        let gate = app.run.job.as_ref().unwrap().gate.clone();
+        until_exit(&mut app).await;
+        assert_eq!(gate.queued(), 0);
+        let texts: Vec<&str> = app.run_panel.lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts.last(), Some(&"line2000"));
+        assert!(texts.iter().all(|t| !t.contains("of output dropped")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
