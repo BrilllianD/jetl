@@ -135,12 +135,22 @@ pub enum BpState {
 }
 
 /// What the user set on a breakpoint besides its line: sent in `setBreakpoints` and saved with the session, never
-/// adapter state. Neither field is `Some("")` or holds a control character; both `None` is a plain breakpoint, and a
-/// log message means it does not stop.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// adapter state. No text is `Some("")` or holds a control character; all texts `None` and `enabled` is a plain
+/// breakpoint, a log message means it does not stop, and a disabled spec is kept but never sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BreakpointSpec {
     pub condition: Option<String>,
     pub log_message: Option<String>,
+    /// Adapter-defined text sent as `hitCondition`; jetl's meaning is "stop from this hit on" (see `wire_breakpoints`).
+    pub hit_condition: Option<String>,
+    /// False: kept, drawn dim, never sent to an adapter.
+    pub enabled: bool,
+}
+
+impl Default for BreakpointSpec {
+    fn default() -> Self {
+        BreakpointSpec { condition: None, log_message: None, hit_condition: None, enabled: true }
+    }
 }
 
 impl BreakpointSpec {
@@ -151,7 +161,7 @@ impl BreakpointSpec {
     }
 
     pub fn is_plain(&self) -> bool {
-        self.condition.is_none() && self.log_message.is_none()
+        self.condition.is_none() && self.log_message.is_none() && self.hit_condition.is_none() && self.enabled
     }
 }
 
@@ -3273,7 +3283,7 @@ g()
     #[test]
     fn a_spec_follows_its_line() {
         let mut buf = b("a\nb\nc\nd\n");
-        let spec = |c: &str| BreakpointSpec { condition: Some(c.into()), log_message: None };
+        let spec = |c: &str| BreakpointSpec { condition: Some(c.into()), ..Default::default() };
         buf.breakpoints.insert(2, BreakpointMark { spec: spec("i == 2"), ..Default::default() });
         buf.breakpoints.insert(3, BreakpointMark { spec: spec("i == 3"), ..Default::default() });
         buf.goto_line(0, 0);
@@ -3290,7 +3300,7 @@ g()
 
     #[test]
     fn forget_state_keeps_the_spec() {
-        let spec = BreakpointSpec { condition: Some("i == 2".into()), log_message: Some("i={i}".into()) };
+        let spec = BreakpointSpec { condition: Some("i == 2".into()), log_message: Some("i={i}".into()), ..Default::default() };
         let mut m =
             BreakpointMark { state: BpState::Failed, id: Some(3), adapter_line: Some(4), message: Some("no".into()), spec: spec.clone() };
         m.forget_state();
@@ -3303,15 +3313,18 @@ g()
         assert_eq!(BreakpointSpec::text("   "), None);
         assert_eq!(BreakpointSpec::text(""), None);
         assert!(BreakpointSpec::default().is_plain());
-        assert!(!BreakpointSpec { condition: Some("x".into()), log_message: None }.is_plain());
-        assert!(!BreakpointSpec { condition: None, log_message: Some("x".into()) }.is_plain());
+        assert!(!BreakpointSpec { condition: Some("x".into()), ..Default::default() }.is_plain());
+        assert!(!BreakpointSpec { log_message: Some("x".into()), ..Default::default() }.is_plain());
+        assert!(!BreakpointSpec { hit_condition: Some("3".into()), ..Default::default() }.is_plain());
+        assert!(!BreakpointSpec { enabled: false, ..Default::default() }.is_plain());
+        assert!(BreakpointSpec::default().enabled, "a spec is enabled unless told otherwise");
     }
 
     #[test]
     fn restore_specs_skips_a_line_with_no_mark() {
         let mut buf = b("a\nb\nc\n");
         buf.set_breakpoints(&[1]);
-        let spec = BreakpointSpec { condition: Some("c".into()), log_message: None };
+        let spec = BreakpointSpec { condition: Some("c".into()), ..Default::default() };
         buf.restore_breakpoint_specs(&[(1, spec.clone()), (2, spec.clone())]);
         assert_eq!(bps(&buf), vec![1]);
         assert_eq!(buf.breakpoints[&1].spec, spec);

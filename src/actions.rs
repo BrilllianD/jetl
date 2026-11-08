@@ -585,8 +585,10 @@ pub enum DebugAction {
     Evaluate,
     /// Alt+F9: run the paused program to the caret's line.
     RunToCursor,
-    /// Alt+Shift+F8: edit the condition or log message of the breakpoint on the caret's line.
+    /// Alt+Shift+F8: edit the condition, log message or hit count of the breakpoint on the caret's line.
     EditBreakpoint,
+    /// Enable or disable the breakpoint on the caret's line (kept, not sent while disabled).
+    ToggleBreakpointEnabled,
     /// Variables: remove the selected watch.
     RemoveWatch,
     /// The menu of the paused program's threads.
@@ -811,7 +813,7 @@ pub enum PaletteAction {
     DeleteItem,
     /// Edit the selected item where a list allows it (View Breakpoints).
     EditItem,
-    /// Toggle the selected item where a list allows it (an exception filter in View Breakpoints); elsewhere types a space.
+    /// Toggle the selected item where a list allows it (exception filters and breakpoints in View Breakpoints); elsewhere types a space.
     ToggleItem,
 }
 
@@ -1229,7 +1231,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "debug.show_execution_point" => "Debug: Show Execution Point", Debug(DebugAction::ShowExecutionPoint);
         "debug.evaluate" => "Debug: Evaluate Expression", Debug(DebugAction::Evaluate);
         "debug.run_to_cursor" => "Debug: Run to Cursor (the paused program runs to the caret's line)", Debug(DebugAction::RunToCursor);
-        "debug.edit_breakpoint" => "Debug: Edit Breakpoint (condition or log message) on the caret's line", Debug(DebugAction::EditBreakpoint);
+        "debug.edit_breakpoint" => "Debug: Edit Breakpoint (condition, log message or hit count) on the caret's line", Debug(DebugAction::EditBreakpoint);
+        "debug.toggle_breakpoint_enabled" => "Debug: enable or disable the breakpoint on the caret's line (kept, not sent while disabled)", Debug(DebugAction::ToggleBreakpointEnabled);
         "debug.remove_watch" => "Debug: remove the selected watch", Debug(DebugAction::RemoveWatch);
         "debug.up" => "Debug: up", Debug(DebugAction::Up);
         "debug.down" => "Debug: down", Debug(DebugAction::Down);
@@ -1367,7 +1370,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "palette.prev_tab" => "Palette: previous tab", Palette(PaletteAction::PrevTab);
         "palette.delete_item" => "Palette: delete the selected item (Scratch Files, Recent Projects, View Breakpoints)", Palette(PaletteAction::DeleteItem);
         "palette.edit_item" => "Palette: edit the selected item (View Breakpoints)", Palette(PaletteAction::EditItem);
-        "palette.toggle_item" => "Palette: toggle the selected item (exception filters in View Breakpoints); elsewhere types a space", Palette(PaletteAction::ToggleItem);
+        "palette.toggle_item" => "Palette: toggle the selected item (exception filters and breakpoints in View Breakpoints); elsewhere types a space", Palette(PaletteAction::ToggleItem);
 
         "mode.normal" => "Vim: normal mode", Mode(ModeAction::Normal);
         "mode.insert" => "Vim: insert mode", Mode(ModeAction::Insert);
@@ -1403,7 +1406,7 @@ impl Action {
             Action::Structure(_) => &["structure", "global"],
             Action::EventLog(_) => &["event_log", "global"],
             Action::Run(_) => &["run", "global"],
-            Action::Debug(DebugAction::EditBreakpoint) => &["editor", "global"],
+            Action::Debug(DebugAction::EditBreakpoint | DebugAction::ToggleBreakpointEnabled) => &["editor", "global"],
             Action::Debug(DebugAction::Stop) => &["debug.active"],
             Action::Debug(
                 DebugAction::Resume

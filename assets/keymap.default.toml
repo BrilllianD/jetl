@@ -716,9 +716,9 @@
 # project (Recent Projects) or removes the selected breakpoint (View
 # Breakpoints); elsewhere it deletes forward in the query, like Delete.
 "shift-delete" = "palette.delete_item"
-# Edits the selected breakpoint's condition or log message (View Breakpoints).
+# Edits the selected breakpoint's condition, log message or hit count (View Breakpoints).
 "alt-shift-f8" = "palette.edit_item"
-# Toggles the selected exception filter (View Breakpoints, empty query); elsewhere it types a space.
+# Toggles the selected exception filter or enables/disables the selected breakpoint (View Breakpoints, empty query); elsewhere it types a space.
 "space" = "palette.toggle_item"
 
 # Reserved for the future vim mode (inert unless [keymap] mode = "vim").

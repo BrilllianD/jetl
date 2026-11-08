@@ -253,10 +253,16 @@ impl App {
         let compare = self.palette.as_ref().is_some_and(|p| p.kind == PaletteKind::CompareWith);
         let select = self.palette.as_ref().is_some_and(|p| p.kind == PaletteKind::SelectRunConfig);
         let processes = self.palette.as_ref().is_some_and(|p| p.kind == PaletteKind::Processes);
-        // Forgetting a recent project, removing a breakpoint or toggling an exception filter keeps the palette open.
+        // Forgetting a recent project, removing a breakpoint, toggling an exception filter or a breakpoint keeps the palette
+        // open.
         if !matches!(
             res,
-            PaletteResult::Accept(Accept::ForgetProject(_) | Accept::RemoveBreakpoint { .. } | Accept::ToggleExceptionFilter { .. })
+            PaletteResult::Accept(
+                Accept::ForgetProject(_)
+                    | Accept::RemoveBreakpoint { .. }
+                    | Accept::ToggleExceptionFilter { .. }
+                    | Accept::ToggleBreakpointEnabled { .. }
+            )
         ) {
             self.close_palette();
         }
@@ -285,6 +291,7 @@ impl App {
             PaletteResult::Accept(Accept::DeleteScratch(path)) => self.ask_delete_scratch(path),
             PaletteResult::Accept(Accept::ForgetProject(root)) => self.forget_recent_project(root),
             PaletteResult::Accept(Accept::RemoveBreakpoint { path, line }) => self.debug_remove_breakpoint(path, line),
+            PaletteResult::Accept(Accept::ToggleBreakpointEnabled { path, line }) => self.debug_toggle_breakpoint_enabled(&path, line),
             PaletteResult::Accept(Accept::ToggleExceptionFilter { adapter, filter }) => self.debug_toggle_exception_filter(adapter, filter),
             // The palette is closed above: `debug_edit_breakpoint` opens nothing while a dialog is up, and the palette
             // must not stay over the dialog.

@@ -1412,6 +1412,48 @@ declare `supportsConditionalBreakpoints` or `supportsLogPoints` gets the entry w
 the Console says once that those breakpoints stop every time; an adapter that is not gdb gets the log message
 without the added line end.
 
+### Scenario: disabled breakpoints and hit counts
+
+Needs `gdb` 14 or newer (written against 17.2) and `gcc`; `g++` and `rustc` for step 6. At 80x24 and at 120x40, with the
+setup of `### Scenario: conditional and log breakpoints` (`XDG_*` under `/tmp`, `RUST_LOG=jetl=debug`, `[lsp] enabled =
+false`, `[ui] toolbar = false`, and `-iex "set debug dap-log-file <path>"` in the adapter's command; copy `dap.log`
+after each session) and its `loop.c` (line 5 `sum += i;`, line 7 the `printf`; `i` runs from 0, so the third pass has
+`i = 2`). Start `jetl loop.c` only when `pgrep -x loop` and `pgrep -f '[d]ap-log-file <path>'` print nothing. tmux
+delivers `M-S-F8` as Alt+Shift+F8 and `C-S-F8` as Ctrl+Shift+F8. The Debug window shows on the first start; Alt+F5
+focuses it, Alt+Right twice reaches Variables (Console, Frames, Variables), and Esc gives the keys back to the editor.
+
+1. Ctrl+G `5`, Ctrl+F8, Ctrl+G `7`, Ctrl+F8: `5●` and `7●`. F1, type `toggle breakpoint enabled`, Enter, with the caret
+   on 7: the row reads `Debug: enable or disable the breakpoint on the caret's line (kept, not sent while disabled)`,
+   and `7●` is drawn in the `dim` foreground (a colour capture, `capture-pane -e`, shows it grey beside the red `5●`).
+   With no mark on the caret's line the Info toast is `No breakpoint on line N: Ctrl+F8 sets one`.
+2. Ctrl+G `5`, Alt+Shift+F8: the choice has `Condition: none`, `Log message: none (it stops)` and `Hit count: none (every
+   hit)`. Down, Down, Enter: a `Hit Count` input, `Stop at loop.c:5 from this hit on; a number (empty: every hit):`.
+   Type `3`, Enter: `5◉`. Ctrl+Shift+F8 lists `◉ loop.c:5  hit count 3` and `● loop.c:7` with `disabled` on the right.
+3. Shift+F9: the program stops at 5 (`paused (breakpoint)`) and never at 7. `dap.log` has one `setBreakpoints` for
+   `loop.c`, `[{"hitCondition": "2", "line": 5}]`: line 7 is absent, and gdb gets N-1 (it reads `hitCondition` as the
+   number of hits to skip). The Variables tab shows `i = 2`, the third pass. F9: stops again, `i = 3`.
+4. While paused, Ctrl+Shift+F8, Down five times (the five exception filter rows come first), Space: the row reads `◉
+   loop.c:5  hit count 3  disabled`, the palette stays open with an empty query, and `dap.log` has a `setBreakpoints`
+   with `"breakpoints": []` for `loop.c` at once (both marks are disabled). Esc, F9: the program runs to its end,
+   `Debug session ended, exit code 0`, and `5◉` stays (dim) with no stop. Ctrl+Shift+F8 reads the same two rows with
+   `disabled`. Space on a filter row still toggles the filter; with a query typed Space types a space.
+5. Ctrl+Q (exit 0, empty stderr). The session file has `"breakpoint_specs": [{"line": 4, "hit_condition": "3",
+   "enabled": false}, {"line": 6, "enabled": false}]`. Start `jetl loop.c` again: Ctrl+Shift+F8 shows the same two rows,
+   `hit count 3` and `disabled`.
+6. Repeat steps 1 to 3 with a C++ fixture (`loop.cpp` with the same lines, `g++ -g -O0`) and a Rust fixture
+   (`loop.rs`, `rustc -g -C opt-level=0`, `sum += i;` on line 4 and the `println!` on line 6): `hitCondition` `"2"`, the
+   first stop at `i = 2`, the next at `i = 3`, and the disabled line never stops.
+7. Every session: exit 0, empty stderr; no `gdb`, `loop` or tmux server is left.
+
+Observed 2026-11-08 with gdb 17.2 at both sizes for C, C++ and Rust; the wire is the same at 80x24 and 120x40. Only gdb
+was tried. gdb 17.2 reassigns the ignore count on every `setBreakpoints` of a source (probe: a second request with the
+same entry, sent while paused at the 4th pass of a `hitCondition: "3"` breakpoint, made the program run to its exit
+with no further stop), so anything that sends that file's breakpoints again (a condition edited, another breakpoint of
+the file toggled, a reopened file) restarts the count of every breakpoint in it; jetl does not track hits. What only
+the fake adapter and the unit tests show: the text as typed for an adapter that is not gdb (`hitCondition` `"3"`), the
+entry without `hitCondition` plus the one warning for an adapter without `supportsHitConditionalBreakpoints`, and a
+closed file's breakpoint disabled from the list.
+
 ### Scenario: Run to Cursor
 
 Needs `gdb` 14 or newer (written against 17.2) and `gcc`. At 80x24 and at 120x40, with the directories, config and

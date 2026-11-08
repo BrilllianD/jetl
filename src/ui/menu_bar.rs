@@ -271,6 +271,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Step Into", "debug.step_into"),
             Item("Step Out", "debug.step_out"),
             Item("Show Execution Point", "debug.show_execution_point"),
+            Item("Toggle Breakpoint Enabled", "debug.toggle_breakpoint_enabled"),
             Sep,
             Item("Edit Configurations…", "run.edit_configs"),
             Sep,
@@ -627,7 +628,7 @@ mod tests {
         let stop = items.iter().position(|i| *i == ("Stop Debugging", "debug.stop")).unwrap();
         assert_eq!(items[stop - 1], ("Attach to Process…", "debug.attach"));
         assert_eq!(
-            items[at + 1..at + 11],
+            items[at + 1..at + 12],
             [
                 ("Debug", "debug.start"),
                 ("Debug Test at Caret", "run.debug_test_at_caret"),
@@ -639,6 +640,7 @@ mod tests {
                 ("Step Into", "debug.step_into"),
                 ("Step Out", "debug.step_out"),
                 ("Show Execution Point", "debug.show_execution_point"),
+                ("Toggle Breakpoint Enabled", "debug.toggle_breakpoint_enabled"),
             ]
         );
     }

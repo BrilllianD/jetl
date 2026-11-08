@@ -44,7 +44,7 @@ use crate::run::caret::RustTest;
 use crate::run::matcher::{Link, RunLine, Severity};
 use crate::run::process::{RunEnd, Spec, clean, kill_group};
 use crate::run::{Origin, RunTask, load_tasks, quote_word};
-use crate::ui::dialog::{Dialog, DialogId};
+use crate::ui::dialog::{BreakpointField, Dialog, DialogId};
 use crate::ui::focus::{PanelId, ToolWindowId};
 use crate::ui::menu::{ContextMenu, MenuItem};
 use crate::ui::palette::{BreakpointItem, ExceptionFilterItem, ProcessItem, Source, display_path};
@@ -75,8 +75,9 @@ pub(super) struct Live {
     pub(super) stop_requested: bool,
     /// What the adapter was last told, per source, as sent: never an empty list, a cleared source leaves it.
     pub(super) sent: BTreeMap<PathBuf, Vec<SourceBreakpoint>>,
-    /// gdb prints a log point's message as it is, with no line end: `wire_breakpoints` adds one.
-    pub(super) log_line_end: bool,
+    /// gdb's wire quirks, handled by `wire_breakpoints`: a line end after a log message, and a hit count N sent as N-1
+    /// hits to skip.
+    pub(super) gdb_wire: bool,
     /// The breakpoints of the start that gdb has yet to speak of: `sent` at launch, less each pair `early_gdb_line` took.
     pub(super) early: BTreeMap<PathBuf, Vec<usize>>,
     /// The marks still pending at the first stop or the exit have been told to the Console.
@@ -367,24 +368,30 @@ fn open_sources<T>(editor: &Editor, sources: &BTreeMap<PathBuf, T>) -> BTreeSet<
     sources.keys().filter(|p| editor.index_of(p).is_some()).cloned().collect()
 }
 
-/// The marks as `setBreakpoints` entries. `log_line_end` adds a line end to every log message: gdb prints one exactly as
-/// given, and the Console holds a partial line until a line end, so without one the log lines would run together.
-fn wire_breakpoints(
-    marks: &BTreeMap<PathBuf, Vec<(usize, BreakpointSpec)>>,
-    log_line_end: bool,
-) -> BTreeMap<PathBuf, Vec<SourceBreakpoint>> {
+/// The marks as `setBreakpoints` entries; a disabled spec is left out, and a source left with no entry is too, since an
+/// empty list is what `breakpoint_changes` sends to clear it. `gdb_wire` is gdb's two quirks. It adds a line end to every
+/// log message: gdb prints one exactly as given, and the Console holds a partial line until a line end, so without one
+/// the log lines would run together. And it sends a hit count N >= 1 as N-1: gdb reads `hitCondition` as the number of
+/// hits to skip, while jetl's hit count means "stop from the Nth hit on". Any other text goes as typed.
+fn wire_breakpoints(marks: &BTreeMap<PathBuf, Vec<(usize, BreakpointSpec)>>, gdb_wire: bool) -> BTreeMap<PathBuf, Vec<SourceBreakpoint>> {
+    let hit = |h: &String| match h.trim().parse::<u64>() {
+        Ok(n) if gdb_wire && n >= 1 => (n - 1).to_string(),
+        _ => h.clone(),
+    };
     marks
         .iter()
-        .map(|(path, lines)| {
-            let entries = lines
+        .filter_map(|(path, lines)| {
+            let entries: Vec<SourceBreakpoint> = lines
                 .iter()
+                .filter(|(_, spec)| spec.enabled)
                 .map(|(line, spec)| SourceBreakpoint {
                     line: *line,
                     condition: spec.condition.clone(),
-                    log_message: spec.log_message.clone().map(|m| if log_line_end { m + "\n" } else { m }),
+                    log_message: spec.log_message.clone().map(|m| if gdb_wire { m + "\n" } else { m }),
+                    hit_condition: spec.hit_condition.as_ref().map(hit),
                 })
                 .collect();
-            (path.clone(), entries)
+            (!entries.is_empty()).then(|| (path.clone(), entries))
         })
         .collect()
 }
@@ -465,9 +472,12 @@ fn breakpoint_gone(path: &Path, line: usize) -> String {
     format!("The breakpoint on {} is gone", breakpoint_place(path, line))
 }
 
-/// What View Breakpoints says of a breakpoint's verdict: a closed file has none, an open one the state and the line
-/// the adapter put it on. Adapter text goes through `one_line`.
+/// What View Breakpoints says of a breakpoint's verdict: `disabled` for a disabled one, open or closed file; else a
+/// closed file has none, an open one the state and the line the adapter put it on. Adapter text goes through `one_line`.
 fn breakpoint_verdict(entry: &BreakpointEntry) -> String {
+    if !entry.mark.spec.enabled {
+        return "disabled".to_string();
+    }
     if !entry.open {
         return "file closed".to_string();
     }
@@ -486,9 +496,9 @@ fn breakpoint_verdict(entry: &BreakpointEntry) -> String {
     }
 }
 
-/// The condition and log message of a spec as one row's detail: `if <condition> · log <message>`.
+/// The texts of a spec as one row's detail: `if <condition> · hit count <hit> · log <message>`.
 fn breakpoint_detail(spec: &BreakpointSpec) -> String {
-    let parts: Vec<String> = [("if", &spec.condition), ("log", &spec.log_message)]
+    let parts: Vec<String> = [("if", &spec.condition), ("hit count", &spec.hit_condition), ("log", &spec.log_message)]
         .into_iter()
         .filter_map(|(word, text)| Some(format!("{word} {}", one_line(text.as_deref()?))))
         .collect();
@@ -787,6 +797,7 @@ impl App {
             DebugAction::Evaluate => self.debug_evaluate_dialog(),
             DebugAction::RunToCursor => self.debug_run_to_cursor(),
             DebugAction::EditBreakpoint => self.debug_edit_breakpoint_at_caret(),
+            DebugAction::ToggleBreakpointEnabled => self.debug_toggle_breakpoint_enabled_at_caret(),
             DebugAction::RemoveWatch => {
                 if self.debug_panel.remove_watch() {
                     self.dirty_frame = true;
@@ -1184,7 +1195,7 @@ impl App {
             exit_code: None,
             stop_requested: false,
             early,
-            log_line_end: gdb,
+            gdb_wire: gdb,
             told_unplaced: false,
             start_unproven: gdb,
             sent,
@@ -1267,6 +1278,7 @@ impl App {
         let items = vec![
             format!("Condition: {}", shown(&spec.condition, "none")),
             format!("Log message: {}", shown(&spec.log_message, "none (it stops)")),
+            format!("Hit count: {}", shown(&spec.hit_condition, "none (every hit)")),
         ];
         let message = breakpoint_place(&path, line);
         self.dialog = Some(Dialog::choice(DialogId::DebugBreakpoint { path, line }, "Edit Breakpoint", &message, items));
@@ -1359,39 +1371,84 @@ impl App {
         self.dirty_frame = true;
     }
 
-    /// The choice's answer: the input for the condition or the log message, prefilled with it.
-    pub(super) fn debug_breakpoint_field(&mut self, path: PathBuf, line: usize, log: bool) {
+    /// The choice's answer: the input for the condition, log message or hit count, prefilled with it.
+    pub(super) fn debug_breakpoint_field(&mut self, path: PathBuf, line: usize, field: BreakpointField) {
         let Some(spec) = self.editor.breakpoint_spec(&path, line) else {
             return self.notify(Level::Info, breakpoint_gone(&path, line));
         };
         let place = breakpoint_place(&path, line);
-        let (title, message, initial) = if log {
-            (
+        let (title, message, initial) = match field {
+            BreakpointField::LogMessage => (
                 "Log Message",
                 format!("Print this at {place} instead of stopping; {{expr}} shows a value (empty: stop):"),
                 spec.log_message.unwrap_or_default(),
-            )
-        } else {
-            ("Breakpoint Condition", format!("Stop at {place} only when this is true (empty: always):"), spec.condition.unwrap_or_default())
+            ),
+            BreakpointField::Condition => (
+                "Breakpoint Condition",
+                format!("Stop at {place} only when this is true (empty: always):"),
+                spec.condition.unwrap_or_default(),
+            ),
+            BreakpointField::HitCount => (
+                "Hit Count",
+                format!("Stop at {place} from this hit on; a number (empty: every hit):"),
+                spec.hit_condition.unwrap_or_default(),
+            ),
         };
-        self.dialog = Some(Dialog::input(DialogId::DebugBreakpointText { path, line, log }, title, &message, &initial, "Set"));
+        self.dialog = Some(Dialog::input(DialogId::DebugBreakpointText { path, line, field }, title, &message, &initial, "Set"));
         self.dispatcher.reset();
     }
 
     /// The input's answer: the field becomes the text (blank clears it) and the adapter is told at once.
-    pub(super) fn debug_set_breakpoint_text(&mut self, path: PathBuf, line: usize, log: bool, text: &str) {
+    pub(super) fn debug_set_breakpoint_text(&mut self, path: PathBuf, line: usize, field: BreakpointField, text: &str) {
         if text.chars().any(char::is_control) {
-            let what = if log { "A log message" } else { "A condition" };
+            let what = match field {
+                BreakpointField::Condition => "A condition",
+                BreakpointField::LogMessage => "A log message",
+                BreakpointField::HitCount => "A hit count",
+            };
             return self.notify(Level::Warn, format!("{what} is one line of plain text"));
         }
         let Some(mut spec) = self.editor.breakpoint_spec(&path, line) else {
             return self.notify(Level::Info, breakpoint_gone(&path, line));
         };
-        *(if log { &mut spec.log_message } else { &mut spec.condition }) = BreakpointSpec::text(text);
+        *match field {
+            BreakpointField::Condition => &mut spec.condition,
+            BreakpointField::LogMessage => &mut spec.log_message,
+            BreakpointField::HitCount => &mut spec.hit_condition,
+        } = BreakpointSpec::text(text);
         if !self.editor.set_breakpoint_spec(&path, line, spec) {
             return self.notify(Level::Info, breakpoint_gone(&path, line));
         }
         self.debug_sync_breakpoints();
+        self.dirty_frame = true;
+    }
+
+    /// Run > Toggle Breakpoint Enabled: the breakpoint on the caret's line, kept or not sent.
+    fn debug_toggle_breakpoint_enabled_at_caret(&mut self) {
+        match self.editor.breakpoint_target() {
+            Err(hint) => self.notify(Level::Info, hint),
+            Ok((path, line)) if self.editor.breakpoint_spec(&path, line).is_none() => {
+                self.notify(Level::Info, format!("No breakpoint on line {}: Ctrl+F8 sets one", line + 1));
+            }
+            Ok((path, line)) => self.debug_toggle_breakpoint_enabled(&path, line),
+        }
+    }
+
+    /// Flips `enabled` of the breakpoint on `line` (0-based) of `path`, open or closed file. The mark forgets the
+    /// adapter's verdict, since a disabled one is not sent, and the adapter is told of the file at once.
+    pub(super) fn debug_toggle_breakpoint_enabled(&mut self, path: &Path, line: usize) {
+        let Some(mut spec) = self.editor.breakpoint_spec(path, line) else {
+            return self.notify(Level::Info, breakpoint_gone(path, line));
+        };
+        spec.enabled = !spec.enabled;
+        if !self.editor.set_breakpoint_spec(path, line, spec) {
+            return self.notify(Level::Info, breakpoint_gone(path, line));
+        }
+        if let Some(mark) = self.editor.breakpoint_marks_mut(path).and_then(|m| m.get_mut(&line)) {
+            mark.forget_state();
+        }
+        self.debug_sync_breakpoints();
+        self.debug_refresh_breakpoint_list();
         self.dirty_frame = true;
     }
 
@@ -2203,8 +2260,8 @@ impl App {
         if !self.debug.active() {
             return;
         }
-        let Some(log_line_end) = self.debug.session.as_ref().map(|l| l.log_line_end) else { return };
-        let now = wire_breakpoints(&self.editor.all_breakpoints(), log_line_end);
+        let Some(gdb_wire) = self.debug.session.as_ref().map(|l| l.gdb_wire) else { return };
+        let now = wire_breakpoints(&self.editor.all_breakpoints(), gdb_wire);
         let open = open_sources(&self.editor, &now);
         let Some(live) = self.debug.session.as_mut() else { return };
         let changes = breakpoint_changes(&live.sent, &live.open, &now, &open);
@@ -2220,7 +2277,7 @@ impl App {
             let modified = source_modified(&self.editor, &source);
             let lines: Vec<usize> = breakpoints.iter().map(|b| b.line).collect();
             tracing::debug!("dap: sending breakpoints of {}: {lines:?}, modified {modified}", source.display());
-            if breakpoints.iter().any(|b| b.condition.is_some() || b.log_message.is_some()) {
+            if breakpoints.iter().any(|b| b.condition.is_some() || b.log_message.is_some() || b.hit_condition.is_some()) {
                 tracing::debug!("dap: specs of {}: {breakpoints:?}", source.display());
             }
             self.debug.send(Command::SetBreakpoints { source, breakpoints, modified });
@@ -2301,7 +2358,7 @@ pub(crate) mod tests {
     pub(crate) fn caps() -> Value {
         json!({
             "supportsConfigurationDoneRequest": true, "supportsTerminateRequest": true, "supportTerminateDebuggee": true,
-            "supportsConditionalBreakpoints": true, "supportsLogPoints": true,
+            "supportsConditionalBreakpoints": true, "supportsLogPoints": true, "supportsHitConditionalBreakpoints": true,
         })
     }
 
@@ -8278,11 +8335,11 @@ pub(crate) mod tests {
     // ---- conditional and log breakpoints (yman 447) ----
 
     fn cond(t: &str) -> BreakpointSpec {
-        BreakpointSpec { condition: Some(t.into()), log_message: None }
+        BreakpointSpec { condition: Some(t.into()), ..Default::default() }
     }
 
     fn logging(t: &str) -> BreakpointSpec {
-        BreakpointSpec { condition: None, log_message: Some(t.into()) }
+        BreakpointSpec { log_message: Some(t.into()), ..Default::default() }
     }
 
     fn spec_of(app: &App, path: &Path, line: usize) -> BreakpointSpec {
@@ -8342,7 +8399,7 @@ pub(crate) mod tests {
                 (1, BreakpointSpec::default()),
                 (3, cond("c")),
                 (5, logging("m")),
-                (6, BreakpointSpec { condition: Some("c".into()), log_message: Some("m".into()) }),
+                (6, BreakpointSpec { condition: Some("c".into()), log_message: Some("m".into()), ..Default::default() }),
             ],
         )]
         .into_iter()
@@ -8352,9 +8409,60 @@ pub(crate) mod tests {
             line,
             condition: condition.map(Into::into),
             log_message: log.map(Into::into),
+            ..Default::default()
         };
         assert_eq!(at(true), vec![sb(1, None, None), sb(3, Some("c"), None), sb(5, None, Some("m\n")), sb(6, Some("c"), Some("m\n"))]);
         assert_eq!(at(false)[2], sb(5, None, Some("m")));
+    }
+
+    fn hits(t: &str) -> BreakpointSpec {
+        BreakpointSpec { hit_condition: Some(t.into()), ..Default::default() }
+    }
+
+    fn off() -> BreakpointSpec {
+        BreakpointSpec { enabled: false, ..Default::default() }
+    }
+
+    #[test]
+    fn wire_breakpoints_leaves_a_disabled_mark_out() {
+        let (a, b) = (PathBuf::from("/x/a.c"), PathBuf::from("/x/b.c"));
+        let marks: BTreeMap<PathBuf, Vec<(usize, BreakpointSpec)>> = [
+            (
+                a.clone(),
+                vec![
+                    (1, BreakpointSpec::default()),
+                    (3, off()),
+                    (5, BreakpointSpec { condition: Some("c".into()), enabled: false, ..Default::default() }),
+                ],
+            ),
+            (b.clone(), vec![(2, off())]),
+        ]
+        .into_iter()
+        .collect();
+        for gdb in [false, true] {
+            let wired = wire_breakpoints(&marks, gdb);
+            assert_eq!(wired[&a], vec![SourceBreakpoint::at(1)], "gdb {gdb}: only the enabled mark");
+            assert!(!wired.contains_key(&b), "gdb {gdb}: a file with only disabled marks is absent");
+        }
+        // A disable reaches the adapter as an empty list for the file that left `now`.
+        let sent = wire_breakpoints(&[(b.clone(), vec![(2, BreakpointSpec::default())])].into_iter().collect(), false);
+        let now = wire_breakpoints(&marks, false);
+        let open: BTreeSet<PathBuf> = [a.clone(), b.clone()].into();
+        let changes = breakpoint_changes(&sent, &open, &now, &open);
+        assert_eq!(changes[&b], Vec::<SourceBreakpoint>::new());
+        assert_eq!(changes[&a], vec![SourceBreakpoint::at(1)]);
+    }
+
+    #[test]
+    fn wire_breakpoints_turns_a_gdb_hit_count_into_hits_to_skip() {
+        let path = PathBuf::from("/x/a.c");
+        let marks: BTreeMap<PathBuf, Vec<(usize, BreakpointSpec)>> =
+            [(path.clone(), vec![(1, hits("3")), (2, hits("1")), (3, hits("0")), (4, hits("i*2")), (5, hits(" 4 ")), (6, hits(">2"))])]
+                .into_iter()
+                .collect();
+        let sent = |gdb: bool| wire_breakpoints(&marks, gdb)[&path].iter().map(|b| b.hit_condition.clone().unwrap()).collect::<Vec<_>>();
+        assert_eq!(sent(true), ["2", "0", "0", "i*2", "3", ">2"]);
+        assert_eq!(sent(false), ["3", "1", "0", "i*2", " 4 ", ">2"].map(String::from).to_vec(), "other adapters get the text as typed");
     }
 
     #[tokio::test]
@@ -8386,7 +8494,7 @@ pub(crate) mod tests {
         toggle(&mut app, &a, 1);
         let mut fake = paused(&mut app, &mut fakes, &a, 4).await;
         // The dialog's answer syncs by itself: no tick in between.
-        app.debug_set_breakpoint_text(a.clone(), 1, false, " i > 2 ");
+        app.debug_set_breakpoint_text(a.clone(), 1, BreakpointField::Condition, " i > 2 ");
         let set = fake.recv("setBreakpoints").await;
         assert_eq!(entries(&set), json!([{"line": 2, "condition": "i > 2"}]));
         assert_eq!(spec_of(&app, &a, 1), cond("i > 2"));
@@ -8394,6 +8502,126 @@ pub(crate) mod tests {
         app.on_tick();
         assert_quiet(&mut app, &mut fake, "q1.log").await;
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- disabled breakpoints and hit counts (yman 454); the fake adapter, not gdb, unless said ----
+
+    fn toggle_enabled(app: &mut App, line: usize) {
+        at_line(app, line);
+        app.perform(Action::Debug(DebugAction::ToggleBreakpointEnabled));
+    }
+
+    #[tokio::test]
+    async fn toggling_a_breakpoint_while_paused_sends_the_file_at_once() {
+        let (mut app, dir, mut fakes) = setup("enable-paused", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        toggle(&mut app, &a, 3);
+        let mut fake = paused(&mut app, &mut fakes, &a, 5).await;
+        toggle_enabled(&mut app, 1);
+        assert_eq!(entries(&fake.recv("setBreakpoints").await), json!([{"line": 4}]), "the disabled one is left out");
+        assert!(!spec_of(&app, &a, 1).enabled && keys(&app, &a) == [1, 3], "the mark stays");
+        toggle_enabled(&mut app, 1);
+        assert_eq!(entries(&fake.recv("setBreakpoints").await), json!([{"line": 2}, {"line": 4}]));
+        assert!(spec_of(&app, &a, 1).enabled);
+        app.on_tick();
+        assert_quiet(&mut app, &mut fake, "q1.log").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn disabling_the_only_breakpoint_of_a_file_sends_an_empty_list() {
+        let (mut app, dir, mut fakes) = setup("enable-only", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 2);
+        let mut fake = paused(&mut app, &mut fakes, &a, 5).await;
+        toggle_enabled(&mut app, 2);
+        assert_eq!(entries(&fake.recv("setBreakpoints").await), json!([]));
+        assert_eq!(keys(&app, &a), [2]);
+        toggle_enabled(&mut app, 2);
+        assert_eq!(entries(&fake.recv("setBreakpoints").await), json!([{"line": 3}]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_disabled_mark_is_not_in_the_first_snapshot() {
+        let (mut app, dir, mut fakes) = setup("enable-start", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        toggle(&mut app, &a, 3);
+        app.editor.set_breakpoint_spec(&a, 1, BreakpointSpec { enabled: false, ..Default::default() });
+        let (_fake, sets) = running(&mut app, &mut fakes).await;
+        assert_eq!(sets.len(), 1);
+        assert_eq!(entries(&sets[0]), json!([{"line": 4}]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_hit_count_reaches_the_adapter_as_typed() {
+        // The fake adapter is not gdb: the text is not translated.
+        let (mut app, dir, mut fakes) = setup("hit-count-wire", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let mut fake = paused(&mut app, &mut fakes, &a, 4).await;
+        app.debug_set_breakpoint_text(a.clone(), 1, BreakpointField::HitCount, " 3 ");
+        assert_eq!(entries(&fake.recv("setBreakpoints").await), json!([{"line": 2, "hitCondition": "3"}]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn toggling_without_a_breakpoint_says_so() {
+        let (mut app, dir) = test_app("enable-nomark");
+        six(&mut app);
+        at_line(&mut app, 4);
+        app.perform(Action::Debug(DebugAction::ToggleBreakpointEnabled));
+        assert_eq!(last(&app), (Level::Info, "No breakpoint on line 5: Ctrl+F8 sets one".to_string()));
+        app.editor.open_untitled("x");
+        app.perform(Action::Debug(DebugAction::ToggleBreakpointEnabled));
+        assert_eq!(last(&app), (Level::Info, "A breakpoint needs a file: this tab has none".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_disabled_mark_forgets_the_adapters_verdict() {
+        let (mut app, dir, mut fakes) = setup("enable-forget", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        let _ = running(&mut app, &mut fakes).await;
+        answered(&mut app, &a, vec![1], vec![bp(json!({"id": 5, "verified": true, "line": 3}))]);
+        let m = state(&app, &a, 1);
+        assert_eq!((m.state, m.id, m.adapter_line), (BpState::Verified, Some(5), Some(2)));
+        toggle_enabled(&mut app, 1);
+        let m = state(&app, &a, 1);
+        assert_eq!((m.state, m.id, m.adapter_line, m.message), (BpState::Idle, None, None, None));
+        assert!(!m.spec.enabled, "the spec is kept");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_row_says_what_is_set_and_that_it_is_disabled() {
+        let entry = |spec: BreakpointSpec, open: bool, state: BpState| BreakpointEntry {
+            path: PathBuf::from("/x/a.c"),
+            line: 3,
+            mark: BreakpointMark { state, spec, ..Default::default() },
+            open,
+        };
+        let all = BreakpointSpec {
+            condition: Some("i == 3".into()),
+            log_message: Some("i={i}\u{1b}[0m".into()),
+            hit_condition: Some("3".into()),
+            enabled: true,
+        };
+        assert_eq!(breakpoint_detail(&all), "if i == 3 · hit count 3 · log i={i}");
+        assert_eq!(breakpoint_detail(&BreakpointSpec { hit_condition: Some("2".into()), ..Default::default() }), "hit count 2");
+        assert_eq!(breakpoint_detail(&BreakpointSpec::default()), "");
+        let off = BreakpointSpec { enabled: false, ..all };
+        for state in [BpState::Idle, BpState::Pending, BpState::Verified, BpState::Failed] {
+            for open in [true, false] {
+                assert_eq!(breakpoint_verdict(&entry(off.clone(), open, state)), "disabled", "{state:?} open {open}");
+            }
+        }
+        assert_eq!(breakpoint_verdict(&entry(BreakpointSpec::default(), false, BpState::Idle)), "file closed");
+        assert_eq!(breakpoint_verdict(&entry(BreakpointSpec::default(), true, BpState::Verified)), "verified");
     }
 
     #[tokio::test]
@@ -8458,17 +8686,17 @@ pub(crate) mod tests {
         let (id, title, message, items) = open_dialog(&app);
         assert_eq!((title.as_str(), message.as_str()), ("Edit Breakpoint", "a.log:2"));
         assert_eq!(id, DialogId::DebugBreakpoint { path: a.clone(), line: 1 });
-        assert_eq!(items, ["Condition: none", "Log message: none (it stops)"]);
+        assert_eq!(items, ["Condition: none", "Log message: none (it stops)", "Hit count: none (every hit)"]);
         answer_dialog(&mut app, DialogResult::Choice(0));
         let (id, title, message, rows) = open_dialog(&app);
-        assert_eq!(id, DialogId::DebugBreakpointText { path: a.clone(), line: 1, log: false });
+        assert_eq!(id, DialogId::DebugBreakpointText { path: a.clone(), line: 1, field: BreakpointField::Condition });
         assert_eq!(title, "Breakpoint Condition");
         assert_eq!(message, "Stop at a.log:2 only when this is true (empty: always):");
         assert_eq!(rows, ["", "Set"]);
         answer_dialog(&mut app, DialogResult::Text("  i == 3 ".into()));
         assert_eq!(spec_of(&app, &a, 1), cond("i == 3"));
         edit_breakpoint(&mut app);
-        assert_eq!(open_dialog(&app).3, ["Condition: i == 3", "Log message: none (it stops)"]);
+        assert_eq!(open_dialog(&app).3, ["Condition: i == 3", "Log message: none (it stops)", "Hit count: none (every hit)"]);
         answer_dialog(&mut app, DialogResult::Choice(0));
         assert_eq!(open_dialog(&app).3[0], "i == 3", "prefilled");
         answer_dialog(&mut app, DialogResult::Text("".into()));
@@ -8486,22 +8714,58 @@ pub(crate) mod tests {
         edit_breakpoint(&mut app);
         answer_dialog(&mut app, DialogResult::Choice(1));
         let (id, title, message, rows) = open_dialog(&app);
-        assert_eq!(id, DialogId::DebugBreakpointText { path: a.clone(), line: 2, log: true });
+        assert_eq!(id, DialogId::DebugBreakpointText { path: a.clone(), line: 2, field: BreakpointField::LogMessage });
         assert_eq!(title, "Log Message");
         assert_eq!(message, "Print this at a.log:3 instead of stopping; {expr} shows a value (empty: stop):");
         assert_eq!(rows, ["", "Set"]);
         answer_dialog(&mut app, DialogResult::Text(" i={i} ".into()));
         assert_eq!(spec_of(&app, &a, 2), logging("i={i}"));
         edit_breakpoint(&mut app);
-        assert_eq!(open_dialog(&app).3, ["Condition: none", "Log message: i={i}"]);
+        assert_eq!(open_dialog(&app).3, ["Condition: none", "Log message: i={i}", "Hit count: none (every hit)"]);
         answer_dialog(&mut app, DialogResult::Choice(1));
         assert_eq!(open_dialog(&app).3[0], "i={i}");
         answer_dialog(&mut app, DialogResult::Text("  ".into()));
         assert_eq!(spec_of(&app, &a, 2), BreakpointSpec::default());
         // A condition kept beside a log message shows in the first item.
-        app.editor.set_breakpoint_spec(&a, 2, BreakpointSpec { condition: Some("c".into()), log_message: Some("m".into()) });
+        app.editor.set_breakpoint_spec(
+            &a,
+            2,
+            BreakpointSpec { condition: Some("c".into()), log_message: Some("m".into()), ..Default::default() },
+        );
         edit_breakpoint(&mut app);
-        assert_eq!(open_dialog(&app).3, ["Condition: c", "Log message: m"]);
+        assert_eq!(open_dialog(&app).3, ["Condition: c", "Log message: m", "Hit count: none (every hit)"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn edit_breakpoint_sets_a_hit_count() {
+        use crate::ui::dialog::DialogResult;
+        let (mut app, dir) = test_app("spec-edit-hits");
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        at_line(&mut app, 1);
+        edit_breakpoint(&mut app);
+        answer_dialog(&mut app, DialogResult::Choice(2));
+        let (id, title, message, rows) = open_dialog(&app);
+        assert_eq!(id, DialogId::DebugBreakpointText { path: a.clone(), line: 1, field: BreakpointField::HitCount });
+        assert_eq!(title, "Hit Count");
+        assert_eq!(message, "Stop at a.log:2 from this hit on; a number (empty: every hit):");
+        assert_eq!(rows, ["", "Set"]);
+        answer_dialog(&mut app, DialogResult::Text(" 3 ".into()));
+        assert_eq!(spec_of(&app, &a, 1).hit_condition.as_deref(), Some("3"));
+        edit_breakpoint(&mut app);
+        assert_eq!(open_dialog(&app).3, ["Condition: none", "Log message: none (it stops)", "Hit count: 3"]);
+        answer_dialog(&mut app, DialogResult::Choice(2));
+        assert_eq!(open_dialog(&app).3[0], "3", "prefilled");
+        answer_dialog(&mut app, DialogResult::Text("  ".into()));
+        assert_eq!(spec_of(&app, &a, 1), BreakpointSpec::default(), "blank clears it");
+        // A control character is refused and changes nothing.
+        app.editor.set_breakpoint_spec(&a, 1, BreakpointSpec { hit_condition: Some("2".into()), ..Default::default() });
+        edit_breakpoint(&mut app);
+        answer_dialog(&mut app, DialogResult::Choice(2));
+        answer_dialog(&mut app, DialogResult::Text("3\u{1b}".into()));
+        assert_eq!(last(&app), (Level::Warn, "A hit count is one line of plain text".to_string()));
+        assert_eq!(spec_of(&app, &a, 1).hit_condition.as_deref(), Some("2"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -8527,9 +8791,14 @@ pub(crate) mod tests {
         let a = six(&mut app);
         toggle(&mut app, &a, 1);
         let (mut fake, _) = running(&mut app, &mut fakes).await;
-        for (log, warn) in [(false, "A condition is one line of plain text"), (true, "A log message is one line of plain text")] {
+        let fields = [
+            (BreakpointField::Condition, "A condition is one line of plain text"),
+            (BreakpointField::LogMessage, "A log message is one line of plain text"),
+            (BreakpointField::HitCount, "A hit count is one line of plain text"),
+        ];
+        for (field, warn) in fields {
             for text in ["a\nb", "a\u{1b}b"] {
-                app.debug_set_breakpoint_text(a.clone(), 1, log, text);
+                app.debug_set_breakpoint_text(a.clone(), 1, field, text);
                 assert_eq!(last(&app), (Level::Warn, warn.to_string()), "{text:?}");
                 assert_eq!(spec_of(&app, &a, 1), BreakpointSpec::default());
             }
@@ -8595,7 +8864,7 @@ pub(crate) mod tests {
     }
 
     fn sb(line: usize, condition: Option<&str>, log: Option<&str>) -> SourceBreakpoint {
-        SourceBreakpoint { line, condition: condition.map(Into::into), log_message: log.map(Into::into) }
+        SourceBreakpoint { line, condition: condition.map(Into::into), log_message: log.map(Into::into), ..Default::default() }
     }
 
     /// The Console without the lines about Run to Cursor's own breakpoint.
@@ -9009,7 +9278,11 @@ pub(crate) mod tests {
         answered(&mut app, &a, vec![1], vec![bp(json!({"verified": true, "line": 7}))]);
         assert_eq!(rows(&app)[0], row("a.log:2", "if i == 3", "verified, moved to line 7"));
         // Both texts, one line each; a failure with no message.
-        app.editor.set_breakpoint_spec(&a, 4, BreakpointSpec { condition: Some("c\u{1b}[0m".into()), log_message: Some("m".into()) });
+        app.editor.set_breakpoint_spec(
+            &a,
+            4,
+            BreakpointSpec { condition: Some("c\u{1b}[0m".into()), log_message: Some("m".into()), ..Default::default() },
+        );
         answered(&mut app, &a, vec![4], vec![bp(json!({"verified": false, "reason": "failed"}))]);
         assert_eq!(rows(&app)[2], row("a.log:5", "if c · log m", "failed"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -9066,6 +9339,38 @@ pub(crate) mod tests {
         assert_eq!(last(&app), (Level::Info, "The breakpoint on a.log:4 is gone".to_string()));
         app.on_tick();
         assert_quiet(&mut app, &mut fake, "q2.log").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn space_in_the_list_disables_a_breakpoint_and_the_palette_stays() {
+        use crate::actions::PaletteKind;
+        let (mut app, dir, mut fakes) = setup("vb-space", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        toggle(&mut app, &a, 3);
+        let z = closed_with(&mut app, "z.log", 0, cond("z > 1"));
+        let mut fake = paused(&mut app, &mut fakes, &a, 5).await;
+        app.open_palette(PaletteKind::Breakpoints);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.palette.as_ref().map(|p| p.kind), Some(PaletteKind::Breakpoints), "still open");
+        assert_eq!(app.palette.as_ref().map(|p| p.input.text.clone()), Some(String::new()), "the space was not typed");
+        assert!(!spec_of(&app, &a, 3).enabled && spec_of(&app, &a, 1).enabled);
+        assert_eq!(
+            open_rows(&app),
+            [row("a.log:2", "", ""), row("a.log:4", "", "disabled"), row("z.log:1", "if z > 1", "file closed")],
+            "the refreshed rows"
+        );
+        // No tick in between.
+        assert_eq!(entries(&fake.recv("setBreakpoints").await), json!([{"line": 2}]));
+        // Space again enables it; a closed file's breakpoint can be disabled too.
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(entries(&fake.recv("setBreakpoints").await), json!([{"line": 2}, {"line": 4}]));
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(!app.editor.breakpoint_spec(&z, 0).unwrap().enabled);
+        assert_eq!(open_rows(&app)[2], row("z.log:1", "if z > 1", "disabled"), "closed and disabled");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

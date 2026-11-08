@@ -147,6 +147,8 @@ pub struct Capabilities {
     pub supports_conditional_breakpoints: bool,
     #[serde(deserialize_with = "nullable")]
     pub supports_log_points: bool,
+    #[serde(deserialize_with = "nullable")]
+    pub supports_hit_conditional_breakpoints: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
@@ -478,6 +480,16 @@ mod tests {
         assert!(!c.supports_conditional_breakpoints && !c.supports_log_points);
         let c: Capabilities = body_of("t", json!({}));
         assert!(!c.supports_conditional_breakpoints && !c.supports_log_points);
+    }
+
+    #[test]
+    fn capabilities_read_hit_conditions() {
+        let c: Capabilities = body_of("t", json!({"supportsHitConditionalBreakpoints": true}));
+        assert!(c.supports_hit_conditional_breakpoints);
+        let c: Capabilities = body_of("t", json!({"supportsHitConditionalBreakpoints": null}));
+        assert!(!c.supports_hit_conditional_breakpoints);
+        let c: Capabilities = body_of("t", json!({}));
+        assert!(!c.supports_hit_conditional_breakpoints);
     }
 
     #[test]

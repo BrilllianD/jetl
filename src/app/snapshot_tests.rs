@@ -798,9 +798,9 @@ async fn editor_breakpoint_kinds() {
     let mut fx = stable_app("breakpoint-kinds");
     let app = &mut fx.app;
     load(app, "notes.log", PLAIN);
-    let cond = BreakpointSpec { condition: Some("i == 3".into()), log_message: None };
-    let log = BreakpointSpec { condition: None, log_message: Some("i={i}".into()) };
-    let both = BreakpointSpec { condition: Some("i == 3".into()), log_message: Some("i={i}".into()) };
+    let cond = BreakpointSpec { condition: Some("i == 3".into()), ..Default::default() };
+    let log = BreakpointSpec { log_message: Some("i={i}".into()), ..Default::default() };
+    let both = BreakpointSpec { condition: Some("i == 3".into()), log_message: Some("i={i}".into()), ..Default::default() };
     let b = app.editor.active_buffer_mut().unwrap();
     for (line, state, spec) in [
         (0, BpState::Verified, BreakpointSpec::default()),
@@ -819,6 +819,36 @@ async fn editor_breakpoint_kinds() {
     ];
     marks.extend(editor_marks(&app.theme));
     assert_snapshot!("editor_breakpoint_kinds", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn editor_breakpoints_disabled() {
+    use crate::editor::buffer::BreakpointSpec;
+    let mut fx = stable_app("breakpoints-disabled");
+    let app = &mut fx.app;
+    load(app, "notes.log", PLAIN);
+    let off = |spec: BreakpointSpec| BreakpointSpec { enabled: false, ..spec };
+    let cond = BreakpointSpec { condition: Some("i == 3".into()), ..Default::default() };
+    let log = BreakpointSpec { log_message: Some("i={i}".into()), ..Default::default() };
+    let hits = BreakpointSpec { hit_condition: Some("3".into()), ..Default::default() };
+    let disabled = crate::editor::breakpoint_glyph(BpState::Idle, &off(BreakpointSpec::default()), &app.theme).1;
+    let b = app.editor.active_buffer_mut().unwrap();
+    for (line, state, spec) in [
+        (0, BpState::Verified, off(BreakpointSpec::default())),
+        (1, BpState::Failed, off(cond)),
+        (2, BpState::Idle, off(log)),
+        (3, BpState::Verified, hits),
+    ] {
+        b.breakpoints.insert(line, BreakpointMark { state, spec, ..Default::default() });
+    }
+    let term = draw_editor(app, 40, 8);
+    let mut marks = vec![
+        Mark::style('B', "breakpoint", app.theme.breakpoint),
+        Mark::style('U', "unverified breakpoint", app.theme.breakpoint_unverified),
+        Mark::style('D', "disabled breakpoint", disabled),
+    ];
+    marks.extend(editor_marks(&app.theme));
+    assert_snapshot!("editor_breakpoints_disabled", snapshot(&term, &marks, None));
 }
 
 #[tokio::test]
@@ -1018,7 +1048,7 @@ async fn debug_edit_breakpoint_dialog() {
     load(app, "notes.log", PLAIN);
     moves(app, Motion::Down, 2);
     let b = app.editor.active_buffer_mut().unwrap();
-    let spec = BreakpointSpec { condition: Some("i == 3".into()), log_message: None };
+    let spec = BreakpointSpec { condition: Some("i == 3".into()), ..Default::default() };
     b.breakpoints.insert(2, BreakpointMark { spec, ..Default::default() });
     app.perform(crate::actions::Action::Debug(crate::actions::DebugAction::EditBreakpoint));
     let term = draw_app(app, 80, 24);
@@ -1394,7 +1424,7 @@ async fn palette_breakpoints() {
             4,
             BreakpointMark {
                 state: BpState::Verified,
-                spec: BreakpointSpec { condition: Some("i == 3".into()), log_message: None },
+                spec: BreakpointSpec { condition: Some("i == 3".into()), ..Default::default() },
                 ..Default::default()
             },
         ),
@@ -1403,14 +1433,15 @@ async fn palette_breakpoints() {
             BreakpointMark {
                 state: BpState::Failed,
                 message: Some("No symbol \"nosuch\" in current context, and a second clause to make it long".into()),
-                spec: BreakpointSpec { condition: None, log_message: Some("sum={sum}".into()) },
+                spec: BreakpointSpec { log_message: Some("sum={sum}".into()), ..Default::default() },
                 ..Default::default()
             },
         ),
     ];
     app.editor.active_buffer_mut().unwrap().breakpoints.extend(marks);
     let demo = app.workspace.root.join("demo.log");
-    let long = BreakpointSpec { condition: Some("count > 100 && total < 5000 && flag == 1 && other_flag == 0".into()), log_message: None };
+    let long =
+        BreakpointSpec { condition: Some("count > 100 && total < 5000 && flag == 1 && other_flag == 0".into()), ..Default::default() };
     app.editor.restore_closed_breakpoint_marks(&[(demo, vec![(2, long)])]);
     app.open_palette(PaletteKind::Breakpoints);
     let term = draw_app(app, 80, 24);
@@ -1418,6 +1449,37 @@ async fn palette_breakpoints() {
     marks.push(Mark::style('B', "breakpoint", app.theme.breakpoint));
     marks.push(Mark::style('U', "unverified breakpoint", app.theme.breakpoint_unverified));
     assert_snapshot!("palette_breakpoints", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn palette_breakpoints_disabled() {
+    use crate::editor::buffer::BreakpointSpec;
+    let mut fx = stable_app("palette-breakpoints-disabled");
+    let app = &mut fx.app;
+    load(app, "loop.log", "a\nb\nc\nd\ne\nf\ng\n");
+    let cond = BreakpointSpec { condition: Some("i == 3".into()), ..Default::default() };
+    let marks = [
+        (1, BreakpointMark { state: BpState::Idle, spec: BreakpointSpec { enabled: false, ..cond.clone() }, ..Default::default() }),
+        (
+            4,
+            BreakpointMark {
+                state: BpState::Verified,
+                spec: BreakpointSpec { hit_condition: Some("3".into()), ..cond },
+                ..Default::default()
+            },
+        ),
+    ];
+    app.editor.active_buffer_mut().unwrap().breakpoints.extend(marks);
+    let demo = app.workspace.root.join("demo.log");
+    let closed = BreakpointSpec { log_message: Some("n={n}".into()), enabled: false, ..Default::default() };
+    app.editor.restore_closed_breakpoint_marks(&[(demo, vec![(2, closed)])]);
+    app.open_palette(PaletteKind::Breakpoints);
+    let term = draw_app(app, 80, 24);
+    let off = crate::editor::breakpoint_glyph(BpState::Idle, &BreakpointSpec { enabled: false, ..Default::default() }, &app.theme).1;
+    let mut marks = palette_marks(&app.theme);
+    marks.push(Mark::style('B', "breakpoint", app.theme.breakpoint));
+    marks.push(Mark::style('D', "disabled breakpoint", off));
+    assert_snapshot!("palette_breakpoints_disabled", snapshot(&term, &marks, None));
 }
 
 #[tokio::test]

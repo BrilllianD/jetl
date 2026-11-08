@@ -68,6 +68,7 @@ pub struct SourceBreakpoint {
     pub line: usize,
     pub condition: Option<String>,
     pub log_message: Option<String>,
+    pub hit_condition: Option<String>,
 }
 
 impl SourceBreakpoint {
@@ -429,13 +430,21 @@ impl Session {
                         left_out = true;
                     }
                 }
+                if let Some(h) = &b.hit_condition {
+                    if self.caps.supports_hit_conditional_breakpoints {
+                        e["hitCondition"] = json!(h);
+                    } else {
+                        left_out = true;
+                    }
+                }
                 e
             })
             .collect();
         if left_out && !self.spec_warned {
             self.spec_warned = true;
             out.push(Action::Emit(DapBody::Error(
-                "The debug adapter does not support breakpoint conditions or log messages: those breakpoints stop every time".into(),
+                "The debug adapter does not support breakpoint conditions, hit counts or log messages: those breakpoints stop every time"
+                    .into(),
             )));
         }
         let lines: Vec<usize> = breakpoints.iter().map(|b| b.line).collect();
@@ -811,13 +820,13 @@ mod tests {
 
     fn with_specs() -> Vec<SourceBreakpoint> {
         vec![
-            SourceBreakpoint { line: 2, condition: Some("i == 3".into()), log_message: None },
-            SourceBreakpoint { line: 4, condition: None, log_message: Some("i={i}".into()) },
+            SourceBreakpoint { line: 2, condition: Some("i == 3".into()), ..Default::default() },
+            SourceBreakpoint { line: 4, log_message: Some("i={i}".into()), ..Default::default() },
         ]
     }
 
     const NO_SPEC_SUPPORT: &str =
-        "The debug adapter does not support breakpoint conditions or log messages: those breakpoints stop every time";
+        "The debug adapter does not support breakpoint conditions, hit counts or log messages: those breakpoints stop every time";
 
     #[test]
     fn a_spec_goes_on_the_wire_when_declared() {
@@ -855,6 +864,35 @@ mod tests {
         h.cmd(Command::SetBreakpoints { source: "/a.c".into(), breakpoints: with_specs(), modified: false });
         assert_eq!(h.requests("setBreakpoints")[0]["arguments"]["breakpoints"], json!([{"line": 3, "condition": "i == 3"}, {"line": 5}]));
         assert_eq!(h.errors(), vec![NO_SPEC_SUPPORT.to_string()]);
+    }
+
+    fn hit_count_entry() -> Vec<SourceBreakpoint> {
+        vec![SourceBreakpoint { line: 2, hit_condition: Some("3".into()), ..Default::default() }]
+    }
+
+    #[test]
+    fn a_hit_count_goes_on_the_wire_when_declared() {
+        let mut h = H::new(&[]);
+        let mut c = caps();
+        c["supportsHitConditionalBreakpoints"] = json!(true);
+        h.answer("initialize", c);
+        h.initialized();
+        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), breakpoints: hit_count_entry(), modified: false });
+        assert_eq!(h.requests("setBreakpoints")[0]["arguments"]["breakpoints"], json!([{"line": 3, "hitCondition": "3"}]));
+        assert!(h.errors().is_empty());
+    }
+
+    #[test]
+    fn an_undeclared_hit_count_is_left_out_and_said_once() {
+        let mut h = H::new(&[]);
+        h.answer("initialize", caps());
+        h.initialized();
+        h.cmd(Command::SetBreakpoints { source: "/a.c".into(), breakpoints: hit_count_entry(), modified: false });
+        assert_eq!(h.requests("setBreakpoints")[0]["arguments"]["breakpoints"], json!([{"line": 3}]));
+        assert_eq!(h.errors(), vec![NO_SPEC_SUPPORT.to_string()]);
+        h.cmd(Command::SetBreakpoints { source: "/b.c".into(), breakpoints: hit_count_entry(), modified: false });
+        assert_eq!(h.requests("setBreakpoints")[1]["arguments"]["breakpoints"], json!([{"line": 3}]));
+        assert_eq!(h.errors().len(), 1, "said once per session");
     }
 
     #[test]

@@ -8,7 +8,7 @@ expression: "snapshot(&term, &marks, None)"
 02  ⌂ │                              ││
 03  ◫ │                              ││
 04  ⊢┌ Find Action ─────────────────────────────────────────────────────────────┐
-05   │ › split                                                               17 │
+05   │ › split                                                               18 │
 06   │ Split right (the tab in a new group beside)  editor.split_right    Alt+\ │
 07   │ Split down (the tab in a new group below)  editor.split_down       Alt+- │
 08   │ Local History: back to the snapshot list  local_history.left        Left │
@@ -22,10 +22,10 @@ expression: "snapshot(&term, &marks, None)"
 16  ⟲│ Local History: open the file in the editor (in the project view: the sel │
 17  ⚑│ Show or hide inlay hints  lsp.toggle_inlay_hints                         │
 18  ⎇│ Local History: the project's files with history, deleted ones included ( │
-19  ❯│ Run: send the HTTP request at the caret of a .http file with curl  run.h │
-20  ⚠│ Snippet: select the next tabstop (the last one ends the snippet)  editor │
-21  ►│ Escape (close find, clear selection)  editor.escape                  Esc │
-22  ⌕│ Debug: View Breakpoints (every breakpoint with its condition, log messag │
+19  ❯│ Debug: enable or disable the breakpoint on the caret's line (kept, not s │
+20  ⚠│ Run: send the HTTP request at the caret of a .http file with curl  run.h │
+21  ►│ Snippet: select the next tabstop (the last one ends the snippet)  editor │
+22  ⌕│ Escape (close find, clear selection)  editor.escape                  Esc │
 23   └──────────────────────────────────────────────────────────────────────────┘
 -- marks: L=selected
 06    LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

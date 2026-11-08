@@ -15,6 +15,14 @@ use crate::event::Mouse;
 use crate::ui::widgets::list::ListState;
 use crate::ui::widgets::text_input::TextInput;
 
+/// A text field of a breakpoint's spec that Edit Breakpoint can set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BreakpointField {
+    Condition,
+    LogMessage,
+    HitCount,
+}
+
 /// Identifies what the app should do with the dialog's answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DialogId {
@@ -174,16 +182,16 @@ pub enum DialogId {
     },
     /// Debug > Evaluate Expression: the expression; the check adds it to the watches.
     DebugEvaluate,
-    /// Edit Breakpoint: choose the condition or the log message of the breakpoint on `line` (0-based) of `path`.
+    /// Edit Breakpoint: choose the condition, log message or hit count of the breakpoint on `line` (0-based) of `path`.
     DebugBreakpoint {
         path: std::path::PathBuf,
         line: usize,
     },
-    /// The condition (`log` false) or log message (`log` true) of that breakpoint, as text.
+    /// The `field` of that breakpoint, as text.
     DebugBreakpointText {
         path: std::path::PathBuf,
         line: usize,
-        log: bool,
+        field: BreakpointField,
     },
     /// Git > Resolve Conflicts: item `i` is conflicted path `rels[i]`
     /// (relative to the work tree).

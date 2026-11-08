@@ -5,7 +5,7 @@ use crate::event::Level;
 use crate::files::ops::{FsOp, check_name};
 use crate::git::model::BranchOp;
 use crate::git::{BranchInfo, GitOp, GitRequest};
-use crate::ui::dialog::{Dialog, DialogId, DialogKind, DialogResult, PathHint};
+use crate::ui::dialog::{BreakpointField, Dialog, DialogId, DialogKind, DialogResult, PathHint};
 use crate::ui::focus::PanelId;
 
 impl App {
@@ -336,9 +336,19 @@ impl App {
             (DialogId::DebugArtifact { seq }, DialogResult::Choice(i)) => self.debug_artifact_chosen(seq, Some(i)),
             (DialogId::DebugArtifact { seq }, DialogResult::Cancel) => self.debug_artifact_chosen(seq, None),
             (DialogId::DebugEvaluate, DialogResult::TextChecked(text, add)) => self.debug_evaluate(text, add),
-            (DialogId::DebugBreakpoint { path, line }, DialogResult::Choice(i)) => self.debug_breakpoint_field(path, line, i == 1),
-            (DialogId::DebugBreakpointText { path, line, log }, DialogResult::Text(t)) => {
-                self.debug_set_breakpoint_text(path, line, log, &t)
+            (DialogId::DebugBreakpoint { path, line }, DialogResult::Choice(i)) => {
+                let field = match i {
+                    0 => Some(BreakpointField::Condition),
+                    1 => Some(BreakpointField::LogMessage),
+                    2 => Some(BreakpointField::HitCount),
+                    _ => None,
+                };
+                if let Some(field) = field {
+                    self.debug_breakpoint_field(path, line, field);
+                }
+            }
+            (DialogId::DebugBreakpointText { path, line, field }, DialogResult::Text(t)) => {
+                self.debug_set_breakpoint_text(path, line, field, &t)
             }
             (_, DialogResult::Cancel) => {}
             (

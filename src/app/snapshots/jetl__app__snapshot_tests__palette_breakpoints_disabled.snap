@@ -1,0 +1,49 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+80x24 cursor=(6,5)
+00  ≣ ┌ Project: root ───────────────┐│  loop.log ×
+01    │                              ││  1    a
+02  ⌂ │                              ││  2◉   b
+03  ◫ │                              ││  3    c
+04  ⊢┌ Breakpoints ─────────────────────────────────────────────────────────────┐
+05   │ › filter · Space toggles · Shift+Del removes · Alt+Shift+F8 edits      3 │
+06   │ ■ demo.log:3  log n={n}                                         disabled │
+07   │ ◉ loop.log:2  if i == 3                                         disabled │
+08   │ ◉ loop.log:5  if i == 3 · hit count 3                           verified │
+09   │                                                                          │
+10   │                                                                          │
+11   │                                                                          │
+12  ◉└──────────────────────────────────────────────────────────────────────────┘
+13  ⋔ │                              ││
+14  ✎ │                              ││
+15  ✓ │                              ││
+16  ⟲ │                              ││
+17  ⚑ │                              ││
+18  ⎇ │                              ││
+19  ❯ │                              ││
+20  ⚠ │                              ││
+21  ► │                              ││
+22  ⌕ └──────────────────────────────┘│
+23  loop.log                          Ln 1, Col 1  LF  UTF-8  4 spaces  Plain text
+-- marks: L=selected B=breakpoint D=disabled breakpoint
+00 DDD                                              DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
+02                                        D
+03 DDD
+04 DD
+05       DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD      D
+06    LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
+07     D             DDDDDDDDD                                         DDDDDDDD
+08     B             DDDDDDDDDDDDDDDDDDDDDDD                           DDDDDDDD
+12 DD
+13 DDD
+14 DDD
+15 DDD
+16 DDD
+17 DDD
+18 DDD
+19 DDD
+20 DDD
+21 DDD
+22 DDD

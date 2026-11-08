@@ -213,6 +213,11 @@ pub enum Accept {
         path: PathBuf,
         line: usize,
     },
+    /// Space on a breakpoint row with a blank query: the palette stays open; the app enables or disables it.
+    ToggleBreakpointEnabled {
+        path: PathBuf,
+        line: usize,
+    },
     /// Alt+Shift+F8 on a breakpoint: the palette closes and the app asks what to edit.
     EditBreakpoint {
         path: PathBuf,
@@ -943,13 +948,20 @@ impl Palette {
                 return Some(PaletteResult::Accept(Accept::EditBreakpoint { path: b.path.clone(), line: b.line }));
             }
             PaletteAction::EditItem => {}
-            // A filter row toggles with an empty or blank query; every other case types the space the key stands for.
+            // A filter row or a breakpoint row toggles with an empty or blank query; every other case types the space the
+            // key stands for.
             PaletteAction::ToggleItem => {
-                let on_filter = self.source() == Source::Breakpoints
-                    && self.input.text.trim().is_empty()
-                    && self.rows.get(self.list.selected).is_some_and(|&i| i < self.exception_filters.len());
-                if on_filter {
-                    return self.accept(self.list.selected);
+                if self.source() == Source::Breakpoints && self.input.text.trim().is_empty() {
+                    let nf = self.exception_filters.len();
+                    match self.rows.get(self.list.selected).copied() {
+                        Some(i) if i < nf => return self.accept(self.list.selected),
+                        Some(i) => {
+                            if let Some(b) = self.breakpoints.get(i - nf) {
+                                return Some(PaletteResult::Accept(Accept::ToggleBreakpointEnabled { path: b.path.clone(), line: b.line }));
+                            }
+                        }
+                        None => {}
+                    }
                 }
                 self.input.insert(' ');
                 self.refilter(true);
@@ -1682,7 +1694,7 @@ mod tests {
     }
 
     fn item(path: &str, line: usize, detail: &str) -> BreakpointItem {
-        let spec = BreakpointSpec { condition: (!detail.is_empty()).then(|| detail.to_string()), log_message: None };
+        let spec = BreakpointSpec { condition: (!detail.is_empty()).then(|| detail.to_string()), ..Default::default() };
         BreakpointItem {
             path: PathBuf::from("/w").join(path),
             line,
@@ -1781,11 +1793,13 @@ mod tests {
         assert_eq!(p.input.text, "");
         p.handle_action(&PaletteAction::Down);
         assert_eq!(p.handle_action(&PaletteAction::ToggleItem), toggle_of("catch"));
-        // On a breakpoint row the key types a space.
+        // On a breakpoint row, with a blank query, the key enables or disables the breakpoint (yman 454).
         p.handle_action(&PaletteAction::Down);
-        assert_eq!(p.handle_action(&PaletteAction::ToggleItem), None);
-        assert_eq!(p.input.text, " ");
+        let off = Some(PaletteResult::Accept(Accept::ToggleBreakpointEnabled { path: PathBuf::from("/w/throw.c"), line: 4 }));
+        assert_eq!(p.handle_action(&PaletteAction::ToggleItem), off);
+        assert_eq!(p.input.text, "");
         // A blank query ranks every row, so a filter row still toggles under it.
+        p.set_query(" ");
         assert_eq!(p.rows, vec![0, 1, 2, 3], "the space leaves every row");
         assert_eq!(p.rows_selected().1, 0, "the list is back on its first row");
         assert_eq!(p.handle_action(&PaletteAction::ToggleItem), toggle_of("throw"));
@@ -1812,6 +1826,24 @@ mod tests {
         p.handle_action(&PaletteAction::Down);
         let removed = Some(PaletteResult::Accept(Accept::RemoveBreakpoint { path: PathBuf::from("/w/loop.c"), line: 6 }));
         assert_eq!(p.handle_action(&PaletteAction::DeleteItem), removed);
+    }
+
+    #[test]
+    fn space_on_a_breakpoint_row_types_under_a_query() {
+        let mut p = Palette::new(PaletteKind::Breakpoints, PathBuf::from("/w"));
+        p.set_breakpoints(vec![item("throw.c", 4, ""), item("loop.c", 6, "")]);
+        p.set_query("loop");
+        assert_eq!(p.handle_action(&PaletteAction::ToggleItem), None);
+        assert_eq!(p.input.text, "loop ");
+        // The row under the cursor is the one toggled, not the first.
+        p.set_query("");
+        p.handle_action(&PaletteAction::Down);
+        let want = Some(PaletteResult::Accept(Accept::ToggleBreakpointEnabled { path: PathBuf::from("/w/loop.c"), line: 6 }));
+        assert_eq!(p.handle_action(&PaletteAction::ToggleItem), want);
+        // No rows: nothing to toggle, the key types.
+        let mut empty = Palette::new(PaletteKind::Breakpoints, PathBuf::from("/w"));
+        assert_eq!(empty.handle_action(&PaletteAction::ToggleItem), None);
+        assert_eq!(empty.input.text, " ");
     }
 
     #[test]

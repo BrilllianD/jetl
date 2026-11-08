@@ -1,6 +1,6 @@
 //! Breakpoints across buffers and the marks of closed files, stored like
 //! bookmarks: a line's mark lives in `Buffer::breakpoints` and follows edits,
-//! and it carries its `BreakpointSpec` (condition, log message), so the spec
+//! and it carries its `BreakpointSpec` (condition, log message, hit count, enabled), so the spec
 //! follows too; when a file's last tab closes its lines and specs wait in
 //! `Editor::closed_breakpoints` and go back into the buffer when the file
 //! opens again. View Breakpoints lists `breakpoint_entries`.
@@ -47,16 +47,24 @@ pub(super) fn refusal(in_merge: bool, b: &Buffer) -> Option<&'static str> {
 }
 
 /// The gutter glyph of a breakpoint and its style; also what a list of breakpoints shows. A plain one is a disc, a
-/// conditional one a bullseye, a log point (with or without a condition) a square; filled while idle or verified,
-/// hollow while pending or failed.
+/// conditional one or one with a hit count a bullseye, a log point (with or without a condition) a square; filled
+/// while idle or verified, hollow while pending or failed. A disabled one is always filled, whatever its state, in the
+/// `dim` colour: it is kept, not sent, so it has no state to show.
 pub fn breakpoint_glyph(state: BpState, spec: &BreakpointSpec, theme: &Theme) -> (&'static str, Style) {
     let (filled, hollow) = if spec.log_message.is_some() {
         ("■", "□")
-    } else if spec.condition.is_some() {
+    } else if spec.condition.is_some() || spec.hit_condition.is_some() {
         ("◉", "◎")
     } else {
         ("●", "○")
     };
+    if !spec.enabled {
+        let style = match theme.dim.fg {
+            Some(c) => theme.breakpoint.fg(c),
+            None => theme.dim,
+        };
+        return (filled, style);
+    }
     match state {
         BpState::Idle | BpState::Verified => (filled, theme.breakpoint),
         BpState::Pending | BpState::Failed => (hollow, theme.breakpoint_unverified),
@@ -267,6 +275,7 @@ mod tests {
     use crate::ui::focus::PanelId;
     use crate::ui::markdown::Rendered;
     use crate::workspace::Workspace;
+    use ratatui::style::{Color, Style};
 
     fn editor(text: &str) -> Editor {
         let mut ed = Editor::new(&Config::default());
@@ -480,11 +489,11 @@ mod tests {
     }
 
     fn cond(t: &str) -> BreakpointSpec {
-        BreakpointSpec { condition: Some(t.into()), log_message: None }
+        BreakpointSpec { condition: Some(t.into()), ..Default::default() }
     }
 
     fn log(t: &str) -> BreakpointSpec {
-        BreakpointSpec { condition: None, log_message: Some(t.into()) }
+        BreakpointSpec { log_message: Some(t.into()), ..Default::default() }
     }
 
     #[test]
@@ -618,7 +627,7 @@ mod tests {
     #[test]
     fn glyphs_tell_the_kind_and_the_state() {
         let theme = Theme::default();
-        let both = BreakpointSpec { condition: Some("c".into()), log_message: Some("m".into()) };
+        let both = BreakpointSpec { condition: Some("c".into()), log_message: Some("m".into()), ..Default::default() };
         let kinds = [(BreakpointSpec::default(), "●", "○"), (cond("c"), "◉", "◎"), (log("m"), "■", "□"), (both, "■", "□")];
         for (spec, filled, hollow) in kinds {
             for state in [BpState::Idle, BpState::Verified] {
@@ -628,6 +637,31 @@ mod tests {
                 assert_eq!(breakpoint_glyph(state, &spec, &theme), (hollow, theme.breakpoint_unverified), "{spec:?} {state:?}");
             }
         }
+    }
+
+    #[test]
+    fn a_hit_count_alone_is_a_bullseye() {
+        let theme = Theme::default();
+        let spec = BreakpointSpec { hit_condition: Some("3".into()), ..Default::default() };
+        assert_eq!(breakpoint_glyph(BpState::Verified, &spec, &theme), ("◉", theme.breakpoint));
+        assert_eq!(breakpoint_glyph(BpState::Failed, &spec, &theme), ("◎", theme.breakpoint_unverified));
+    }
+
+    #[test]
+    fn a_disabled_breakpoint_is_filled_and_dim_in_every_state() {
+        let mut theme = Theme { dim: Style::default().fg(Color::Indexed(244)), ..Theme::default() };
+        let off = |s: BreakpointSpec| BreakpointSpec { enabled: false, ..s };
+        let kinds = [(off(BreakpointSpec::default()), "●"), (off(cond("c")), "◉"), (off(log("m")), "■")];
+        let dim = theme.breakpoint.fg(Color::Indexed(244));
+        assert_ne!(dim, theme.breakpoint, "the test theme must tell the styles apart");
+        for (spec, glyph) in kinds {
+            for state in [BpState::Idle, BpState::Verified, BpState::Pending, BpState::Failed] {
+                assert_eq!(breakpoint_glyph(state, &spec, &theme), (glyph, dim), "{spec:?} {state:?}");
+            }
+        }
+        // A `dim` with no foreground: the style of `dim` itself.
+        theme.dim = Style::default().add_modifier(ratatui::style::Modifier::DIM);
+        assert_eq!(breakpoint_glyph(BpState::Verified, &off(cond("c")), &theme), ("◉", theme.dim));
     }
 
     #[test]

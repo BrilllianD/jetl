@@ -231,7 +231,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+Down` | `editor.next_method` | Go to the next method or function |
 | `Alt+Up` | `editor.prev_method` | Go to the previous method or function |
 | `Ctrl+Alt+L` | `editor.format` | Reformat code or the selection ([format] command, else the language server) |
-| `Alt+Shift+F8` | `debug.edit_breakpoint` | Debug: Edit Breakpoint (condition or log message) on the caret's line |
+| `Alt+Shift+F8` | `debug.edit_breakpoint` | Debug: Edit Breakpoint (condition, log message or hit count) on the caret's line |
 | `F2` | `lsp.next_problem` | Next problem (diagnostic) in the file |
 | `Shift+F2` | `lsp.prev_problem` | Previous problem (diagnostic) in the file |
 | `Ctrl+B` | `lsp.goto_definition` | Go to declaration (on a declaration: its usages) |
@@ -397,7 +397,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Shift+Tab` | `palette.prev_tab` | Palette: previous tab |
 | `Shift+Delete` | `palette.delete_item` | Palette: delete the selected item (Scratch Files, Recent Projects, View Breakpoints) |
 | `Alt+Shift+F8` | `palette.edit_item` | Palette: edit the selected item (View Breakpoints) |
-| `Space` | `palette.toggle_item` | Palette: toggle the selected item (exception filters in View Breakpoints); elsewhere types a space |
+| `Space` | `palette.toggle_item` | Palette: toggle the selected item (exception filters and breakpoints in View Breakpoints); elsewhere types a space |
 
 ## mode.normal
 
@@ -723,6 +723,7 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `run.build_scip_index` | Run: build the SCIP index with [index] scip_command, then load it |
 | `debug.attach` | Debug: attach to a running process (gdb) |
 | `debug.pause` | Debug: Pause |
+| `debug.toggle_breakpoint_enabled` | Debug: enable or disable the breakpoint on the caret's line (kept, not sent while disabled) |
 | `lsp.restart` | Restart language servers |
 | `lsp.goto_declaration` | Go to the declaration (not the definition) of the symbol at the caret |
 | `lsp.toggle_inlay_hints` | Show or hide inlay hints |
