@@ -4917,6 +4917,7 @@ pub(crate) mod tests {
         let src = "#[test]\nfn t() {}\n";
         let (mut app, dir) = rust_caret("dtac-dirty", src, "fn t", true);
         app.perform(Action::Run(RunAction::DebugTestAtCaret));
+        assert!(app.debug.starting(), "the start goes on after the toast");
         assert!(texts(&app).contains(&"Debugging the saved version of lib.rs".to_string()), "{:?}", texts(&app));
         app.debug.retire();
         let _ = std::fs::remove_dir_all(&dir);
