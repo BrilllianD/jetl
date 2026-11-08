@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-08
+
 ### Added
 
 - Debug reads .vscode/launch.json: its configurations show in the run picker tagged launch.json, read-only; cppdbg (MIMode gdb) and gdb entries debug under gdb, an attach with ${command:pickProcess} opens Attach to Process, other types are listed as unsupported. Verified under gdb 17.2 only.
@@ -830,7 +832,8 @@ First release.
   for Phase 11).
 - No 3-pane conflict resolver; conflicted files show as `U` and are resolved in the editor.
 
-[Unreleased]: https://bitbucket.org/BrilllianD/jetl-ide/branches/compare/HEAD..v0.9.0
+[Unreleased]: https://bitbucket.org/BrilllianD/jetl-ide/branches/compare/HEAD..v0.10.0
+[0.10.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.10.0/
 [0.9.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.9.0/
 [0.8.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.8.0/
 [0.7.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.7.0/

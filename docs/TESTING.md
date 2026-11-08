@@ -837,7 +837,7 @@ printf '[ui]\ntheme = "light"\n' > $C/config.toml; sleep 1
 /tmp/tm.sh capture-pane -t jetl -p -e | grep -c '48;2;255;255;255'   # white background
 printf '[syntax]\nkeyword = "#ff0000"\n' > $C/theme.toml; sleep 1   # `fn` turns red: 38;2;255;0;0
 printf '[editor]\n"f2" = "app.about"\n' > $C/keymap.toml; sleep 1   # [editor]: it binds F2 itself
-/tmp/tm.sh send-keys -t jetl F2                               # "jetl 0.9.0"
+/tmp/tm.sh send-keys -t jetl F2                               # "jetl 0.10.0"
 printf '[editor\n' > $C/keymap.toml; sleep 1                  # error: keeping the current keymap; F2 still About
 printf '[ui]\ntheme = "light"\nleft_width = 50\n[editor]\nsoft_wrap = true\n' > $C/config.toml; sleep 1
                                                               # warning names ui.left_width; main.rs stays unwrapped,
