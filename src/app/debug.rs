@@ -5236,6 +5236,32 @@ pub(crate) mod tests {
         assert_eq!(last(&app), (Level::Warn, "Cannot debug 'Test a::b': no test executable of its build lists a::b".to_string()));
         assert_eq!(title(&app), " Debug: Test a::b · not started ");
 
+        // One executable, listing another test: refused too, with the note.
+        let (mut app, dir4) = test_app("dtac-single-none");
+        let mut fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        let root = app.workspace.root.clone();
+        let a = lister(&root, "lib_t", "other");
+        write_test_artifacts(&root, &[(&a, "lib")]);
+        app.debug_start_with(Some(test_start(&root)));
+        console_until(&mut app, |a| !a.debug.starting()).await;
+        assert!(fakes.try_recv().is_err());
+        assert_eq!(last(&app), (Level::Warn, "Cannot debug 'Test a::b': no test executable of its build lists a::b".to_string()));
+        assert_eq!(title(&app), " Debug: Test a::b · not started ");
+        assert!(console(&app).contains(&"Looking for a::b in 1 test executable".to_string()), "{:?}", console(&app));
+
+        // One executable that lists it: launched.
+        let (mut app, dir5) = test_app("dtac-single-yes");
+        let mut fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        let root = app.workspace.root.clone();
+        let a = lister(&root, "lib_t", "a::b");
+        write_test_artifacts(&root, &[(&a, "lib")]);
+        app.debug_start_with(Some(test_start(&root)));
+        console_until(&mut app, |a| a.debug.session.is_some()).await;
+        let mut fake = fakes.try_recv().expect("an adapter");
+        let launch = fake.recv("launch").await;
+        assert_eq!(launch["arguments"]["program"], json!(a.to_string_lossy()));
+        app.debug.retire();
+
         // Both list it: the choice dialog.
         let (mut app, dir3) = test_app("dtac-both");
         let _fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
@@ -5245,7 +5271,7 @@ pub(crate) mod tests {
         app.debug_start_with(Some(test_start(&root)));
         console_until(&mut app, |a| a.dialog.is_some()).await;
         assert_eq!(dialog_items(&app).len(), 2);
-        for d in [dir, dir2, dir3] {
+        for d in [dir, dir2, dir3, dir4, dir5] {
             let _ = std::fs::remove_dir_all(&d);
         }
     }

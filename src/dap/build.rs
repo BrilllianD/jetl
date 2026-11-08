@@ -186,7 +186,7 @@ pub(crate) fn lists_test(line: &str, t: &RustTest) -> bool {
     line.strip_suffix(": test").is_some_and(|name| if t.exact { name == t.filter } else { name.contains(&t.filter) })
 }
 
-/// The candidates of `artifacts` that hold the test `t`. With fewer than two candidates nothing is run.
+/// The candidates of `artifacts` that hold the test `t`. With no candidate nothing is run.
 /// Otherwise `note` gets one line and each candidate runs `--list --format terse` in `cwd`, at most `timeout`
 /// (then its process group is killed and it counts as not listing). `pid` is the build's shared handle: when
 /// it has no other holder, the `BuildGroup` that stops the build is gone (Stop, a new start, a root switch,
@@ -200,10 +200,11 @@ pub(crate) async fn find_tests(
     mut note: impl FnMut(String),
 ) -> Vec<Artifact> {
     let candidates = test_candidates(artifacts, t);
-    if candidates.len() < 2 {
+    if candidates.is_empty() {
         return candidates;
     }
-    note(format!("Looking for {} in {} test executables", t.filter, candidates.len()));
+    let noun = if candidates.len() == 1 { "test executable" } else { "test executables" };
+    note(format!("Looking for {} in {} {noun}", t.filter, candidates.len()));
     let mut keep = Vec::new();
     for a in candidates {
         if Arc::strong_count(pid) == 1 {
@@ -536,18 +537,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn find_tests_lists_only_when_two_remain() {
-        let one = Artifact { test: true, ..art("/nonexistent/exe") };
+    async fn find_tests_lists_a_single_candidate_too() {
+        let dir = scratch("single");
         let pid = Arc::new(AtomicU32::new(0));
-        let hold = pid.clone();
+        let _hold = pid.clone();
+        let t = rust_test("a::b", true, true);
+
+        // One test candidate that lists the test: kept, after a singular note.
+        let yes = script(&dir, "yes", "[ \"$1\" = --list ] && echo 'a::b: test'");
         let mut notes = Vec::new();
-        let got = find_tests(vec![one.clone(), art("/other")], &rust_test("a::b", true, true), Path::new("/"), &pid, LIST_TIMEOUT, |n| {
-            notes.push(n)
-        })
-        .await;
-        assert_eq!(got, vec![one], "the non-test artifact is dropped, the single candidate is returned unrun");
-        assert!(notes.is_empty());
-        drop(hold);
+        let got = find_tests(vec![yes.clone(), art("/other")], &t, &dir, &pid, LIST_TIMEOUT, |n| notes.push(n)).await;
+        assert_eq!(got, vec![yes]);
+        assert_eq!(notes, ["Looking for a::b in 1 test executable"]);
+
+        // One candidate that lists only another test: dropped, the note is still there.
+        let no = script(&dir, "no", "[ \"$1\" = --list ] && echo 'other: test'");
+        let mut notes = Vec::new();
+        let got = find_tests(vec![no, art("/other")], &t, &dir, &pid, LIST_TIMEOUT, |n| notes.push(n)).await;
+        assert!(got.is_empty());
+        assert_eq!(notes, ["Looking for a::b in 1 test executable"]);
+
+        // No test candidate: nothing is run and there is no note.
+        let mut notes = Vec::new();
+        let got = find_tests(vec![art("/other")], &t, &dir, &pid, LIST_TIMEOUT, |n| notes.push(n)).await;
+        assert!(got.is_empty());
+        assert!(notes.is_empty(), "{notes:?}");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

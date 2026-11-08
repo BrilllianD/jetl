@@ -2312,8 +2312,16 @@ only with no toast on it, except where it greps its own capture. The script of t
    `Thread 2: util::tests::tw` and `probe::util::tests::twice_works  util.rs:11`.
 2. F9: the Console has `value is 42`, `test util::tests::twice_works ... ok` and `1 filtered out`; the toast
    `Debug session ended, exit code 0`; no gdb or test executable is left.
-3. `tests/it.rs`, a breakpoint on line 3, caret there, Ctrl+Shift+F9: no `Looking for` line (one candidate: `--test it`),
-   the build is `cargo test --no-run --message-format=json --test it`, and it stops on line 3.
+3. `tests/it.rs`, a breakpoint on line 3, caret there, Ctrl+Shift+F9: one candidate (`--test it`) is listed too, so the
+   Console has `Looking for integration in 1 test executable`, the build is `cargo test --no-run --message-format=json
+   --test it`, and it stops on line 3.
+3b. Add `tests/it/helper.rs` with `#[test]` on line 1 and `fn helper_works() { assert!(true); }` on line 2, and a
+   `#[path = "it/helper.rs"]` line and `mod renamed;` at the end of `tests/it.rs` (the binary holds `renamed::helper_works`,
+   jetl looks for `helper::helper_works`). Open `tests/it/helper.rs`, caret on line 2, Ctrl+Shift+F9: the Console has
+   `Looking for helper::helper_works in 1 test executable`, the toast is `Cannot debug 'Test helper::helper_works': no test
+   executable of its build lists helper::helper_works`, the title `Debug: Test helper::helper_works · not started`, and no
+   gdb starts. (Before the fix gdb started and the Console ended with `running 0 tests` and `0 passed; 0 failed; 0 ignored;
+   0 measured; 2 filtered out`.) Remove `tests/it/` and the added lines of `tests/it.rs` before step 4.
 4. `src/main.rs`, a breakpoint on line 9: `Looking for tests::main_test in 2 test executables`, it stops there.
 5. `src/util.rs`, the caret on the `mod tests {` line (no fn around it), the breakpoint on 11 still set: it stops at 11
    (`Looking for util::tests:: in 2 test executables`); F9 runs on, and the Console says `2 passed`.

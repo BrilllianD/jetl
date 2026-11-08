@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - At a stop whose top frame has no source, such as a C++ exception breakpoint inside libstdc++, the debugger shows the first frame that has one: the editor jumps there, its row is selected and the Variables tab reads it; the frame list keeps every frame. Verified under gdb 17.2 only.
+- Debug Test at Caret no longer launches a lone test executable that does not hold the test (a #[path] module, a module declared elsewhere); it lists that executable's tests first and refuses as it does with several.
 
 ## [0.10.0] - 2026-11-08
 

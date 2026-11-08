@@ -677,10 +677,10 @@ Debug Test at Caret (Ctrl+Shift+F9, Run > Debug Test at Caret, the action
 only. It builds with `cargo test --no-run --message-format=json` and the same
 `--bin` / `--test` flag in the same directory, and keeps the test-profile
 executables (for a file under `src/` outside `src/bin`, only the library's and
-binaries' test executables, not integration tests, examples or benches). When
-more than one remains it runs each with `--list --format terse` (10 s each at
-most, then it is killed and dropped) and keeps those that list the test; one is
-launched, several give the executable dialog, none is refused with a toast. The
+binaries' test executables, not integration tests, examples or benches). It runs
+each one that remains, a single one too, with `--list --format terse` (10 s each
+at most, then it is killed and dropped) and keeps those that list the test; one
+is launched, several give the executable dialog, none is refused with a toast. The
 program gets `<test path> --exact --nocapture` (a module: `<module path>::
 --nocapture`) and runs in the package directory, under the adapter a Rust debug
 block would get (codelldb, lldb-dap, then gdb; only gdb 17.2 was tried). Its
