@@ -297,6 +297,9 @@
 # Ctrl+Alt+Shift+Up/Down need modifier-aware arrows; F7/Shift+F7 work anywhere.
 "f7" = "editor.next_change"
 "shift-f7" = "editor.prev_change"
+# Next and previous method or function (the tags query's symbols, as the breadcrumbs). The Git and Local History windows keep their own Alt+Up/Down.
+"alt-down" = "editor.next_method"
+"alt-up" = "editor.prev_method"
 # A diff tab (Git window Ctrl+D): the next / previous file.
 "alt-n" = "editor.diff_next_file"
 "alt-p" = "editor.diff_prev_file"

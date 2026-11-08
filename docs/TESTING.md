@@ -528,6 +528,22 @@ reverse video on their cells past the line ends. tmux does not send Ctrl+Backspa
 for `C-BSpace` (it types the name as text): the scenario sends the escapes `ESC [ 127;5 u` and
 `ESC [ 3;5 ~` with `-H`. The Ctrl+Delete in virtual space changes nothing, so the probe on line 3 (an empty line after it, "ab" back after Ctrl+Z) is what shows the escape reaches jetl. `-H 08` is not Ctrl+Backspace for jetl (the status column stays).
 
+### Scenario: next and previous method
+
+At 80x24 and at 120x40, `jetl src/editor/fold.rs` from the repository root
+with the Project window hidden (`M-1`):
+
+```sh
+/tmp/tm.sh send-keys -t jetl M-1
+/tmp/tm.sh send-keys -t jetl M-Down M-Down M-Down  # the caret on successive `fn` names (status bar line:column)
+/tmp/tm.sh send-keys -t jetl M-Up                  # back to the previous name
+/tmp/tm.sh send-keys -t jetl C-M-Left              # after a jump of more than 10 lines: back where it began
+```
+
+On a `.txt` file `M-Down` shows the toast `No method navigation for this
+language`. With the Git window focused on the Commit tab diff, `M-Up` /
+`M-Down` still move its line cursor. tmux sends `M-Up` as `ESC [1;3A`.
+
 ### Scenario: code folding
 
 At 80x24 and at 120x40, on a Rust file (`jetl src/editor/fold.rs` from

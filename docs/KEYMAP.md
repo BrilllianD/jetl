@@ -228,6 +228,8 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `F7` | `editor.next_change` | Go to the next change |
 | `Ctrl+Alt+Shift+Up` | `editor.prev_change` | Go to the previous change |
 | `Shift+F7` | `editor.prev_change` | Go to the previous change |
+| `Alt+Down` | `editor.next_method` | Go to the next method or function |
+| `Alt+Up` | `editor.prev_method` | Go to the previous method or function |
 | `Ctrl+Alt+L` | `editor.format` | Reformat code or the selection ([format] command, else the language server) |
 | `Alt+Shift+F8` | `debug.edit_breakpoint` | Debug: Edit Breakpoint (condition or log message) on the caret's line |
 | `F2` | `lsp.next_problem` | Next problem (diagnostic) in the file |

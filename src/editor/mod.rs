@@ -241,6 +241,19 @@ fn nav_pos(b: &Buffer) -> NavPos {
     NavPos { id: b.id, path: b.path.clone(), pos: b.view.sel().head }
 }
 
+/// Where Alt+Down (`forward`) or Alt+Up goes from caret `line`: the name
+/// (0-based line, char column) of the first callable symbol whose name is
+/// on a later line, or of the last one on an earlier line. `symbols` is in
+/// document order (`ScopeCache::symbols`); nested ones count.
+fn method_target(symbols: &[crate::symbols::Symbol], line: usize, forward: bool) -> Option<(usize, usize)> {
+    let callable = symbols.iter().filter(|s| crate::symbols::graph::CALLABLE.contains(&s.kind));
+    if forward {
+        callable.filter(|s| s.line > line).map(|s| (s.line, s.col)).min()
+    } else {
+        callable.filter(|s| s.line < line).map(|s| (s.line, s.col)).max()
+    }
+}
+
 impl Editor {
     pub fn new(config: &Config) -> Self {
         let mut ed = Self {
@@ -1162,11 +1175,12 @@ impl Editor {
             _ => {}
         }
         // Jumps far enough away are remembered for back/forward.
-        let jump_from = if matches!(a, E::GotoBracket | E::FindNext | E::FindPrev | E::NextChange | E::PrevChange) {
-            self.active_buffer().map(nav_pos)
-        } else {
-            None
-        };
+        let jump_from =
+            if matches!(a, E::GotoBracket | E::FindNext | E::FindPrev | E::NextChange | E::PrevChange | E::NextMethod | E::PrevMethod) {
+                self.active_buffer().map(nav_pos)
+            } else {
+                None
+            };
         let rows = self.text_area().height as usize;
         let auto_close = self.auto_close;
         let overwrite = self.overwrite;
@@ -1368,6 +1382,19 @@ impl Editor {
                 let forward = *a == E::NextChange;
                 if !b.goto_change(forward) {
                     cx.notify(Level::Info, if forward { "No more changes below" } else { "No more changes above" });
+                }
+            }
+            E::NextMethod | E::PrevMethod => {
+                let forward = *a == E::NextMethod;
+                if !breadcrumbs::has_scopes(b) {
+                    cx.notify(Level::Info, "No method navigation for this language");
+                } else {
+                    let line = b.cursor_line_col().0;
+                    let syms = b.scopes.symbols(b.syntax.as_mut(), &b.rope, b.version);
+                    match method_target(syms, line, forward) {
+                        Some((l, c)) => b.goto_line(l, c),
+                        None => cx.notify(Level::Info, if forward { "No more methods below" } else { "No more methods above" }),
+                    }
                 }
             }
             E::ExpandSelection => b.expand_selection(),
@@ -4114,5 +4141,95 @@ mod tests {
         assert!(ed.buffers[0].view.sels.iter().all(|s| !s.is_virtual()));
         act(&mut ed, EditorAction::InsertChar('X'));
         assert_eq!(ed.buffers[0].rope.to_string(), "abcdXef\nabX\nabcdXef\n");
+    }
+
+    fn sym(kind: &'static str, line: usize, col: usize, start_line: usize) -> crate::symbols::Symbol {
+        crate::symbols::Symbol { name: "n".into(), kind, line, col, start_line, end_line: line + 5, depth: 0 }
+    }
+
+    #[test]
+    fn method_target_picks_callables_by_name_line() {
+        // Document order (by definition start); the nested `inner` starts
+        // before `outer` but its name is on a later line.
+        let syms = [
+            sym("impl", 1, 5, 1),
+            sym("method", 2, 7, 2),
+            sym("struct", 4, 7, 4),
+            sym("method", 9, 8, 0),
+            sym("function", 6, 3, 6),
+            sym("constructor", 12, 4, 12),
+        ];
+        let fwd = |l| method_target(&syms, l, true);
+        let back = |l| method_target(&syms, l, false);
+        assert_eq!(fwd(0), Some((2, 7)));
+        assert_eq!(fwd(2), Some((6, 3)), "same line is skipped");
+        assert_eq!(fwd(3), Some((6, 3)), "the struct is not a target");
+        assert_eq!(fwd(6), Some((9, 8)), "min by name line, not list order");
+        assert_eq!(fwd(9), Some((12, 4)));
+        assert_eq!(fwd(12), None);
+        assert_eq!(back(13), Some((12, 4)));
+        assert_eq!(back(12), Some((9, 8)), "max by name line, not list order");
+        assert_eq!(back(9), Some((6, 3)));
+        assert_eq!(back(6), Some((2, 7)));
+        assert_eq!(back(2), None);
+        assert_eq!(back(0), None);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn method_jumps_go_to_names_and_back() {
+        let mut src = String::from("fn a() {}\n\nstruct S;\nimpl S {\n    fn b() {}\n    fn c() {}\n}\nstruct T {\n    x: i32,\n}\n");
+        src.push_str(&"\n".repeat(14));
+        src.push_str("fn d() {}\n");
+        let mut ed = editor_with("m.rs", &src);
+        let names = [(0, 3), (4, 7), (5, 7), (24, 3)];
+        for (l, c) in names.iter().skip(1) {
+            act(&mut ed, EditorAction::NextMethod);
+            assert_eq!(ed.buffers[0].cursor_line_col(), (*l, *c));
+        }
+        let notes = with_cx(|cx| {
+            ed.handle_action(&EditorAction::NextMethod, cx);
+        });
+        assert_eq!(notes, ["No more methods below"]);
+        assert_eq!(ed.buffers[0].cursor_line_col(), (24, 3));
+        for (l, c) in names.iter().rev().skip(1) {
+            act(&mut ed, EditorAction::PrevMethod);
+            assert_eq!(ed.buffers[0].cursor_line_col(), (*l, *c));
+        }
+        let notes = with_cx(|cx| {
+            ed.handle_action(&EditorAction::PrevMethod, cx);
+        });
+        assert_eq!(notes, ["No more methods above"]);
+        assert_eq!(ed.buffers[0].cursor_line_col(), (0, 3));
+        // A far jump is remembered: Back returns to where it began.
+        act(&mut ed, EditorAction::NextMethod);
+        act(&mut ed, EditorAction::NextMethod);
+        act(&mut ed, EditorAction::NextMethod);
+        assert_eq!(ed.buffers[0].cursor_line_col(), (24, 3));
+        act(&mut ed, EditorAction::NavBack);
+        assert_eq!(ed.buffers[0].cursor_line_col().0, 5);
+    }
+
+    #[test]
+    fn method_jumps_need_a_tags_language() {
+        let mut ed = editor_with("a.txt", "fn a() {}\n");
+        let notes = with_cx(|cx| {
+            ed.handle_action(&EditorAction::NextMethod, cx);
+        });
+        assert_eq!(notes, ["No method navigation for this language"]);
+        assert_eq!(ed.buffers[0].cursor_line_col(), (0, 0));
+    }
+
+    #[test]
+    fn method_keys_are_editor_only() {
+        use crate::actions::{Action, GitAction, HistoryAction};
+        let km = crate::config::keymap::default_keymap();
+        let b = |a: Action, ctx: &str| km.bindings_for(&a, &[ctx]);
+        assert_eq!(b(Action::Editor(EditorAction::NextMethod), "editor"), ["Alt+Down"]);
+        assert_eq!(b(Action::Editor(EditorAction::PrevMethod), "editor"), ["Alt+Up"]);
+        assert!(b(Action::Git(GitAction::LineUp), "git").contains(&"Alt+Up".to_string()));
+        assert!(b(Action::Git(GitAction::LineDown), "git").contains(&"Alt+Down".to_string()));
+        assert!(b(Action::History(HistoryAction::LineUp), "local_history").contains(&"Alt+Up".to_string()));
+        assert!(b(Action::History(HistoryAction::LineDown), "local_history").contains(&"Alt+Down".to_string()));
     }
 }

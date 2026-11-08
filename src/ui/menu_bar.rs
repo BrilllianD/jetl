@@ -217,6 +217,8 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Sep,
             Item("Next Change", "editor.next_change"),
             Item("Previous Change", "editor.prev_change"),
+            Item("Next Method", "editor.next_method"),
+            Item("Previous Method", "editor.prev_method"),
             Item("Next Problem", "lsp.next_problem"),
             Item("Previous Problem", "lsp.prev_problem"),
             Item("Matching Bracket", "editor.goto_bracket"),

@@ -308,6 +308,10 @@ pub enum EditorAction {
     RevertChange,
     NextChange,
     PrevChange,
+    /// Alt+Down: the caret to the name of the next function, method or constructor.
+    NextMethod,
+    /// Alt+Up: the caret to the name of the previous function, method or constructor.
+    PrevMethod,
     /// Show the next file of a diff tab.
     DiffNextFile,
     /// Show the previous file of a diff tab.
@@ -1039,6 +1043,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.diff_prev_file" => "Diff tab: show the previous file", Editor(E::DiffPrevFile);
         "editor.next_change" => "Go to the next change", Editor(E::NextChange);
         "editor.prev_change" => "Go to the previous change", Editor(E::PrevChange);
+        "editor.next_method" => "Go to the next method or function", Editor(E::NextMethod);
+        "editor.prev_method" => "Go to the previous method or function", Editor(E::PrevMethod);
         "editor.toggle_blame" => "Annotate with git blame (show or hide)", Editor(E::ToggleBlame);
         "editor.format" => "Reformat code or the selection ([format] command, else the language server)", Editor(E::Format);
 

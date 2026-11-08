@@ -187,7 +187,7 @@ Ranked after 0.9.0 against JetBrains, Zed, Helix and VS Code; tracked as yman ep
 
 | Rank | Feature | Effort | Builds on |
 |---|---|---|---|
-| 1 | Next/previous method (Alt+Up/Down) | S | tags query, breadcrumbs |
+| 1 | Next/previous method (Alt+Up/Down) | S | Done: tags query symbols (function, method, constructor), Alt+Up/Down in the editor, Navigate menu |
 | 2 | Disable a breakpoint without removing it, hit counts | S | conditions and log points, View Breakpoints |
 | 3 | Right margin and column rulers (`editor.rulers`) | S | indent guide paint |
 | 4 | LSP document highlight (read/write kinds) | S | `highlight_occurrences` |
