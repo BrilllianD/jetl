@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Find Usages and rename without a language server parse unsaved files in the background, so a large unsaved buffer no longer stalls the editor (yman 477).
 - At a stop whose top frame has no source, such as a C++ exception breakpoint inside libstdc++, the debugger shows the first frame that has one: the editor jumps there, its row is selected and the Variables tab reads it; the frame list keeps every frame. Verified under gdb 17.2 only.
 - Workspace edits from a language server (a rename, a code action, an edit the server asks for) that create, rename or delete files now send `workspace/didCreateFiles`, `didRenameFiles` or `didDeleteFiles` to the servers that ask for them, as Project tree operations already did (yman 478).
 - Debug Test at Caret no longer launches a lone test executable that does not hold the test (a #[path] module, a module declared elsewhere); it lists that executable's tests first and refuses as it does with several.

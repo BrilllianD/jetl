@@ -67,6 +67,7 @@ use std::path::{Path, PathBuf};
 use lsp_types::{CodeAction, CodeActionOrCommand, Command, PrepareRenameResponse, WorkspaceEdit};
 use serde_json::{Value, json};
 
+use super::lsp_nav::UsagesFor;
 use super::lsp_nav::{CODE_ACTION, CODE_ACTION_RESOLVE, DOCUMENT_SYMBOL, EXECUTE_COMMAND, PREPARE_RENAME, RENAME, word_at};
 use super::{App, Ctx};
 use crate::editor::buffer::{Buffer, BufferId, LineEnding};
@@ -188,6 +189,8 @@ pub(super) struct EditReqs {
     pub(super) rename_in_text: bool,
     /// The caret of the SCIP rename being built, for its fallback.
     pub(super) scip_rename: Option<DocTag>,
+    /// The seq of the newest textual-rename candidates job; an older answer is dropped.
+    pub(super) text_rename_seq: u64,
     /// The context actions in the dialog, with the seq of their request.
     actions: Option<(u64, Vec<CodeActionOrCommand>)>,
     /// The edit waiting for the user's confirmation.
@@ -425,10 +428,31 @@ impl App {
         self.text_rename_open(old, name, path);
     }
 
-    /// Open Find with `old` as query and `name` as replacement, hits outside the index's uses and definitions
-    /// excluded (the textual rename).
+    /// Start the textual rename of `old` to `name`: the index candidates are built off the main thread, and
+    /// `text_rename_answer` opens Find with `old` as query and `name` as replacement, hits outside the index's uses
+    /// and definitions excluded.
     fn text_rename_open(&mut self, old: String, name: String, path: PathBuf) {
-        let keep = self.rename_candidates(&old, &path);
+        let caret = self.editor.active_buffer().map(|b| {
+            let start = crate::editor::selection::word_at(&b.rope, b.view.sel().head).start;
+            let line = b.rope.char_to_line(start);
+            (line, start - b.rope.line_to_char(line))
+        });
+        let purpose = UsagesFor::TextRename { old: old.clone(), new: name, path: path.clone(), caret, find_seq: self.find.current_seq() };
+        if let Some(seq) = self.fallback_spawn(&old, &path, purpose) {
+            self.lsp.edit.text_rename_seq = seq;
+        }
+    }
+
+    /// `AppMsg::FallbackUsages` of a textual rename: open Find on the candidates.
+    pub(super) fn text_rename_answer(
+        &mut self,
+        old: String,
+        name: String,
+        path: PathBuf,
+        caret: Option<(usize, usize)>,
+        items: Vec<LocationItem>,
+    ) {
+        let keep = self.rename_keep(items, &old, &path, caret);
         self.layout.show(ToolWindowId::Find);
         self.focus.set(PanelId::Find);
         let mut cx = ctx!(self);
@@ -440,22 +464,25 @@ impl App {
     }
 
     /// The positions that start included in a textual rename of `name`: the
-    /// uses (`fallback_usages`), the definitions of the name in the index and
-    /// the caret's own word in `from`. Absolute paths and char columns, the
-    /// same shape `Search` gives `Hit`s (`root.join(rel)`).
-    fn rename_candidates(&mut self, name: &str, from: &Path) -> HashMap<PathBuf, HashSet<(usize, usize)>> {
+    /// uses (`items`, from `UsagesJob::run`), the definitions of the name in
+    /// the index and the caret's own word in `from` (`caret`). Absolute paths
+    /// and char columns, the same shape `Search` gives `Hit`s (`root.join(rel)`).
+    fn rename_keep(
+        &self,
+        items: Vec<LocationItem>,
+        name: &str,
+        from: &Path,
+        caret: Option<(usize, usize)>,
+    ) -> HashMap<PathBuf, HashSet<(usize, usize)>> {
         let mut keep: HashMap<PathBuf, HashSet<(usize, usize)>> = HashMap::new();
-        for item in self.fallback_usages(name, from) {
+        for item in items {
             keep.entry(item.path).or_default().insert((item.line, item.col));
         }
-        let root = self.workspace.root.clone();
         for (rel, s) in self.symbols.defs_named(name) {
-            keep.entry(root.join(rel)).or_default().insert((s.line, s.col));
+            keep.entry(self.workspace.root.join(rel)).or_default().insert((s.line, s.col));
         }
-        if let Some(b) = self.editor.active_buffer() {
-            let start = crate::editor::selection::word_at(&b.rope, b.view.sel().head).start;
-            let line = b.rope.char_to_line(start);
-            keep.entry(from.to_path_buf()).or_default().insert((line, start - b.rope.line_to_char(line)));
+        if let Some(at) = caret {
+            keep.entry(from.to_path_buf()).or_default().insert(at);
         }
         keep
     }
@@ -1439,6 +1466,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_stale_text_rename_answer_is_dropped_or_says_rename_again() {
+        const MAIN: &str = "fn helper() {}\nfn main() {\n    helper();\n}\n";
+        let (mut app, dir) = test_app("rename-text-stale");
+        std::fs::create_dir_all(app.workspace.root.join("src")).unwrap();
+        std::fs::write(app.workspace.root.join("src/main.rs"), MAIN).unwrap();
+        load(&mut app, "src/main.rs", MAIN);
+        async fn ask(app: &mut App) -> crate::app::FallbackUsages {
+            app.editor.active_buffer_mut().unwrap().goto_line(2, 6);
+            app.perform(Action::Lsp(LspAction::Rename));
+            let d = app.dialog.take().expect("asked at once");
+            app.finish_dialog(d.id, DialogResult::Text("assist".into()));
+            crate::app::tests::take_fallback(app).await
+        }
+        let feed = |app: &mut App, f: crate::app::FallbackUsages| app.handle_msg(AppMsg::FallbackUsages(Box::new(f)));
+        // The Find results moved on.
+        let f = ask(&mut app).await;
+        app.find.reset();
+        feed(&mut app, f);
+        assert!(app.find.query.text.is_empty(), "Find must not get the rename");
+        // The caret moved before the answer.
+        let f = ask(&mut app).await;
+        app.editor.active_buffer_mut().unwrap().goto_line(2, 7);
+        app.toasts = Default::default();
+        feed(&mut app, f);
+        assert!(toasts(&app).contains(&"The file changed; rename again".to_string()), "{:?}", toasts(&app));
+        assert!(app.find.query.text.is_empty());
+        // Neither: the rename opens in Find.
+        let f = ask(&mut app).await;
+        feed(&mut app, f);
+        assert_eq!((app.find.query.text.as_str(), app.find.replace.text.as_str()), ("helper", "assist"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn rename_without_a_server_previews_in_find_with_index_candidates() {
         use crate::ui::focus::{PanelId, ToolWindowId};
         const MAIN: &str = "fn helper() {}\nfn main() {\n    helper(); // helper\n}\n";
@@ -1463,6 +1524,7 @@ mod tests {
         assert!(matches!(d.id, DialogId::TextRename(_)));
         assert!(matches!(&d.kind, DialogKind::Input { input, .. } if input.text == "helper"));
         app.finish_dialog(d.id, DialogResult::Text(" assist ".into()));
+        handle_next(&mut app, |m| matches!(m, AppMsg::FallbackUsages(_))).await;
         assert!(app.layout.is_visible(ToolWindowId::Find) && app.focus.is(PanelId::Find));
         let f = &app.find;
         assert_eq!((f.query.text.as_str(), f.replace.text.as_str()), ("helper", "assist"));

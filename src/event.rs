@@ -99,6 +99,9 @@ pub enum AppMsg {
         seq: u64,
         result: Box<Result<(crate::files::rename_preview::RenamePreview, Vec<crate::files::find::Hit>), String>>,
     },
+    /// Find Usages or textual-rename candidates from the symbol index, built off the main thread
+    /// (`App::fallback_spawn`); dropped unless the generation, the seq, the caret and (rename) the Find seq are current.
+    FallbackUsages(Box<crate::app::FallbackUsages>),
     /// Find in files results (`FindPanel::search`).
     Find {
         generation: u64,

@@ -42,6 +42,94 @@ use crate::lsp::caps::{
     TYPE_DEFINITION, WILL_RENAME_FILES, WORKSPACE_SYMBOL,
 };
 
+/// What [`UsagesJob::run`] needs, taken on the main thread (`App::usages_job`): O(1) clones only.
+pub(crate) struct UsagesJob {
+    name: String,
+    root: PathBuf,
+    /// The caret's file relative to the root, '/'-separated; None outside the root.
+    from_rel: Option<String>,
+    /// `SymbolIndex::reader()`.
+    index: crate::symbols::index::SymbolIndex,
+    /// Dirty buffers with a path under the root, a tags query and at most `MAX_FILE_BYTES`: rel path, language, text.
+    dirty: Vec<(String, &'static LanguageDef, ropey::Rope)>,
+    /// Every open buffer with a path, for preview lines.
+    open: HashMap<PathBuf, ropey::Rope>,
+}
+
+impl UsagesJob {
+    /// Uses of `name` found by the symbol index, for Find Usages without a
+    /// server. Ranked: the current file, files it imports or that import it,
+    /// its directory, the rest; within a group by path, line, column.
+    /// Definitions are not listed. Dirty open buffers are parsed live (the
+    /// index knows the saved text only). No cap; opens nothing; only reads.
+    pub(crate) fn run(self) -> Vec<LocationItem> {
+        let Self { name, root, from_rel, index, dirty, open } = self;
+        let near: HashSet<Arc<str>> = from_rel.as_deref().map(|r| index.near_of(r)).unwrap_or_default();
+        let mut live: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+        let mut parser = tree_sitter::Parser::new();
+        for (rel, def, rope) in &dirty {
+            let refs = crate::symbols::extract_text_all(def, &mut parser, &rope.to_string()).1;
+            live.insert(rel.clone(), refs.iter().filter(|r| *r.name == *name).map(|r| (r.line, r.col)).collect());
+        }
+        let mut hits: Vec<(u8, String, usize, usize)> = Vec::new();
+        for (rel, r) in index.refs_named(&name) {
+            if !live.contains_key(rel) {
+                hits.push((usage_group(rel, from_rel.as_deref(), &near), rel.to_string(), r.line, r.col));
+            }
+        }
+        for (rel, at) in &live {
+            let group = usage_group(rel, from_rel.as_deref(), &near);
+            hits.extend(at.iter().map(|&(line, col)| (group, rel.clone(), line, col)));
+        }
+        hits.sort();
+        let len = name.chars().count();
+        let mut disk: HashMap<PathBuf, Option<String>> = HashMap::new();
+        let mut items = Vec::with_capacity(hits.len());
+        for (_, rel, line, col) in hits {
+            let abs: PathBuf = root.join(&rel);
+            let text = match open.get(&abs).filter(|r| line < r.len_lines()) {
+                Some(rope) => Some(rope_line(rope, line)),
+                None => disk
+                    .entry(abs.clone())
+                    .or_insert_with(|| std::fs::read(&abs).ok().map(|b| String::from_utf8_lossy(&b).into_owned()))
+                    .as_deref()
+                    .and_then(|s| crate::util::text::lines_inclusive(s).nth(line).map(crate::git::diff::strip_eol))
+                    .map(str::to_string),
+            };
+            items.push(LocationItem::at_name(abs, line, col, len, text.as_deref()));
+        }
+        items
+    }
+}
+
+/// Line `line` of `rope` without its line break (`Buffer::line_text`).
+fn rope_line(rope: &ropey::Rope, line: usize) -> String {
+    let n = crate::editor::selection::line_len_no_eol(rope, line);
+    let s = rope.line_to_char(line);
+    rope.slice(s..s + n).to_string()
+}
+
+/// How the flow that started a fallback job goes on.
+#[derive(Debug)]
+pub enum UsagesFor {
+    /// Find Usages with no server document and no SCIP answer: rows titled `(unverified)`.
+    Plain { word: String },
+    /// SCIP Find Usages: the SCIP rows of fresh files (rel path, row), built before the spawn.
+    Scip { word: String, from_rel: String, rows: Vec<(String, LocationItem)> },
+    /// Textual rename of `old` to `new` from `path`; `caret` is the caret word's start (line, char column) in
+    /// `path` at the spawn; `find_seq` is `FindPanel::current_seq()` at the spawn.
+    TextRename { old: String, new: String, path: PathBuf, caret: Option<(usize, usize)>, find_seq: u64 },
+}
+
+/// `AppMsg::FallbackUsages`: the candidates of one fallback job.
+#[derive(Debug)]
+pub struct FallbackUsages {
+    pub generation: u64,
+    pub tag: DocTag,
+    pub purpose: UsagesFor,
+    pub items: Vec<LocationItem>,
+}
+
 /// The method a tag was sent with.
 fn method_of(tag: &PendingTag) -> &'static str {
     match tag {
@@ -309,7 +397,91 @@ impl App {
         if def.tags.is_none() || word.is_empty() {
             return false;
         }
-        let mut items = self.fallback_usages(&word, &path);
+        if let Some(seq) = self.fallback_spawn(&word, &path, UsagesFor::Plain { word: word.clone() }) {
+            self.lsp.nav_seq = seq;
+        }
+        true
+    }
+
+    /// Snapshot for [`UsagesJob`]: only O(1) clones, so the main thread
+    /// does not wait for the scan, the parse or the reads.
+    pub(super) fn usages_job(&self, name: &str, from: &Path) -> UsagesJob {
+        let root = self.workspace.root.clone();
+        let rel_of = |p: &Path| p.strip_prefix(&root).ok().map(|r| r.to_string_lossy().replace('\\', "/"));
+        let mut dirty = Vec::new();
+        let mut open = HashMap::new();
+        for b in &self.editor.buffers {
+            let Some(path) = &b.path else { continue };
+            open.insert(path.clone(), b.rope.clone());
+            let (Some(def), Some(rel)) = (b.language(), rel_of(path)) else { continue };
+            if b.dirty() && def.tags.is_some() && b.rope.len_bytes() as u64 <= crate::symbols::index::MAX_FILE_BYTES {
+                dirty.push((rel, def, b.rope.clone()));
+            }
+        }
+        UsagesJob { name: name.to_string(), from_rel: rel_of(from), root, index: self.symbols.reader(), dirty, open }
+    }
+
+    /// Run a [`UsagesJob`] for `name` off the main thread; the answer comes as
+    /// `AppMsg::FallbackUsages`, tagged with the active buffer's caret and a
+    /// new seq, which is returned (the caller stores it where `purpose` says).
+    /// None without an active buffer.
+    pub(super) fn fallback_spawn(&mut self, name: &str, from: &Path, purpose: UsagesFor) -> Option<u64> {
+        let (buffer, pos) = self.caret_position()?;
+        let version = self.editor.active_buffer()?.version;
+        self.lsp.last_seq += 1;
+        let seq = self.lsp.last_seq;
+        let tag = DocTag { buffer, version, pos, seq, group: self.editor.focused_group().id };
+        let (job, tx, generation) = (self.usages_job(name, from), self.bus_tx.clone(), self.workspace.generation);
+        tokio::task::spawn_blocking(move || {
+            let items = job.run();
+            let _ = tx.send(AppMsg::FallbackUsages(Box::new(FallbackUsages { generation, tag, purpose, items })));
+        });
+        Some(seq)
+    }
+
+    /// The caret, the active buffer's version and the focused group are those of `t`.
+    pub(super) fn doc_tag_current(&self, t: &DocTag) -> bool {
+        self.caret_position() == Some((t.buffer, t.pos))
+            && self.editor.active_buffer().is_some_and(|b| b.version == t.version)
+            && self.editor.focused_group().id == t.group
+    }
+
+    /// `AppMsg::FallbackUsages`: the flow that started the job goes on, unless
+    /// the root, the newest request, the caret or (rename) the Find results
+    /// moved on meanwhile.
+    pub(super) fn fallback_usages_done(&mut self, f: FallbackUsages) {
+        let FallbackUsages { generation, tag, purpose, items } = f;
+        if generation != self.workspace.generation {
+            return tracing::debug!("dropping fallback usages of a previous root");
+        }
+        let newest = match &purpose {
+            UsagesFor::TextRename { .. } => self.lsp.edit.text_rename_seq,
+            UsagesFor::Plain { .. } | UsagesFor::Scip { .. } => self.lsp.nav_seq,
+        };
+        if tag.seq != newest {
+            return tracing::debug!("dropping superseded fallback usages");
+        }
+        if let UsagesFor::TextRename { find_seq, .. } = &purpose
+            && *find_seq != self.find.current_seq()
+        {
+            return tracing::debug!("dropping fallback usages: the Find results moved on");
+        }
+        if !self.doc_tag_current(&tag) {
+            if matches!(purpose, UsagesFor::TextRename { .. }) {
+                self.lsp_hint("The file changed; rename again");
+            }
+            return;
+        }
+        self.dirty_frame = true;
+        match purpose {
+            UsagesFor::Plain { word } => self.fallback_usages_show(word, items),
+            UsagesFor::Scip { word, from_rel, rows } => self.scip_usages_show(word, from_rel, rows, items),
+            UsagesFor::TextRename { old, new, path, caret, .. } => self.text_rename_answer(old, new, path, caret, items),
+        }
+    }
+
+    /// Show the unverified candidates of Find Usages without a server.
+    fn fallback_usages_show(&mut self, word: String, mut items: Vec<LocationItem>) {
         match items.len() {
             0 if self.symbols.indexing() => self.lsp_hint("No usages found yet; the project is still being indexed"),
             0 => self.lsp_hint("No usages found"),
@@ -321,50 +493,6 @@ impl App {
             }
             _ => self.open_locations(format!("Usages of {word} (unverified)"), items, true),
         }
-        true
-    }
-
-    /// Uses of `name` found by the symbol index, for Find Usages without a
-    /// server. Ranked: the current file `from`, files it imports or that
-    /// import it, its directory, the rest; within a group by path, line,
-    /// column. Definitions are not listed. Dirty open buffers are parsed
-    /// live (the index knows the saved text only). No cap; opens nothing.
-    pub(crate) fn fallback_usages(&mut self, name: &str, from: &Path) -> Vec<LocationItem> {
-        let root = self.workspace.root.clone();
-        let rel_of = |p: &Path| p.strip_prefix(&root).ok().map(|r| r.to_string_lossy().replace('\\', "/"));
-        let from_rel = rel_of(from);
-        let near: HashSet<Arc<str>> = from_rel.as_deref().map(|r| self.symbols.near_of(r)).unwrap_or_default();
-        let mut live: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
-        let mut parser = tree_sitter::Parser::new();
-        for b in &self.editor.buffers {
-            let (Some(path), Some(def)) = (&b.path, b.language()) else { continue };
-            let Some(rel) = rel_of(path) else { continue };
-            if !b.dirty() || def.tags.is_none() || b.rope.len_bytes() as u64 > crate::symbols::index::MAX_FILE_BYTES {
-                continue;
-            }
-            let refs = crate::symbols::extract_text_all(def, &mut parser, &b.rope.to_string()).1;
-            live.insert(rel, refs.iter().filter(|r| &*r.name == name).map(|r| (r.line, r.col)).collect());
-        }
-        let mut hits: Vec<(u8, String, usize, usize)> = Vec::new();
-        for (rel, r) in self.symbols.refs_named(name) {
-            if !live.contains_key(rel) {
-                hits.push((usage_group(rel, from_rel.as_deref(), &near), rel.to_string(), r.line, r.col));
-            }
-        }
-        for (rel, at) in &live {
-            let group = usage_group(rel, from_rel.as_deref(), &near);
-            hits.extend(at.iter().map(|&(line, col)| (group, rel.clone(), line, col)));
-        }
-        hits.sort();
-        let len = name.chars().count();
-        let mut disk: HashMap<PathBuf, Option<String>> = HashMap::new();
-        let mut items = Vec::with_capacity(hits.len());
-        for (_, rel, line, col) in hits {
-            let abs: PathBuf = root.join(&rel);
-            let text = self.line_of(&abs, line, &mut disk);
-            items.push(LocationItem::at_name(abs, line, col, len, text.as_deref()));
-        }
-        items
     }
 
     /// Text of line `line` of `abs` (no line break): the open buffer's, else
@@ -469,7 +597,7 @@ impl App {
 
     /// Find Usages from the SCIP index: exact occurrences in fresh files plus
     /// the unverified symbol-index candidates of files that are not fresh,
-    /// ranked as `fallback_usages` does. True when handled.
+    /// ranked as `UsagesJob::run` does (they come as `AppMsg::FallbackUsages`). True when handled.
     fn scip_usages(&mut self, id: BufferId) -> bool {
         let Some((from_rel, sym, _, _)) = self.scip_caret(id) else { return false };
         let Some(b) = self.editor.buffers.iter().find(|b| b.id == id) else { return false };
@@ -477,14 +605,12 @@ impl App {
         let word = word_at(b, b.view.sel().head);
         let has_tags = b.language().is_some_and(|d| d.tags.is_some());
         let wlen = word.chars().count();
-        let root = self.workspace.root.clone();
         let occs: Vec<(String, Occ)> = match &self.scip.index {
             Some(ix) => {
                 ix.occurrences_of(sym).into_iter().filter(|(_, o)| !o.definition).map(|(r, o)| (r.to_string(), o.clone())).collect()
             }
             None => return false,
         };
-        let near = self.symbols.near_of(&from_rel);
         let mut fresh: HashMap<String, bool> = HashMap::new();
         let mut disk = HashMap::new();
         let mut items: Vec<(String, LocationItem)> = Vec::new();
@@ -495,18 +621,33 @@ impl App {
             }
         }
         if has_tags && !word.is_empty() {
-            for item in self.fallback_usages(&word, &path) {
-                let Ok(rel) = item.path.strip_prefix(&root) else { continue };
-                let rel = rel.to_string_lossy().replace('\\', "/");
-                if !*fresh.entry(rel.clone()).or_insert_with(|| self.scip_fresh(&rel)) {
-                    items.push((rel, item));
-                }
+            let name = word.clone();
+            if let Some(seq) = self.fallback_spawn(&name, &path, UsagesFor::Scip { word, from_rel, rows: items }) {
+                self.lsp.nav_seq = seq;
+            }
+            return true;
+        }
+        self.scip_usages_show(word, from_rel, items, Vec::new());
+        true
+    }
+
+    /// The SCIP rows `rows` (rel path, row) plus the index candidates `extra` of files that are not fresh,
+    /// deduped, ranked and shown.
+    fn scip_usages_show(&mut self, word: String, from_rel: String, mut rows: Vec<(String, LocationItem)>, extra: Vec<LocationItem>) {
+        let root = self.workspace.root.clone();
+        let mut fresh: HashMap<String, bool> = HashMap::new();
+        for item in extra {
+            let Ok(rel) = item.path.strip_prefix(&root) else { continue };
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            if !*fresh.entry(rel.clone()).or_insert_with(|| self.scip_fresh(&rel)) {
+                rows.push((rel, item));
             }
         }
+        let near = self.symbols.near_of(&from_rel);
         let mut keys = HashSet::new();
-        items.retain(|(_, i)| keys.insert((i.path.clone(), i.line, i.col)));
-        items.sort_by_cached_key(|(rel, i)| (usage_group(rel, Some(&from_rel), &near), i.path.clone(), i.line, i.col));
-        let mut items: Vec<LocationItem> = items.into_iter().map(|(_, i)| i).collect();
+        rows.retain(|(_, i)| keys.insert((i.path.clone(), i.line, i.col)));
+        rows.sort_by_cached_key(|(rel, i)| (usage_group(rel, Some(&from_rel), &near), i.path.clone(), i.line, i.col));
+        let mut items: Vec<LocationItem> = rows.into_iter().map(|(_, i)| i).collect();
         match items.len() {
             0 => self.lsp_hint("No usages found"),
             1 => {
@@ -520,7 +661,6 @@ impl App {
                 self.open_locations(title, items, true);
             }
         }
-        true
     }
 
     /// `lsp.quick_doc` (Alt+Q).
@@ -605,10 +745,7 @@ impl App {
             }
             return;
         }
-        if self.caret_position() != Some((t.buffer, t.pos))
-            || self.editor.active_buffer().is_none_or(|b| b.version != t.version)
-            || self.editor.focused_group().id != t.group
-        {
+        if !self.doc_tag_current(&t) {
             return tracing::debug!("dropping a stale {method} answer");
         }
         let value = match result {
@@ -1354,6 +1491,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_stale_fallback_answer_is_dropped() {
+        const MAIN: &str = "mod util;\nfn helper() {}\nfn main() {\n    helper();\n}\n";
+        let (mut app, dir) = test_app("usages-stale");
+        let (root, g) = (app.workspace.root.clone(), app.workspace.generation);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/util.rs"), "fn f() {\n    helper();\n}\n").unwrap();
+        std::fs::write(root.join("src/main.rs"), MAIN).unwrap();
+        let files = ["src/main.rs", "src/util.rs"];
+        app.handle_msg(AppMsg::FileIndex { generation: g, seq: 1, files: files.iter().map(|s| s.to_string()).collect() });
+        let job = app.symbols.start(root.clone());
+        let (seq, mut batches) = (job.seq, Vec::new());
+        job.run(|b| batches.push(b));
+        for batch in batches {
+            app.handle_msg(AppMsg::Symbols { generation: g, seq, batch });
+        }
+        crate::app::tests::load(&mut app, "src/main.rs", MAIN);
+        goto(&mut app, 3, 6);
+        act(&mut app, LspAction::FindUsages);
+        let real = crate::app::tests::take_fallback(&mut app).await;
+        assert!(!real.items.is_empty());
+        let word = || UsagesFor::Plain { word: "helper".into() };
+        let feed = |app: &mut App, generation: u64, tag: DocTag| {
+            app.handle_msg(AppMsg::FallbackUsages(Box::new(FallbackUsages {
+                generation,
+                tag,
+                purpose: word(),
+                items: real.items.clone(),
+            })));
+        };
+        app.toasts = Default::default();
+        // (a) another root.
+        feed(&mut app, real.generation + 1, real.tag.clone());
+        assert!(app.palette.is_none(), "another root");
+        // (b) a newer request.
+        feed(&mut app, real.generation, DocTag { seq: real.tag.seq - 1, ..real.tag.clone() });
+        assert!(app.palette.is_none(), "an older seq");
+        // (c) the caret moved.
+        goto(&mut app, 3, 7);
+        feed(&mut app, real.generation, real.tag.clone());
+        assert!(app.palette.is_none(), "the caret moved");
+        assert!(toasts(&app).is_empty(), "{:?}", toasts(&app));
+        goto(&mut app, 3, 6);
+        // (d) the answer itself.
+        feed(&mut app, real.generation, real.tag.clone());
+        assert_eq!(app.palette.as_ref().expect("Locations").kind, PaletteKind::Locations);
+        let buf = draw(&mut app, 100, 30);
+        assert!((0..30).any(|y| row(&buf, y).contains("Usages of helper (unverified)")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn find_usages_without_a_server_ranks_index_candidates() {
         use crate::event::AppMsg;
         const MAIN: &str = "mod util;\nfn helper() {}\nfn main() {\n    helper();\n}\n";
@@ -1388,6 +1576,8 @@ mod tests {
         let main = crate::app::tests::load(&mut app, "src/main.rs", MAIN);
         goto(&mut app, 3, 6);
         act(&mut app, LspAction::FindUsages);
+        assert!(app.palette.is_none(), "answered off the main thread");
+        handle_next(&mut app, is_fallback).await;
         let at = |f: &str, l| (root.join(f), l);
         let p = app.palette.as_ref().expect("Locations");
         assert_eq!(p.kind, PaletteKind::Locations);
@@ -1400,6 +1590,7 @@ mod tests {
         app.perform(Action::Editor(EditorAction::InsertText("    helper();\n".into())));
         goto(&mut app, 3, 6);
         act(&mut app, LspAction::FindUsages);
+        handle_next(&mut app, is_fallback).await;
         let shown = app.palette.as_ref().unwrap().shown_locations();
         assert_eq!(shown[..2], [(main.clone(), 3), (main, 4)]);
         // No candidates, then one.
@@ -1408,12 +1599,14 @@ mod tests {
         let two = crate::app::tests::load(&mut app, "src/two.rs", "fn k() {\n    only_here();\n}\n");
         goto(&mut app, 1, 6);
         act(&mut app, LspAction::FindUsages);
+        handle_next(&mut app, is_fallback).await;
         assert!(toasts(&app).contains(&"No usages found".to_string()), "{:?}", toasts(&app));
         goto(&mut app, 2, 0);
         app.perform(Action::Editor(EditorAction::InsertText("\n".into())));
         goto(&mut app, 1, 6);
         app.toasts = Default::default();
         act(&mut app, LspAction::FindUsages);
+        handle_next(&mut app, is_fallback).await;
         assert!(toasts(&app).contains(&"Only one usage (unverified)".to_string()), "{:?}", toasts(&app));
         // The jump goes to the start of the name; the caret was at col 6.
         assert_eq!((app.editor.active_path(), caret(&app)), (Some(two.as_path()), (1, 4)));
@@ -1490,6 +1683,7 @@ mod tests {
         let at = |f: &str, l| (root.join(f), l);
         goto(&mut app, 3, 12);
         act(&mut app, LspAction::FindUsages);
+        handle_next(&mut app, is_fallback).await;
         let p = app.palette.as_ref().expect("Locations");
         assert_eq!(p.kind, PaletteKind::Locations);
         assert_eq!(p.shown_locations(), [at("src/main.rs", 2), at("src/main.rs", 3)]);
@@ -1504,6 +1698,7 @@ mod tests {
         // On the declaration: its usages.
         goto(&mut app, 0, 16);
         act(&mut app, LspAction::GotoDefinition);
+        handle_next(&mut app, is_fallback).await;
         let p = app.palette.as_ref().expect("Locations");
         assert_eq!(p.shown_locations(), [at("src/main.rs", 2), at("src/main.rs", 3)]);
         let buf = draw(&mut app, 100, 30);
@@ -1544,6 +1739,7 @@ mod tests {
         app.perform(Action::Editor(EditorAction::InsertText("\n".into())));
         goto(&mut app, 2, 26);
         act(&mut app, LspAction::FindUsages);
+        handle_next(&mut app, is_fallback).await;
         // SCIP is not asked: the usages come from the tags index (the two path
         // calls `util::helper(..)`; definitions are not listed), titled unverified.
         let p = app.palette.as_ref().expect("Locations");
@@ -1840,6 +2036,10 @@ mod tests {
     use crate::event::Level;
     use crate::ui::dialog::{DialogId, DialogKind, DialogResult};
 
+    fn is_fallback(m: &AppMsg) -> bool {
+        matches!(m, AppMsg::FallbackUsages(_))
+    }
+
     fn is_preview(m: &AppMsg) -> bool {
         matches!(m, AppMsg::RenamePreview { .. })
     }
@@ -1948,6 +2148,7 @@ mod tests {
         assert_eq!(app.dialog.as_ref().unwrap().message, "Rename 'helper' to:", "the caret's file is fresh");
         app.toasts = Default::default();
         rename(&mut app, "assist").await;
+        handle_next(&mut app, is_fallback).await;
         let want = "The SCIP index has no usable definition of helper; renaming as text";
         assert!(toasts(&app).contains(&want.to_string()), "{:?}", toasts(&app));
         assert!(app.find.rename_preview().is_none());
@@ -2127,6 +2328,7 @@ mod tests {
         assert_eq!(app.dialog.as_ref().unwrap().message, "Rename 'area' to:");
         app.toasts = Default::default();
         rename(&mut app, "size").await;
+        handle_next(&mut app, is_fallback).await;
         assert!(toasts(&app).contains(&fallback.to_string()), "{:?}", toasts(&app));
         assert!(app.find.rename_preview().is_none());
         assert_eq!((app.find.query.text.as_str(), app.find.replace.text.as_str()), ("area", "size"));

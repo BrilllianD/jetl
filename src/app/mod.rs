@@ -39,6 +39,7 @@ macro_rules! ctx {
 
 pub use debug::Prepared;
 pub use lsp::LspStatus;
+pub use lsp_nav::{FallbackUsages, UsagesFor};
 pub use save_as::AfterSave;
 
 // Declared after `ctx!` so the submodules can use it.
@@ -2651,6 +2652,21 @@ pub(crate) mod tests {
 
     /// Wait for the first bus message `want` accepts and handle it; other
     /// messages are dropped.
+    /// Wait for the next `AppMsg::FallbackUsages` and return it unhandled, so a test can feed it back changed.
+    pub(crate) async fn take_fallback(app: &mut App) -> FallbackUsages {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match app.bus_rx.recv().await {
+                    Some(AppMsg::FallbackUsages(f)) => break *f,
+                    Some(_) => {}
+                    None => panic!("bus closed"),
+                }
+            }
+        })
+        .await
+        .expect("message in time")
+    }
+
     pub(crate) async fn handle_next(app: &mut App, want: impl Fn(&AppMsg) -> bool) {
         let msg = tokio::time::timeout(Duration::from_secs(5), async {
             loop {

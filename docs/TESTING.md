@@ -2463,6 +2463,11 @@ in `main` and press Alt+F7: the palette title reads `Usages of helper
 to the row; Esc closes the palette. A name used once only jumps straight to it
 with the toast `Only one usage (unverified)`.
 
+Big unsaved buffer: copy `src/app/snapshot_tests.rs` of the jetl tree into the
+scenario's `src/big.rs` and open it. Type a character (unsaved), put the caret
+on `App` and press Alt+F7: the palette `Usages of App (unverified)` opens.
+Typing straight after Alt+F7 drops the answer (no palette).
+
 ### Scenario: SCIP index without a language server
 
 With `[lsp] enabled = false`, `[index] scip = "index.scip"` and `[index]
