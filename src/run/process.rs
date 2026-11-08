@@ -120,7 +120,7 @@ impl RunGate {
         let closed = if self.dropping.load(Ordering::SeqCst) { q > self.limit / 2 } else { q >= self.limit };
         self.dropping.store(closed, Ordering::SeqCst);
         if closed {
-            self.dropped.fetch_add(l.text.len(), Ordering::SeqCst);
+            self.dropped.fetch_add(l.text.len() + 1, Ordering::SeqCst);
             false
         } else {
             self.queued.fetch_add(cost(l), Ordering::SeqCst);
@@ -192,6 +192,7 @@ pub async fn drive(
         Some(m) => m.line(l),
         None => RunLine::plain(l),
     };
+    let end_gate = gate.clone();
     let feed = move |bytes: Option<&[u8]>| -> Vec<RunLine> {
         // Classified before the gate, so the matcher's lookahead sees every line.
         match bytes {
@@ -208,6 +209,11 @@ pub async fn drive(
         pid,
     )
     .await;
+    // `pump` gave up on a reader still blocked on a pipe a grandchild holds open, so `feed(None)` never ran:
+    // the end notice goes out from here. After a normal end `feed(None)` took the count and this is `None`.
+    if let Some(notice) = end_gate.notice() {
+        let _ = tx.send(AppMsg::RunOutput { generation, run, lines: vec![notice] });
+    }
     let _ = tx.send(AppMsg::RunExited { generation, run, end });
 }
 
@@ -387,7 +393,7 @@ mod tests {
         assert!(!g.admit(&line(10)));
         assert_eq!(g.queued(), 900 + LINE_COST);
         let n = g.notice().unwrap();
-        assert_eq!(n.text, format!("10 {NOTICE}"));
+        assert_eq!(n.text, format!("11 {NOTICE}"));
         assert_eq!(n.severity, Some(Severity::Warning));
         assert!(g.notice().is_none());
     }
@@ -430,7 +436,7 @@ mod tests {
         // Nothing admitted while closed, and no notice without an admitted line or the end.
         assert!(gated(&g, vec![line(7)], false).is_empty());
         // The end alone carries the pending count.
-        assert_eq!(texts(gated(&g, vec![line(3)], true)), [format!("11 {NOTICE}")]);
+        assert_eq!(texts(gated(&g, vec![line(3)], true)), [format!("14 {NOTICE}")]);
         // No drops pending: the end adds nothing.
         assert!(gated(&g, vec![], true).is_empty());
         // Reopen, then the notice goes ahead of the next admitted line.
@@ -438,7 +444,7 @@ mod tests {
         assert_eq!(gated(&h, vec![line(1), line(1)], false).len(), 2);
         assert!(gated(&h, vec![line(4)], false).is_empty());
         h.release(&[line(1), line(1)]);
-        assert_eq!(texts(gated(&h, vec![line(2)], false)), [format!("4 {NOTICE}"), "xx".to_string()]);
+        assert_eq!(texts(gated(&h, vec![line(2)], false)), [format!("5 {NOTICE}"), "xx".to_string()]);
     }
 
     #[cfg(unix)]
@@ -459,6 +465,49 @@ mod tests {
                 _ => {}
             }
         }
-        assert_eq!(texts, ["x".to_string(), format!("1 {NOTICE}")]);
+        assert_eq!(texts, ["x".to_string(), format!("2 {NOTICE}")]);
+    }
+
+    #[test]
+    fn a_refused_empty_line_still_counts() {
+        let g = RunGate::new(1);
+        assert!(g.admit(&line(1)));
+        assert!(!g.admit(&line(0)));
+        assert!(!g.admit(&line(0)));
+        assert_eq!(gated(&g, vec![], true).into_iter().map(|l| l.text).collect::<Vec<_>>(), [format!("2 {NOTICE}")]);
+    }
+
+    #[test]
+    fn the_run_gate_flips_exactly_at_limit_and_half() {
+        // line(872) costs 1000: the gauge sits exactly at the limit.
+        let g = RunGate::new(1000);
+        assert!(g.admit(&line(871)));
+        assert_eq!(g.queued(), 999);
+        let g = RunGate::new(1000);
+        assert!(g.admit(&line(872)));
+        assert_eq!(g.queued(), 1000);
+        assert!(!g.admit(&line(1)), "at the limit it closes");
+        // line(372) costs 500: the gauge falls exactly to half of the limit.
+        g.release(&[line(372)]);
+        assert_eq!(g.queued(), 500);
+        assert!(g.admit(&line(1)), "at half it reopens");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn drive_sends_the_end_notice_when_a_grandchild_holds_the_pipe() {
+        let argv = ["sh", "-c", "sleep 2 & printf 'x\\ny\\n'"].map(String::from).to_vec();
+        let spawned = spawn(&Spec { argv, cwd: std::env::temp_dir(), env: vec![] }).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(drive(spawned, None, Arc::new(RunGate::new(1)), 1, 1, tx, Arc::new(AtomicU32::new(0))));
+        let mut texts = Vec::new();
+        loop {
+            match rx.recv().await.unwrap() {
+                AppMsg::RunOutput { lines, .. } => texts.extend(lines.into_iter().map(|l| l.text)),
+                AppMsg::RunExited { .. } => break,
+                _ => {}
+            }
+        }
+        assert_eq!(texts, ["x".to_string(), format!("2 {NOTICE}")]);
     }
 }

@@ -1530,7 +1530,7 @@ Figures, jetl's `VmHWM` unless noted, 120x40 (the `long16k` stall also at 80x24)
 | `spew5` free 30 s | 34 MB | 37 MB |
 | `flood` | 35 MB | not run |
 
-Each run: Ctrl+F2 until gdb is gone at most 5 s, Ctrl+Q exits 0. `of output dropped` appears in the Console in the `long16k` and the `spew5` stall runs and in neither `flood` nor `spew5` free.
+The `burst` row is read from the raw CSVs `burst-stall-120x40-base.csv`, `burst-stall-120x40-after.csv` and `burst-stall-80x24-after.csv` (`VmHWM` column), not from the summary files. Each run: Ctrl+F2 until gdb is gone at most 5 s, Ctrl+Q exits 0. `of output dropped` appears in the Console in the `long16k` and the `spew5` stall runs and in neither `flood` nor `spew5` free.
 
 Steps, at 80x24 and 120x40, a private tmux socket and `XDG_*` under `/tmp`, `RUST_LOG=jetl=info`:
 
