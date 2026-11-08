@@ -49,6 +49,7 @@ mod completion;
 mod config_reload;
 mod debug;
 mod dialogs;
+mod doc_highlight;
 mod effects;
 mod files;
 mod find;
@@ -779,6 +780,7 @@ impl App {
         self.completion_docs_tick(Instant::now());
         self.format_timeout(Instant::now());
         self.lightbulb_tick(Instant::now());
+        self.doc_highlight_tick(Instant::now());
         self.inlay_tick(Instant::now());
         self.semantic_tick(Instant::now());
         self.markdown_preview_tick();

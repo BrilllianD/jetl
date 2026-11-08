@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Navigate > Next Method and Previous Method (Alt+Down, Alt+Up in the editor) move the caret to the name of the next or previous function, method or constructor, nested ones included, from the language's symbols (as the breadcrumbs); Back returns from a long jump. The Git and Local History windows keep their Alt+Up/Down.
 - Custom folding regions: a `// region` / `// endregion` marker line never joins a run of comment lines (so `// endregion` followed by `// region B` folds each region), and with a syntax tree a marker counts only inside a comment, not in a string.
 - Breakpoints can be disabled without removing them (Run > Toggle Breakpoint Enabled, or Space in View Breakpoints): a disabled one is drawn dim and not sent to the debugger. Edit Breakpoint gains a hit count: stop from the Nth hit on. Both are saved with the session. Verified under gdb 17.2 only; gdb restarts the count whenever that file's breakpoints are sent again.
+- With a language server that offers document highlight (rust-analyzer, clangd), the symbol at the caret is highlighted where the server says it is used, with writes and reads in their own colours (theme keys `occurrence_write`, `occurrence_read`); other files keep the textual highlight.
 - Column rulers: `[editor] rulers = [80, 100]` draws a thin vertical line after those columns on every row whose text does not reach them, in the new theme style `ruler`; it follows horizontal scroll and applies without a restart.
 
 ### Fixed

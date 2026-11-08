@@ -199,6 +199,10 @@ theme_fields! {
         search_match_bg,
         search_current_bg,
         occurrence_bg,
+        /// Background of a read access of the symbol at the caret, from the language server's document highlight.
+        occurrence_read,
+        /// Background of a write access of the symbol at the caret, from the language server's document highlight.
+        occurrence_write,
         gutter_added,
         gutter_modified,
         gutter_deleted,
@@ -665,6 +669,8 @@ const HIGHLIGHT_GROUPS: &[&[Slot]] = &[
         |t| &mut t.search_match_bg,
         |t| &mut t.search_current_bg,
         |t| &mut t.occurrence_bg,
+        |t| &mut t.occurrence_read,
+        |t| &mut t.occurrence_write,
         |t| &mut t.debug_execution_line_bg,
         |t| &mut t.debug_frame_line_bg,
     ],
@@ -893,6 +899,8 @@ mod tests {
                     t.search_match_bg,
                     t.search_current_bg,
                     t.occurrence_bg,
+                    t.occurrence_read,
+                    t.occurrence_write,
                     t.debug_execution_line_bg,
                     t.debug_frame_line_bg,
                 ],

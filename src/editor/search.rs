@@ -226,6 +226,16 @@ pub fn occurrence_target(rope: &Rope, sel: &Selection) -> Option<(String, bool)>
         let skip = text.contains(['\n', '\r']) || text.trim().is_empty();
         return (!skip).then_some((text, false));
     }
+    caret_word(rope, sel).map(|w| (rope.slice(w).to_string(), true))
+}
+
+/// The word at an empty selection's caret, or the one ending at it, as a
+/// char range. `None` for a non-empty selection or when no word touches the
+/// caret.
+pub fn caret_word(rope: &Rope, sel: &Selection) -> Option<Range<usize>> {
+    if !sel.is_empty() {
+        return None;
+    }
     let is_word = |p: usize| p < rope.len_chars() && is_word_char(rope.char(p));
     let at = if is_word(sel.head) {
         sel.head
@@ -234,7 +244,50 @@ pub fn occurrence_target(rope: &Rope, sel: &Selection) -> Option<(String, bool)>
     } else {
         return None;
     };
-    Some((rope.slice(word_at(rope, at)).to_string(), true))
+    Some(word_at(rope, at))
+}
+
+/// How a language server's document highlight accesses a symbol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HighlightKind {
+    Text,
+    Read,
+    Write,
+}
+
+/// The language server's highlights of the symbol at the caret: the spans
+/// with their kinds, sorted and disjoint, and what they answer (the buffer
+/// version and the caret word).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocHighlights {
+    pub version: u64,
+    pub word: Range<usize>,
+    spans: Vec<(Range<usize>, HighlightKind)>,
+}
+
+impl DocHighlights {
+    /// Servers answer in no particular order: sort by start, drop empty
+    /// spans and any span that overlaps the previous kept one.
+    pub fn new(version: u64, word: Range<usize>, mut spans: Vec<(Range<usize>, HighlightKind)>) -> Self {
+        spans.sort_by_key(|(r, _)| (r.start, r.end));
+        let mut kept: Vec<(Range<usize>, HighlightKind)> = Vec::with_capacity(spans.len());
+        for (r, k) in spans {
+            if r.start < r.end && kept.last().is_none_or(|(p, _)| p.end <= r.start) {
+                kept.push((r, k));
+            }
+        }
+        Self { version, word, spans: kept }
+    }
+
+    /// Whether these answer the buffer as it is: same version, caret on the
+    /// same word, no selection.
+    pub fn holds(&self, rope: &Rope, version: u64, sel: &Selection) -> bool {
+        self.version == version && caret_word(rope, sel) == Some(self.word.clone())
+    }
+
+    pub fn spans(&self) -> &[(Range<usize>, HighlightKind)] {
+        &self.spans
+    }
 }
 
 /// Case-sensitive, non-overlapping occurrences of `target` within `lines`
@@ -358,5 +411,36 @@ mod tests {
         assert_eq!(occurrence_target(&rope, &Selection::new(10, 13)), Some(("a.b".into(), false)));
         assert_eq!(occurrence_target(&rope, &Selection::new(14, 17)), None, "spans a line break");
         assert_eq!(occurrence_target(&rope, &Selection::new(15, 17)), None, "whitespace only");
+    }
+
+    #[test]
+    fn caret_word_rules() {
+        let rope = Rope::from_str("let foo = a.b;\n  x");
+        assert_eq!(caret_word(&rope, &Selection::point(5)), Some(4..7), "inside");
+        assert_eq!(caret_word(&rope, &Selection::point(4)), Some(4..7), "at its start");
+        assert_eq!(caret_word(&rope, &Selection::point(7)), Some(4..7), "right after its end");
+        assert_eq!(caret_word(&rope, &Selection::point(8)), None, "between space and punctuation");
+        assert_eq!(caret_word(&rope, &Selection::point(16)), None, "whitespace");
+        assert_eq!(caret_word(&rope, &Selection::new(4, 7)), None, "a selection");
+    }
+
+    #[test]
+    fn doc_highlights_are_sorted_disjoint_and_non_empty() {
+        use HighlightKind::{Read, Text, Write};
+        let h = DocHighlights::new(3, 0..1, vec![(8..9, Read), (2..3, Write), (5..5, Text), (2..4, Text), (6..7, Text), (8..10, Write)]);
+        // Ties on start sort by end, so `2..3` comes before `2..4` and the
+        // latter overlaps it; `8..9` comes before `8..10` for the same reason.
+        assert_eq!(h.spans(), &[(2..3, Write), (6..7, Text), (8..9, Read)]);
+    }
+
+    #[test]
+    fn doc_highlights_hold_for_their_version_word_and_no_selection() {
+        let rope = Rope::from_str("foo bar foo");
+        let h = DocHighlights::new(7, 0..3, vec![(0..3, HighlightKind::Write)]);
+        assert!(h.holds(&rope, 7, &Selection::point(1)));
+        assert!(h.holds(&rope, 7, &Selection::point(3)), "the caret may rest right after the word");
+        assert!(!h.holds(&rope, 8, &Selection::point(1)), "another version");
+        assert!(!h.holds(&rope, 7, &Selection::point(5)), "another word");
+        assert!(!h.holds(&rope, 7, &Selection::new(0, 3)), "a selection");
     }
 }

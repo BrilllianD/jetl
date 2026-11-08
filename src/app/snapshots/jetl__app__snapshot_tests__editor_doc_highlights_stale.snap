@@ -1,0 +1,18 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+40x8 cursor=(11,1)
+00   dh.log ×
+01   1    let x = 1;
+02   2    x += x;
+03   3    print(x);
+04   4    xx x
+05   5
+06
+07
+-- marks: C=caret S=selection F=fold O=occurrence W=write R=read
+01            O
+02        O    O
+03              O
+04           O

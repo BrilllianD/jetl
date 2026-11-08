@@ -636,11 +636,33 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     let pair =
         super::brackets::pair_at(rope, buf.syntax.as_ref().and_then(|s| s.tree_at_char(rope, buf.view.sel().head)), buf.view.sel().head);
     // Occurrences of the word or selection at the caret, visible lines only.
-    // An open find bar owns the match highlighting, so they step aside.
-    let occ = match (o.occurrences && search.is_none()).then(|| super::search::occurrence_target(rope, &buf.view.sel())).flatten() {
-        Some((target, whole_word)) => super::search::occurrences(rope, window.clone(), &target, whole_word),
-        None => Vec::new(),
-    };
+    // An open find bar owns the match highlighting, so they step aside. A
+    // language server's document highlight of the caret word, while it
+    // holds, replaces the textual occurrences, with its own colours.
+    let mut occ: Vec<(Range<usize>, Color)> = Vec::new();
+    if o.occurrences && search.is_none() {
+        match buf.doc_highlights.as_ref().filter(|h| h.holds(rope, buf.version, &buf.view.sel())) {
+            Some(h) => {
+                let last = window.end.min(rope.len_lines());
+                let lo = rope.line_to_char(window.start.min(last));
+                let hi = if window.end >= rope.len_lines() { rope.len_chars() } else { rope.line_to_char(window.end) };
+                occ.extend(h.spans().iter().filter(|(r, _)| r.end > lo && r.start < hi).map(|(r, k)| {
+                    let bg = match k {
+                        super::search::HighlightKind::Text => theme.occurrence_bg,
+                        super::search::HighlightKind::Read => theme.occurrence_read,
+                        super::search::HighlightKind::Write => theme.occurrence_write,
+                    };
+                    (r.clone(), bg)
+                }));
+            }
+            None => {
+                if let Some((target, whole_word)) = super::search::occurrence_target(rope, &buf.view.sel()) {
+                    let found = super::search::occurrences(rope, window.clone(), &target, whole_word);
+                    occ.extend(found.into_iter().map(|r| (r, theme.occurrence_bg)));
+                }
+            }
+        }
+    }
     let marks = &buf.diag_marks;
     let underlines = !marks.spans.is_empty();
     let digits = (gutter_w - 4 - blame_w - action_w) as usize;
@@ -835,8 +857,8 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
                 if let Some(cur) = s.match_at(c.char_idx) {
                     style = style.bg(if cur { theme.search_current_bg } else { theme.search_match_bg });
                 }
-            } else if in_ranges(&occ, c.char_idx) {
-                style = style.bg(theme.occurrence_bg);
+            } else if let Some(bg) = bg_at(&occ, c.char_idx) {
+                style = style.bg(bg);
             }
             if pair.is_some_and(|(a, b)| c.char_idx == a || c.char_idx == b) {
                 style = style.patch(theme.bracket_match);
@@ -1056,10 +1078,10 @@ fn diag_overlay(style: Style, d: Style) -> Style {
     s
 }
 
-/// `ranges` is sorted and non-overlapping.
-fn in_ranges(ranges: &[std::ops::Range<usize>], i: usize) -> bool {
-    let k = ranges.partition_point(|r| r.end <= i);
-    ranges.get(k).is_some_and(|r| r.contains(&i))
+/// The colour of the range holding `i`; `ranges` is sorted and non-overlapping.
+fn bg_at(ranges: &[(Range<usize>, Color)], i: usize) -> Option<Color> {
+    let k = ranges.partition_point(|(r, _)| r.end <= i);
+    ranges.get(k).filter(|(r, _)| r.contains(&i)).map(|&(_, c)| c)
 }
 
 /// Whether the caret is inside a text area of `w` x `h` at the view's scroll.

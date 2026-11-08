@@ -114,7 +114,7 @@ max_highlight_bytes = 2097152  # files above this size (2 MiB) open without synt
 scrolloff = 3                  # lines kept visible above and below the caret
 hscrolloff = 5                 # columns kept visible left and right of the caret
 auto_close = true              # type brackets and quotes in pairs, step over closers, wrap selections
-highlight_occurrences = true   # highlight the word at the caret (or the selected text) elsewhere on screen
+highlight_occurrences = true   # highlight the word at the caret (or the selected text) elsewhere on screen; with a language server that offers document highlight, its read and write accesses instead
 indent_guides = true           # a │ at each indent stop in a line's leading whitespace (theme style indent_guide)
 rulers = []                    # a │ (theme style ruler) after each of these columns on rows whose text does not reach it, e.g. [80, 100]; 0 is ignored
 inline_blame = false           # author, date and summary of the caret line's commit after its text (theme style inline_blame)
@@ -1239,9 +1239,11 @@ selection_bg = "24"
 - Color fields take a string or a table with just `fg` or `bg`.
 
 Color fields: `bg fg panel_bg strip_bg status_bg status_fg current_line_bg
-debug_execution_line_bg debug_frame_line_bg selection_bg search_match_bg search_current_bg occurrence_bg gutter_added
+debug_execution_line_bg debug_frame_line_bg selection_bg search_match_bg search_current_bg occurrence_bg occurrence_read occurrence_write gutter_added
 gutter_modified gutter_deleted diff_add_bg diff_del_bg diff_mod_bg
 diff_add_word_bg diff_del_word_bg merge_conflict_bg merge_resolved_bg popup_bg`.
+With a language server's document highlight, the symbol at the caret is drawn on `occurrence_write`
+where it is written, `occurrence_read` where it is read, and `occurrence_bg` elsewhere.
 The conflict resolver colors an unresolved conflict with `merge_conflict_bg`, a
 change only one side made with `diff_add_bg`, `diff_del_bg` or `diff_mod_bg`,
 and a resolved change with `merge_resolved_bg`.

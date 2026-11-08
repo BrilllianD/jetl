@@ -34,6 +34,7 @@ pub const RENAME: &str = "textDocument/rename";
 pub const CODE_ACTION: &str = "textDocument/codeAction";
 pub const CODE_ACTION_RESOLVE: &str = "codeAction/resolve";
 pub const INLAY_HINT: &str = "textDocument/inlayHint";
+pub const DOCUMENT_HIGHLIGHT: &str = "textDocument/documentHighlight";
 /// The dynamic-registration method of semantic tokens; never sent as a request.
 pub const SEMANTIC_TOKENS: &str = "textDocument/semanticTokens";
 pub const SEMANTIC_TOKENS_FULL: &str = "textDocument/semanticTokens/full";
@@ -171,6 +172,7 @@ impl<'a> Caps<'a> {
             FORMATTING => on(&fixed.document_formatting_provider) || self.any(FORMATTING),
             RANGE_FORMATTING => on(&fixed.document_range_formatting_provider) || self.any(RANGE_FORMATTING),
             INLAY_HINT => on(&fixed.inlay_hint_provider) || self.any(INLAY_HINT),
+            DOCUMENT_HIGHLIGHT => on(&fixed.document_highlight_provider) || self.any(DOCUMENT_HIGHLIGHT),
             SEMANTIC_TOKENS_FULL => {
                 matches!(
                     self.semantic_options().and_then(|o| o.full.as_ref()),
@@ -421,6 +423,24 @@ mod tests {
     }
 
     #[test]
+    fn document_highlight_from_static_or_registered_capability() {
+        let r = Registry::default();
+        for (v, want) in [
+            (json!({"documentHighlightProvider": true}), true),
+            (json!({"documentHighlightProvider": {}}), true),
+            (json!({}), false),
+            (json!({"documentHighlightProvider": false}), false),
+        ] {
+            let f = fixed(v.clone());
+            assert_eq!(caps(&f, &r, rust()).has(DOCUMENT_HIGHLIGHT), want, "{v}");
+        }
+        let f = fixed(json!({}));
+        let mut r = Registry::default();
+        register(&mut r, "d", DOCUMENT_HIGHLIGHT, json!({}));
+        assert!(caps(&f, &r, rust()).has(DOCUMENT_HIGHLIGHT));
+    }
+
+    #[test]
     fn registration_options_add_triggers_resolve_and_commands() {
         let f = fixed(
             json!({"completionProvider": {"triggerCharacters": [".", ":"], "allCommitCharacters": ["("]}, "executeCommandProvider": {"commands": ["a"]}}),
@@ -501,6 +521,7 @@ mod tests {
             "formatting",
             "rangeFormatting",
             "inlayHint",
+            "documentHighlight",
             "semanticTokens",
         ] {
             assert_eq!(c["textDocument"][k]["dynamicRegistration"], true, "{k}");

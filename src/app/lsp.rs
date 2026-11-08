@@ -82,6 +82,8 @@ pub struct LspService {
     pub(super) edit: super::lsp_edit::EditReqs,
     /// The lightbulb's request and debounce (`app/lightbulb.rs`).
     pub(super) lightbulb: super::lightbulb::Lightbulb,
+    /// The document highlight's request and debounce (`app/doc_highlight.rs`).
+    pub(super) doc_highlight: super::doc_highlight::DocHighlightReqs,
     /// The inlay hints' request and debounce (`app/inlay.rs`).
     pub(super) inlay: super::inlay::InlayReqs,
     /// Whether inlay hints are asked for and drawn: `[lsp] inlay_hints`,
@@ -210,6 +212,7 @@ impl LspService {
         self.edit = Default::default();
         self.edit.rename_in_text = rename_in_text;
         self.lightbulb = Default::default();
+        self.doc_highlight = Default::default();
         self.inlay = Default::default();
         self.semantic = Default::default();
         self.file_ops.clear();

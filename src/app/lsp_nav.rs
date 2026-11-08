@@ -34,8 +34,8 @@ use crate::ui::hover::{DocLine, HoverPopup, Kind, code_lines};
 use crate::ui::palette::Palette;
 
 pub(super) use crate::lsp::caps::{
-    CODE_ACTION, CODE_ACTION_RESOLVE, COMPLETION, DOCUMENT_SYMBOL, EXECUTE_COMMAND, FORMATTING, INLAY_HINT, PREPARE_RENAME,
-    RANGE_FORMATTING, RENAME, RESOLVE, SEMANTIC_TOKENS_FULL, SEMANTIC_TOKENS_RANGE,
+    CODE_ACTION, CODE_ACTION_RESOLVE, COMPLETION, DOCUMENT_HIGHLIGHT, DOCUMENT_SYMBOL, EXECUTE_COMMAND, FORMATTING, INLAY_HINT,
+    PREPARE_RENAME, RANGE_FORMATTING, RENAME, RESOLVE, SEMANTIC_TOKENS_FULL, SEMANTIC_TOKENS_RANGE,
 };
 use crate::lsp::caps::{
     Caps, DECLARATION, DEFINITION, HOVER, IMPLEMENTATION, PREPARE_CALL_HIERARCHY, PREPARE_TYPE_HIERARCHY, REFERENCES, SIGNATURE_HELP,
@@ -151,6 +151,8 @@ fn method_of(tag: &PendingTag) -> &'static str {
         PendingTag::DocumentSymbols(_) => DOCUMENT_SYMBOL,
         PendingTag::Formatting(_) => FORMATTING,
         PendingTag::Lightbulb(_) => CODE_ACTION,
+        // Never looked up: routed before the inflight check.
+        PendingTag::DocumentHighlight(_) => DOCUMENT_HIGHLIGHT,
         PendingTag::InlayHints(_) => INLAY_HINT,
         // Never looked up: routed before the inflight check.
         PendingTag::SemanticTokens(_) => SEMANTIC_TOKENS_FULL,
@@ -193,6 +195,7 @@ fn what(method: &str) -> &'static str {
         DOCUMENT_SYMBOL => "file structure",
         FORMATTING => "formatting",
         INLAY_HINT => "inlay hints",
+        DOCUMENT_HIGHLIGHT => "document highlight",
         SEMANTIC_TOKENS_FULL | SEMANTIC_TOKENS_RANGE => "semantic highlighting",
         RANGE_FORMATTING => "formatting a selection",
         PREPARE_CALL_HIERARCHY => "call hierarchy",
@@ -715,6 +718,10 @@ impl App {
         if let PendingTag::Lightbulb(t) = tag {
             return self.lightbulb_answer(t, result);
         }
+        // And the document highlight.
+        if let PendingTag::DocumentHighlight(t) = tag {
+            return self.doc_highlight_answer(t, result);
+        }
         // And the inlay hints.
         if let PendingTag::InlayHints(t) = tag {
             return self.inlay_answer(t, result);
@@ -782,6 +789,7 @@ impl App {
             | PendingTag::ExecuteCommand(_)
             | PendingTag::Formatting(_)
             | PendingTag::Lightbulb(_)
+            | PendingTag::DocumentHighlight(_)
             | PendingTag::InlayHints(_)
             | PendingTag::SemanticTokens(_)
             | PendingTag::WillFileOp(_)

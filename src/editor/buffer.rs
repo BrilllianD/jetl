@@ -270,6 +270,8 @@ pub struct Buffer {
     /// The language server has quick fixes on this line at this version
     /// (`app/lightbulb.rs`); drawn on the caret line while both still hold.
     pub lightbulb: Option<(u64, usize)>,
+    /// The language server's highlights of the symbol at the caret (`app/doc_highlight.rs`); drawn instead of the textual occurrences while they hold (`DocHighlights::holds`).
+    pub doc_highlights: Option<super::search::DocHighlights>,
     /// The last `fold_candidates` answer: version, lines and the folds.
     pub fold_cache: Option<(u64, std::ops::Range<usize>, Vec<super::fold::Fold>)>,
     /// The custom fold regions (`fold::region_folds`) for a version and line comment token.
@@ -346,6 +348,7 @@ impl Buffer {
             lsp_full_resync: false,
             diag_marks: Default::default(),
             lightbulb: None,
+            doc_highlights: None,
             fold_cache: None,
             region_cache: None,
             read_only: false,

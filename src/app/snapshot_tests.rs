@@ -418,6 +418,32 @@ async fn editor_occurrences() {
     assert_snapshot!("editor_occurrences", snapshot(&term, &marks, None));
 }
 
+#[tokio::test]
+async fn editor_doc_highlights() {
+    use crate::editor::search::{
+        DocHighlights,
+        HighlightKind::{Read, Write},
+    };
+    let mut fx = stable_app("doc-highlights");
+    let app = &mut fx.app;
+    load(app, "dh.log", "let x = 1;\nx += x;\nprint(x);\nxx x\n");
+    app.editor.active_buffer_mut().unwrap().goto_line(0, 4);
+    // The server's answer for the `x` at the caret: writes on lines 0 and 1,
+    // reads on lines 1 and 2; line 3's `x` is not listed.
+    let b = app.editor.active_buffer_mut().unwrap();
+    b.doc_highlights = Some(DocHighlights::new(b.version, 4..5, vec![(4..5, Write), (11..12, Write), (16..17, Read), (25..26, Read)]));
+    let mut marks = editor_marks(&app.theme);
+    marks.push(Mark::bg('W', "write", app.theme.occurrence_write));
+    marks.push(Mark::bg('R', "read", app.theme.occurrence_read));
+    let term = draw_editor(app, 40, 8);
+    assert_snapshot!("editor_doc_highlights", snapshot(&term, &marks, None));
+    // An answer for another version no longer holds: the textual highlight
+    // is back, line 3's whole-word `x` included.
+    app.editor.active_buffer_mut().unwrap().doc_highlights.as_mut().unwrap().version += 1;
+    let term = draw_editor(app, 40, 8);
+    assert_snapshot!("editor_doc_highlights_stale", snapshot(&term, &marks, None));
+}
+
 #[cfg(all(feature = "lang-md", feature = "lang-rust"))]
 #[tokio::test]
 async fn editor_markdown_fence() {

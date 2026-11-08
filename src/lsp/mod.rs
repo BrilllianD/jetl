@@ -90,6 +90,9 @@ pub enum PendingTag {
     /// `textDocument/codeAction` for the lightbulb; checked against
     /// `LspService::lightbulb` (`app/lightbulb.rs`), not `inflight`.
     Lightbulb(DocTag),
+    /// `textDocument/documentHighlight` at the caret; checked against
+    /// `LspService::doc_highlight` (`app/doc_highlight.rs`), not `inflight`.
+    DocumentHighlight(DocTag),
     /// `textDocument/inlayHint` for the visible lines; checked against
     /// `LspService::inlay` (`app/inlay.rs`), not `inflight`.
     InlayHints(DocTag),
@@ -141,6 +144,7 @@ impl PendingTag {
             | PendingTag::DocumentSymbols(t)
             | PendingTag::Formatting(t)
             | PendingTag::Lightbulb(t)
+            | PendingTag::DocumentHighlight(t)
             | PendingTag::InlayHints(t)
             | PendingTag::SemanticTokens(t)
             | PendingTag::CallHierarchy(t)

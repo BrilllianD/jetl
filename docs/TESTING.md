@@ -3144,6 +3144,23 @@ ends, so hints appear without scrolling or editing once rust-analyzer has loaded
    a visible box (lighter than the current-line background) on the caret lines.
 7. Undo every edit; do not save. Repeat at 120x40 and 80x24.
 
+### Scenario: document highlight
+
+Setup: a fresh `$H` under `/tmp` with rust-analyzer on (no `[lsp] enabled = false`) and a
+private tmux socket. A cargo crate `/tmp/jetl-dochl` with `src/main.rs` holding
+`fn main() {\n    let mut x = 1;\n    x += 2;\n    let y = x;\n    println!("{y} {x}");\n}\n` and
+`notes.txt` holding `x y x`.
+
+1. Wait for indexing; put the caret on `x` in `let y = x`. After about 200 ms `capture-pane -e`
+   shows the `let mut x` and `x += 2` cells on the `occurrence_write` background and `let y = x`
+   and `{x}` on `occurrence_read`.
+2. Type a char after `x`: the highlight turns textual at once, then the server's returns. Undo.
+3. Select `x` with Shift+Right: the textual selected-text highlight shows.
+4. Ctrl+F: the find bar's matches replace both; Escape.
+5. Open `notes.txt` (no server): the textual highlight as before.
+6. `[lsp] enabled = false` in the config: the textual highlight.
+7. Repeat at 120x40 and 80x24.
+
 ### Scenario: live templates
 
 Setup as for the other scenarios with a fresh `$H` and LSP off; `S=$H/config/jetl/snippets`.
