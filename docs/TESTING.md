@@ -391,6 +391,39 @@ Open `main.go:3:1`, wait for gopls, Shift+Down three times (`func helper` throug
 `✖` (no `undefined: helper`); `grep -c 'workspace/didCreateFiles' /tmp/jetl-478/gopls-in.log` prints 1 and that line
 holds `helper.go`'s URI. Stderr is empty and Ctrl+Q exits 0.
 
+### Scenario: spell checking through an extra server
+
+yman 463, at 120x40 and 80x24 on a private socket, with real typos-lsp and harper-ls built under /tmp (nothing is
+installed system-wide): `cargo install --locked --root /tmp/jetl27-spell typos-lsp` and
+`cargo install --locked --root /tmp/jetl27-harper harper-ls`. Project `/tmp/jetl-463/proj`: `Cargo.toml`
+(`[package]\nname = "demo"\nversion = "0.1.0"\nedition = "2021"\n`), `src/main.rs`
+(`// teh speling\nfn main() {\n    let x: i32 = "s";\n}\n`) and `README.md` (`Recieve the notes.\n`). Start jetl on `.`
+with `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_DATA_HOME` under /tmp/jetl-463/home. `config.toml`: `[ui]`
+`toolbar = false`, then `[lsp.servers.typos]` with
+`command = ["sh", "-c", "tee -a /tmp/jetl-463/typos-in.log | /tmp/jetl27-spell/bin/typos-lsp"]`,
+`languages = ["*"]` and `extra = true` (no `[lsp] enabled = false`: this needs servers).
+
+1. Ctrl+N, `main.rs`, Enter; wait for rust-analyzer (up to 60 s). Line 1 shows `ℹ` (typos), line 3 `✖`
+   (rust-analyzer, rustc); the status bar segment reads `rust-analyzer`. Ctrl+G `1:5`: at 120 columns the status bar
+   shows `` `teh` should be `the` `` (at 80 columns the message does not fit). Alt+6 lists typos's and the Rust
+   servers' problems under `main.rs`.
+2. Ctrl+Home, type `x`, wait 1 s: `grep -c '"method":"textDocument/didChange"' /tmp/jetl-463/typos-in.log` prints 1 and
+   the Problems columns of the two typos rows each move right by one (`1:4` to `1:5`). Ctrl+S:
+   `grep -c '"method":"textDocument/didSave"' /tmp/jetl-463/typos-in.log` prints 1 (without the `"method"` part it
+   also counts the `didSave` of the client capabilities).
+3. Ctrl+Z, Ctrl+S, then Ctrl+N `README`, Enter: the segment reads `typos` (Markdown has no main server), line 1 shows
+   `ℹ`, and the caret on it shows `` `Recieve` should be `Receive` `` at 120 columns.
+4. Back on `main.rs`, stop typos: `pkill -f '[j]etl27-spell/bin/typos-lsp'` (the pattern must match the `sh -c` wrapper
+   too, else `tee` keeps the pipe open and jetl sees no exit). A Warn toast says `Language server typos exited`, the
+   `ℹ` mark on line 1 goes, and the `✖` stays. On `README.md` the segment reads `LSP: typos stopped`.
+5. Ctrl+Q exits 0 with an empty stderr, and no `typos-lsp` process is left.
+6. harper-ls, at 120x40 only: replace the table with `[lsp.servers.harper-ls]`,
+   `command = ["/tmp/jetl27-harper/bin/harper-ls", "--stdio"]`, `languages = ["*"]`, `extra = true` and
+   `settings = { harper-ls = { diagnosticSeverity = "warning" } }`. `main.rs` line 1 shows `⚠` next to the `✖`
+   on line 3, `README.md` shows `⚠` on `Recieve`, and replacing line 1 with `// the spelling` clears its mark within
+   about 3 s (harper sends no `version` and lints off the main loop, so right after fast typing a stale mark can
+   outlive the last edit for a while). Ctrl+Q exits 0 (harper's shutdown takes about 3 s).
+
 ### Scenario: Find status row
 
 At 80x24 and 120x40, with a scratch project holding `n.txt` of three `foo` lines. Alt+3: the row under `Find:`

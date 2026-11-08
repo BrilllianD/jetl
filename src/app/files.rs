@@ -86,17 +86,19 @@ impl App {
         self.lsp.file_ops.push(PendingFileOp { seq, op, is_dir, waiting: servers, edits: VecDeque::new(), writing: false });
     }
 
-    /// Names of the running, non-scratch servers (sorted) that want `method` for the op's path.
+    /// Names of the running, non-scratch servers (sorted) that want `method` for the op's path; extra servers get no `will*Files` request.
     pub(super) fn file_op_servers(&self, method: &'static str, op: &FsOp, is_dir: bool) -> Vec<String> {
         let paths: Vec<&Path> = match op {
             FsOp::Create { path, .. } | FsOp::Delete { path, .. } => vec![path],
             FsOp::Rename { from, to, .. } => vec![from, to],
         };
+        let is_will = matches!(method, WILL_CREATE_FILES | WILL_RENAME_FILES | WILL_DELETE_FILES);
         let mut names: Vec<String> = self
             .lsp
             .clients
             .iter()
             .filter(|(name, _)| !name.ends_with(SCRATCH_SUFFIX))
+            .filter(|(name, _)| !(is_will && self.lsp.is_extra(name)))
             .filter(|(_, c)| {
                 c.capabilities().is_some_and(|fixed| {
                     let caps = Caps { fixed, registry: &c.registry, doc: None };

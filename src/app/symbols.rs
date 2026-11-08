@@ -82,7 +82,8 @@ impl App {
             self.lsp.ws_symbols.entries.clear();
             return self.feed_palette_symbols();
         }
-        let mut names: Vec<String> = self.lsp.clients.keys().filter(|n| !n.ends_with(SCRATCH_SUFFIX)).cloned().collect();
+        let mut names: Vec<String> =
+            self.lsp.clients.keys().filter(|n| !n.ends_with(SCRATCH_SUFFIX) && !self.lsp.is_extra(n)).cloned().collect();
         names.sort();
         for name in names {
             let Some(c) = self.lsp.clients.get_mut(&name) else { continue };

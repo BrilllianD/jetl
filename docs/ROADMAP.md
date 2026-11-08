@@ -197,7 +197,7 @@ Ranked after 0.9.0 against JetBrains, Zed, Helix and VS Code; tracked as yman ep
 | 8 | Preserve case in replace | S | Done: Preserve case toggle (AB, Alt+P) in the editor find bar and Replace in Files; off with regex group references |
 | 9 | Bracket pair colours | S | Done: `()[]{}` tokens from the tree (strings and comments skipped, injections included) coloured by nesting depth in theme styles bracket_1..3, editor.bracket_pair_colours (Live, off by default) |
 | 10 | New file from a template | S | Done: New > From Template… in the Project tree, templates in ~/.config/jetl/templates/ and .jetl/templates/, snippet syntax and variables, tabstops |
-| 11 | Spell checking through a language server | S-M | `[lsp]` |
+| 11 | Spell checking through a language server | S-M | Done: `extra = true` servers next to the main one (sync, diagnostics, file notifications only); CONFIG recipes for typos-lsp and harper-ls |
 | 12 | Instruction stepping and disassembly | M | `ResumeKind`, DAP `disassemble` |
 | 13 | Keyboard macros | M | dispatcher, `Action` |
 | 14 | Shelve and unshelve changes | M | DiffDoc patches, `git apply` |

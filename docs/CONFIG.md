@@ -248,6 +248,7 @@ scratches = false              # language servers for scratch files too (own cli
 # languages = ["rust"]           # language ids, as the status bar shows them
 # init_options = {}              # sent as initializationOptions
 # settings = { rust-analyzer = { check = { command = "clippy" } } }  # answers workspace/configuration
+# extra = false                  # run next to the language's main server: sync and diagnostics only (spell checkers)
 # init_options = { workspace = { symbol = { search = { kind = "all_symbols" } } } }  # rust-analyzer lists only types in Go to Symbol by default
 
 [local_history]
@@ -806,6 +807,46 @@ at its start, so a new Rust scratch restarts that client). The scratches'
 problems show in the editor and the status bar, in the Problems window only
 in its current-file scope (Alt+C). The key applies at once and restarts the
 servers.
+
+Extra servers and spell checking. A server with `extra = true` runs next to
+the language's main server. It gets the documents (open, edits, saves,
+closes), `didCreateFiles`/`didRenameFiles`/`didDeleteFiles` and
+`didChangeWatchedFiles`, and its diagnostics show with the main server's in the
+editor, the Problems window and the status bar counts. It gets no requests, so
+no completion, navigation, rename or quick fixes from it (Alt+Enter asks the
+main server only). `languages = ["*"]`, valid only with `extra = true`, means
+every file that has a language (plain `.txt` has none); a main server with `"*"`
+is ignored with a warning. A language with no main server (Markdown) opens on
+the extra server alone, and the status bar names it. Extras do not open scratch
+files, nor files over `[editor] max_highlight_bytes`. Changes apply after
+Help > Restart Language Servers. Recipes:
+
+typos-lsp (`cargo install --locked typos-lsp`, or a release binary) flags known
+misspellings in identifiers, comments and strings, as Information:
+
+```toml
+[lsp.servers.typos]
+command = ["typos-lsp"]
+languages = ["*"]
+extra = true
+# init_options = { diagnosticSeverity = "Hint" }   # Error, Warning, Information (default) or Hint
+```
+
+harper-ls (`cargo install --locked harper-ls`) checks grammar and spelling in
+comments and Markdown text; it syncs the whole text on each change, so prefer
+it for prose:
+
+```toml
+[lsp.servers.harper-ls]
+command = ["harper-ls", "--stdio"]
+languages = ["*"]               # or e.g. ["markdown", "gitcommit", "rust"]
+extra = true
+settings = { harper-ls = { diagnosticSeverity = "information" } }   # hint (default), information, warning or error
+```
+
+harper-ls without `--stdio` listens on TCP, which jetl cannot reach. Its own
+dictionary commands are code actions, so they are not available (see the
+routing note above).
 
 Rename (Shift+F6) with a server does not write at once: with `[lsp]
 rename_preview = true` (the default) the Find window opens with one result per

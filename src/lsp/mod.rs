@@ -5,7 +5,8 @@
 //! the workspace generation and the server's id; `app/lsp.rs` routes them
 //! and keeps open buffers in sync ([`sync`], positions in [`pos`]).
 //! Dynamic registrations live in [`registry`], combined with the static
-//! capabilities in [`caps`].
+//! capabilities in [`caps`]. A server marked `extra` runs next to the
+//! language's main server and only keeps documents in sync (spell checkers).
 
 pub mod caps;
 pub mod client;
@@ -424,6 +425,8 @@ pub struct ServerOverride {
     pub init_options: Option<Value>,
     /// Answers `workspace/configuration`, looked up by section.
     pub settings: Option<Value>,
+    /// Runs next to the language's main server: document sync, file notifications and diagnostics only; no requests.
+    pub extra: bool,
 }
 
 /// A server as started: the built-in values with the user's changes.
@@ -434,6 +437,27 @@ pub struct ServerConfig {
     pub languages: Vec<String>,
     pub init_options: Option<Value>,
     pub settings: Option<Value>,
+    pub extra: bool,
+}
+
+/// The language entry that stands for every language (only on an `extra` server).
+pub const ANY_LANGUAGE: &str = "*";
+
+impl ServerConfig {
+    /// Whether the server takes buffers of `language`: listed, or [`ANY_LANGUAGE`] on an extra server.
+    pub fn serves(&self, language: &str) -> bool {
+        self.languages.iter().any(|l| l == language || (self.extra && l == ANY_LANGUAGE))
+    }
+}
+
+/// The first non-extra server of `language`.
+pub fn main_server<'a>(servers: &'a [ServerConfig], language: &str) -> Option<&'a ServerConfig> {
+    servers.iter().find(|s| !s.extra && s.serves(language))
+}
+
+/// Every extra server of `language`, in `servers()` order.
+pub fn extra_servers<'a>(servers: &'a [ServerConfig], language: &'a str) -> impl Iterator<Item = &'a ServerConfig> + 'a {
+    servers.iter().filter(move |s| s.extra && s.serves(language))
 }
 
 /// Built-in servers: name, command, languages.
@@ -451,6 +475,15 @@ impl LspConfig {
     /// Every server, user-defined ones first (by name), then the built-in
     /// ones with the user's changes; servers turned off are left out.
     pub fn servers(&self) -> Vec<ServerConfig> {
+        self.all().into_iter().filter(|s| s.extra || !s.languages.iter().any(|l| l == ANY_LANGUAGE)).collect()
+    }
+
+    /// Names of the servers `servers()` leaves out because `languages = ["*"]` needs `extra = true`.
+    pub fn misplaced_wildcards(&self) -> Vec<String> {
+        self.all().into_iter().filter(|s| !s.extra && s.languages.iter().any(|l| l == ANY_LANGUAGE)).map(|s| s.name).collect()
+    }
+
+    fn all(&self) -> Vec<ServerConfig> {
         let builtin = |name: &str| BUILTIN.iter().find(|b| b.0 == name);
         let user = self.servers.iter().filter(|(name, _)| builtin(name).is_none()).map(|(name, o)| (name.as_str(), o, None));
         let known = BUILTIN.iter().map(|b| (b.0, self.servers.get(b.0).unwrap_or(&NO_OVERRIDE), Some(b)));
@@ -464,6 +497,7 @@ impl LspConfig {
                     .unwrap_or_else(|| b.map(|b| b.2.iter().map(|s| s.to_string()).collect()).unwrap_or_default()),
                 init_options: o.init_options.clone(),
                 settings: o.settings.clone(),
+                extra: o.extra,
             })
             .filter(|s| s.command.first().is_some_and(|c| !c.is_empty()))
             .collect()
@@ -471,11 +505,11 @@ impl LspConfig {
 
     /// The server for a jetl language, if any.
     pub fn server_for(&self, language: &str) -> Option<ServerConfig> {
-        self.servers().into_iter().find(|s| s.languages.iter().any(|l| l == language))
+        main_server(&self.servers(), language).cloned()
     }
 }
 
-static NO_OVERRIDE: ServerOverride = ServerOverride { command: None, languages: None, init_options: None, settings: None };
+static NO_OVERRIDE: ServerOverride = ServerOverride { command: None, languages: None, init_options: None, settings: None, extra: false };
 
 #[cfg(test)]
 mod tests {
@@ -508,6 +542,33 @@ mod tests {
         assert!(cfg.server_for("cpp").is_none(), "an empty command turns the server off");
         assert_eq!(cfg.server_for("python").unwrap().name, "pylsp", "user servers come first");
         assert!(Config::parse("[lsp.servers.x]\ncommand = \"x\"\n").is_err(), "a command is a list of words");
+    }
+
+    #[test]
+    fn extra_servers_and_wildcards() {
+        let text = "[lsp.servers.typos]\ncommand = [\"typos-lsp\"]\nlanguages = [\"*\"]\nextra = true\n\
+                    [lsp.servers.spell-md]\ncommand = [\"x\"]\nlanguages = [\"markdown\"]\nextra = true\n\
+                    [lsp.servers.bad]\ncommand = [\"bad\"]\nlanguages = [\"*\"]\n";
+        let cfg = Config::parse(text).unwrap().lsp;
+        assert_eq!(cfg.server_for("rust").unwrap().name, "rust-analyzer", "extras are never the main server");
+        let servers = cfg.servers();
+        assert!(super::main_server(&servers, "markdown").is_none());
+        let names = |l: &'static str| super::extra_servers(&servers, l).map(|s| s.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names("rust"), ["typos"]);
+        assert_eq!(names("markdown"), ["spell-md", "typos"]);
+        assert!(servers.iter().all(|s| s.name != "bad"), "a main server with the wildcard is dropped");
+        assert_eq!(cfg.misplaced_wildcards(), ["bad"]);
+        assert!(Config::default().lsp.servers().iter().all(|s| !s.extra));
+        let plain = super::ServerConfig {
+            name: "p".into(),
+            command: vec!["p".into()],
+            languages: vec!["*".into()],
+            init_options: None,
+            settings: None,
+            extra: false,
+        };
+        assert!(!plain.serves("rust"), "the wildcard needs extra");
+        assert!(super::ServerConfig { extra: true, ..plain }.serves("rust"));
     }
 
     #[test]

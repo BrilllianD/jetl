@@ -3,7 +3,8 @@
 //! sync by [`App::lsp_sync`], which the run loop calls after each batch of
 //! input and messages; `LspMsg` routing (generation and server id checked
 //! first); server requests answered; the status bar segment; restart, root
-//! switch and quit.
+//! switch and quit. Extra servers (`[lsp.servers.<name>] extra`) get the
+//! same documents next to the main server's (`LspService::extra_docs`).
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -54,6 +55,8 @@ pub struct LspService {
     detached: HashMap<String, Vec<PathBuf>>,
     /// Buffers open on a server.
     pub(super) docs: HashMap<BufferId, Doc>,
+    /// Buffers open on extra servers (`[lsp.servers.<name>] extra`), by buffer and client name.
+    pub(super) extra_docs: HashMap<(BufferId, String), Doc>,
     /// `[lsp]` servers, resolved on first use.
     servers: Option<Arc<Vec<ServerConfig>>>,
     /// The last `ServerId` handed out.
@@ -135,6 +138,8 @@ pub(super) struct Doc {
     closed: bool,
     /// The change kind of the last sync; from `NONE` to another the next change sends the whole text.
     kind: TextDocumentSyncKind,
+    /// Edits of a pass could not be sent (no capabilities then): the next change sends the whole text.
+    resync: bool,
 }
 
 /// How `client` wants `doc` synced, once it runs.
@@ -198,6 +203,7 @@ impl LspService {
             tokio::spawn(c.shutdown());
         }
         self.docs.clear();
+        self.extra_docs.clear();
         self.detached.clear();
         self.progress.clear();
         self.diagnostics.clear();
@@ -286,15 +292,28 @@ impl LspService {
         None
     }
 
-    /// Close buffer `id`'s document on its server.
+    /// Close buffer `id`'s documents: on its main server and on the extra ones.
     fn close_doc(&mut self, id: BufferId) {
-        let Some(doc) = self.docs.remove(&id) else { return };
-        if doc.opened
-            && let Some(c) = self.clients.get(&doc.server)
-            && sync_caps(c, doc.doc_ref()).is_some_and(|caps| caps.close)
-        {
-            c.notify("textDocument/didClose", json!({"textDocument": {"uri": doc.uri}}));
+        if let Some(doc) = self.docs.remove(&id) {
+            close_on(&self.clients, &doc);
         }
+        let keys: Vec<_> = self.extra_docs.keys().filter(|(b, _)| *b == id).cloned().collect();
+        for key in keys {
+            if let Some(doc) = self.extra_docs.remove(&key) {
+                close_on(&self.clients, &doc);
+            }
+        }
+    }
+
+    /// Whether client `client` is an extra server's.
+    pub(super) fn is_extra(&self, client: &str) -> bool {
+        let name = crate::lsp::server_name(client);
+        self.servers.as_ref().is_some_and(|s| s.iter().any(|s| s.extra && s.name == name))
+    }
+
+    /// Whether buffer `id` is open on any server.
+    pub(super) fn has_doc(&self, id: BufferId) -> bool {
+        self.docs.contains_key(&id) || self.extra_docs.keys().any(|(b, _)| *b == id)
     }
 
     /// Stop client `key` and forget its documents (the caller also calls
@@ -310,10 +329,15 @@ impl LspService {
     /// Forget the documents and progress of a server that went away.
     fn server_gone(&mut self, name: &str, server: ServerId, buffers: &mut [Buffer]) {
         self.docs.retain(|_, d| d.server != name);
+        self.extra_docs.retain(|(_, n), _| n != name);
         self.progress.retain(|p| p.0 != server);
         self.diagnostics.clear_server(name);
-        for b in buffers.iter_mut().filter(|b| !self.docs.contains_key(&b.id)) {
-            untrack(b);
+        for b in buffers.iter_mut() {
+            if !self.has_doc(b.id) {
+                untrack(b);
+            } else if !self.docs.contains_key(&b.id) {
+                drop_server_state(b);
+            }
         }
     }
 }
@@ -353,8 +377,102 @@ fn untrack(b: &mut Buffer) {
     b.lsp_tracked = false;
     b.lsp_pending.clear();
     b.lsp_full_resync = false;
+    drop_server_state(b);
+}
+
+/// Forget what only the main server put on a buffer.
+fn drop_server_state(b: &mut Buffer) {
     b.inlays.clear();
     b.semantic.clear();
+}
+
+/// `didClose` of `doc` on its client, when it is open there and the client wants it.
+fn close_on(clients: &HashMap<String, Client>, doc: &Doc) {
+    if doc.opened
+        && let Some(c) = clients.get(&doc.server)
+        && sync_caps(c, doc.doc_ref()).is_some_and(|caps| caps.close)
+    {
+        c.notify("textDocument/didClose", json!({"textDocument": {"uri": doc.uri}}));
+    }
+}
+
+/// `didOpen` of `buf` on `client` (as client `key`); `None` while the client has no capabilities.
+fn open_doc(client: &Client, buf: &Buffer, language: &'static str, path: &Path, key: String) -> Option<Doc> {
+    let doc_ref = DocRef { language_id: sync::language_id(language), path };
+    let (Some(caps), Some(uri)) = (sync_caps(client, doc_ref), sync::uri(path)) else { return None };
+    if caps.open {
+        let item = json!({"uri": uri, "languageId": sync::language_id(language), "version": 1, "text": buf.text()});
+        client.notify("textDocument/didOpen", json!({"textDocument": item}));
+    }
+    Some(Doc {
+        server: key,
+        path: path.to_path_buf(),
+        language,
+        uri,
+        version: 1,
+        sent: Default::default(),
+        opened: caps.open,
+        closed: false,
+        kind: caps.change,
+        resync: false,
+    })
+}
+
+/// Bring `doc` up to date with `buf`: `didOpen` when it is due, else `didChange` with the `edits`
+/// recorded since the last pass (the whole text when `full`).
+fn sync_doc(client: &Client, doc: &mut Doc, buf: &Buffer, edits: &[DocEdit], full: bool) {
+    let Some(caps) = sync_caps(client, doc.doc_ref()) else {
+        doc.resync |= full || !edits.is_empty();
+        return;
+    };
+    if caps.open && !doc.opened {
+        doc.version += 1;
+        let item = json!({"uri": doc.uri, "languageId": sync::language_id(doc.language), "version": doc.version, "text": buf.text()});
+        client.notify("textDocument/didOpen", json!({"textDocument": item}));
+        doc.sent.push_back((doc.version, None));
+        if doc.sent.len() > SENT_KEEP {
+            doc.sent.pop_front();
+        }
+        doc.opened = true;
+        doc.closed = false;
+        doc.kind = caps.change;
+        doc.resync = false;
+        return;
+    }
+    if !caps.open && doc.opened {
+        if caps.close {
+            client.notify("textDocument/didClose", json!({"textDocument": {"uri": doc.uri}}));
+        }
+        doc.opened = false;
+        doc.closed = caps.close;
+    }
+    if doc.closed {
+        doc.kind = caps.change;
+        return;
+    }
+    let switched = doc.kind == TextDocumentSyncKind::NONE && caps.change != TextDocumentSyncKind::NONE;
+    let full = full || doc.resync || switched;
+    if edits.is_empty() && !full {
+        doc.kind = caps.change;
+        return;
+    }
+    doc.version += 1;
+    let sent = (!full).then(|| edits.to_vec());
+    doc.sent.push_back((doc.version, sent));
+    if doc.sent.len() > SENT_KEEP {
+        doc.sent.pop_front();
+    }
+    let changes = match caps.change {
+        TextDocumentSyncKind::INCREMENTAL if !full => edits.iter().map(|e| e.change_event()).collect(),
+        TextDocumentSyncKind::NONE => Vec::new(),
+        _ => vec![lsp_types::TextDocumentContentChangeEvent { range: None, range_length: None, text: buf.text() }],
+    };
+    if !changes.is_empty() {
+        let params = json!({"textDocument": {"uri": doc.uri, "version": doc.version}, "contentChanges": changes});
+        client.notify("textDocument/didChange", params);
+    }
+    doc.kind = caps.change;
+    doc.resync = false;
 }
 
 impl App {
@@ -369,12 +487,25 @@ impl App {
         if !self.config.lsp.enabled {
             return;
         }
+        let mut notes = Vec::new();
+        if self.lsp.servers.is_none() {
+            for name in self.config.lsp.misplaced_wildcards() {
+                let text = format!("Language server {name} is ignored: languages = [\"*\"] needs extra = true in [lsp.servers.{name}]");
+                notes.push((Level::Warn, text));
+            }
+        }
         let servers = Arc::clone(self.lsp.servers.get_or_insert_with(|| Arc::new(self.config.lsp.servers())));
-        let gone: Vec<BufferId> = self.lsp.docs.keys().filter(|id| self.editor.index_of_id(**id).is_none()).copied().collect();
+        let gone: HashSet<BufferId> = self
+            .lsp
+            .docs
+            .keys()
+            .chain(self.lsp.extra_docs.keys().map(|(id, _)| id))
+            .filter(|id| self.editor.index_of_id(**id).is_none())
+            .copied()
+            .collect();
         for id in gone {
             self.lsp.close_doc(id);
         }
-        let mut notes = Vec::new();
         let scratches = self.paths.scratches_dir();
         let scratch_on = self.config.lsp.scratches;
         // Open scratch buffers and their languages, for `detachedFiles`.
@@ -389,15 +520,72 @@ impl App {
         for buf in &mut self.editor.buffers {
             let language = buf.language().map(|l| l.name);
             let is_scratch = buf.path.as_ref().is_some_and(|p| p.starts_with(&scratches));
-            let server = language.and_then(|language| servers.iter().find(|s| s.languages.iter().any(|l| l == language)));
+            let server = language.and_then(|language| crate::lsp::main_server(&servers, language));
             let key = server.map(|server| if is_scratch { crate::lsp::scratch_client(&server.name) } else { server.name.clone() });
+            // Extra servers never take scratch files.
+            let extras: Vec<&ServerConfig> = match (language, &buf.path) {
+                (Some(language), Some(_)) if !is_scratch => crate::lsp::extra_servers(&servers, language).collect(),
+                _ => Vec::new(),
+            };
             if lsp.docs.get(&buf.id).is_some_and(|d| {
                 buf.path.as_ref() != Some(&d.path) || language != Some(d.language) || key.as_deref() != Some(d.server.as_str())
-            }) {
-                lsp.close_doc(buf.id);
+            }) && let Some(doc) = lsp.docs.remove(&buf.id)
+            {
+                close_on(&lsp.clients, &doc);
+                drop_server_state(buf);
+            }
+            let stale: Vec<(BufferId, String)> = lsp
+                .extra_docs
+                .iter()
+                .filter(|((id, n), d)| {
+                    *id == buf.id
+                        && (buf.path.as_ref() != Some(&d.path) || language != Some(d.language) || !extras.iter().any(|s| &s.name == n))
+                })
+                .map(|(k, _)| k.clone())
+                .collect();
+            for k in stale {
+                if let Some(doc) = lsp.extra_docs.remove(&k) {
+                    close_on(&lsp.clients, &doc);
+                }
+            }
+            if !lsp.has_doc(buf.id) {
                 untrack(buf);
             }
-            let (Some(language), Some(path), Some(server), Some(key)) = (language, buf.path.as_ref(), server, key) else { continue };
+            let (Some(language), Some(path)) = (language, buf.path.clone()) else { continue };
+            // Taken once for every document of the buffer.
+            let edits = std::mem::take(&mut buf.lsp_pending);
+            let full = std::mem::replace(&mut buf.lsp_full_resync, false);
+            // The store follows the text as the servers now know it: once, since it moves every server's list.
+            if !full && !edits.is_empty() && lsp.has_doc(buf.id) {
+                lsp.diagnostics.shift(&path, &edits);
+            }
+            for s in &extras {
+                if let Some(doc) = lsp.extra_docs.get_mut(&(buf.id, s.name.clone())) {
+                    match lsp.clients.get(&s.name) {
+                        Some(client) => sync_doc(client, doc, buf, &edits, full),
+                        None => doc.resync = true,
+                    }
+                } else if !lsp.clients.contains_key(&s.name) {
+                    if !lsp.missing.contains(&s.name) {
+                        let (root, generation) = (&self.workspace.root, self.workspace.generation);
+                        notes.extend(lsp.start(
+                            s,
+                            &self.config.lsp,
+                            root,
+                            generation,
+                            &self.bus_tx,
+                            s.name.clone(),
+                            s.init_options.clone(),
+                        ));
+                    }
+                } else if buf.rope.len_bytes() <= self.config.editor.max_highlight_bytes
+                    && let Some(doc) = open_doc(&lsp.clients[&s.name], buf, language, &path, s.name.clone())
+                {
+                    lsp.extra_docs.insert((buf.id, s.name.clone()), doc);
+                    buf.lsp_tracked = true;
+                }
+            }
+            let (Some(server), Some(key)) = (server, key) else { continue };
             // Scratch files belong to no project: no server for them unless
             // `[lsp] scratches` is on (one saved into the directory was
             // closed above).
@@ -405,65 +593,10 @@ impl App {
                 continue;
             }
             if let Some(doc) = lsp.docs.get_mut(&buf.id) {
-                let Some(client) = lsp.clients.get(&doc.server) else { continue };
-                let Some(caps) = sync_caps(client, doc.doc_ref()) else { continue };
-                if caps.open && !doc.opened {
-                    doc.version += 1;
-                    let item =
-                        json!({"uri": doc.uri, "languageId": sync::language_id(language), "version": doc.version, "text": buf.text()});
-                    client.notify("textDocument/didOpen", json!({"textDocument": item}));
-                    doc.sent.push_back((doc.version, None));
-                    if doc.sent.len() > SENT_KEEP {
-                        doc.sent.pop_front();
-                    }
-                    doc.opened = true;
-                    doc.closed = false;
-                    doc.kind = caps.change;
-                    buf.lsp_pending.clear();
-                    buf.lsp_full_resync = false;
-                    continue;
+                match lsp.clients.get(&doc.server) {
+                    Some(client) => sync_doc(client, doc, buf, &edits, full),
+                    None => doc.resync = true,
                 }
-                if !caps.open && doc.opened {
-                    if caps.close {
-                        client.notify("textDocument/didClose", json!({"textDocument": {"uri": doc.uri}}));
-                    }
-                    doc.opened = false;
-                    doc.closed = caps.close;
-                }
-                if doc.closed {
-                    buf.lsp_pending.clear();
-                    buf.lsp_full_resync = false;
-                    doc.kind = caps.change;
-                    continue;
-                }
-                let switched = doc.kind == TextDocumentSyncKind::NONE && caps.change != TextDocumentSyncKind::NONE;
-                if buf.lsp_pending.is_empty() && !buf.lsp_full_resync && !switched {
-                    doc.kind = caps.change;
-                    continue;
-                }
-                let full = buf.lsp_full_resync || switched;
-                doc.version += 1;
-                // The store follows the text as the server now knows it.
-                let sent = (!full).then(|| buf.lsp_pending.clone());
-                if let Some(edits) = &sent {
-                    lsp.diagnostics.shift(&doc.path, edits);
-                }
-                doc.sent.push_back((doc.version, sent));
-                if doc.sent.len() > SENT_KEEP {
-                    doc.sent.pop_front();
-                }
-                let changes = match caps.change {
-                    TextDocumentSyncKind::INCREMENTAL if !full => buf.lsp_pending.iter().map(|e| e.change_event()).collect(),
-                    TextDocumentSyncKind::NONE => Vec::new(),
-                    _ => vec![lsp_types::TextDocumentContentChangeEvent { range: None, range_length: None, text: buf.text() }],
-                };
-                if !changes.is_empty() {
-                    let params = json!({"textDocument": {"uri": doc.uri, "version": doc.version}, "contentChanges": changes});
-                    client.notify("textDocument/didChange", params);
-                }
-                doc.kind = caps.change;
-                buf.lsp_pending.clear();
-                buf.lsp_full_resync = false;
                 continue;
             }
             if !lsp.clients.contains_key(&key) {
@@ -483,33 +616,17 @@ impl App {
             }
             // rust-analyzer reads `detachedFiles` once: a scratch it was not
             // started with needs a new start.
-            if is_scratch && server.name == RUST_ANALYZER && lsp.detached.get(&key).is_some_and(|files| !files.contains(path)) {
+            if is_scratch && server.name == RUST_ANALYZER && lsp.detached.get(&key).is_some_and(|files| !files.contains(&path)) {
                 if !restart.contains(&key) {
                     restart.push(key);
                 }
                 continue;
             }
-            let client = &lsp.clients[&key];
-            let doc_ref = DocRef { language_id: sync::language_id(language), path };
-            let (Some(caps), Some(uri)) = (sync_caps(client, doc_ref), sync::uri(path)) else { continue };
-            if caps.open {
-                let item = json!({"uri": uri, "languageId": sync::language_id(language), "version": 1, "text": buf.text()});
-                client.notify("textDocument/didOpen", json!({"textDocument": item}));
+            if let Some(doc) = open_doc(&lsp.clients[&key], buf, language, &path, key) {
+                lsp.docs.insert(buf.id, doc);
+                drop_server_state(buf);
+                buf.lsp_tracked = true;
             }
-            let doc = Doc {
-                server: key,
-                path: path.clone(),
-                language,
-                uri,
-                version: 1,
-                sent: Default::default(),
-                opened: caps.open,
-                closed: false,
-                kind: caps.change,
-            };
-            lsp.docs.insert(buf.id, doc);
-            untrack(buf);
-            buf.lsp_tracked = true;
         }
         for key in restart {
             self.lsp.stop_client(&key, &mut self.editor.buffers);
@@ -525,14 +642,21 @@ impl App {
     pub(super) fn lsp_saved(&mut self, path: &Path) {
         self.lsp_sync();
         // A document closed by a `didOpen` unregistration gets no `didSave` until it is opened again.
-        let Some(doc) = self.lsp.docs.values().find(|d| d.path == path && !d.closed) else { return };
-        let Some(client) = self.lsp.clients.get(&doc.server) else { return };
-        let Some(include_text) = sync_caps(client, doc.doc_ref()).and_then(|c| c.save) else { return };
-        let mut params = json!({"textDocument": {"uri": doc.uri}});
-        if include_text && let Some(b) = self.editor.index_of(path).map(|i| &self.editor.buffers[i]) {
-            params["text"] = b.text().into();
+        let mut saves = Vec::new();
+        for doc in self.lsp.docs.values().chain(self.lsp.extra_docs.values()).filter(|d| d.path == path && !d.closed) {
+            let Some(client) = self.lsp.clients.get(&doc.server) else { continue };
+            if let Some(include_text) = sync_caps(client, doc.doc_ref()).and_then(|c| c.save) {
+                saves.push((client, &doc.uri, include_text));
+            }
         }
-        client.notify("textDocument/didSave", params);
+        let text = saves.iter().any(|s| s.2).then(|| self.editor.index_of(path).map(|i| self.editor.buffers[i].text())).flatten();
+        for (client, uri, include_text) in saves {
+            let mut params = json!({"textDocument": {"uri": uri}});
+            if include_text && let Some(text) = &text {
+                params["text"] = text.as_str().into();
+            }
+            client.notify("textDocument/didSave", params);
+        }
     }
 
     pub(super) fn lsp_request(&mut self, req: LspRequest) {
@@ -667,7 +791,7 @@ impl App {
                 let Some(path) = sync::path(&p.uri) else { return };
                 let mut items: Vec<Diagnostic> = p.diagnostics.into_iter().map(Diagnostic::from_lsp).collect();
                 // Made for an older text: moved through what was sent since.
-                if let Some(doc) = self.lsp.docs.values().find(|d| d.path == path && d.server == name) {
+                if let Some(doc) = self.lsp.docs.values().chain(self.lsp.extra_docs.values()).find(|d| d.path == path && d.server == name) {
                     let v = p.version.unwrap_or(doc.version);
                     match doc.edits_since(v) {
                         Some(edits) => {
@@ -827,7 +951,7 @@ impl App {
         let b = self.editor.active_buffer()?;
         let path = b.path.as_deref()?;
         let counts = self.lsp.diagnostics.counts(path);
-        (self.lsp.docs.contains_key(&b.id) || counts != Counts::default()).then_some(counts)
+        (self.lsp.has_doc(b.id) || counts != Counts::default()).then_some(counts)
     }
 
     /// The most severe diagnostic at the active buffer's caret, for the
@@ -855,7 +979,7 @@ impl App {
             Some(doc) => doc.server.clone(),
             None => {
                 let server = match &self.lsp.servers {
-                    Some(servers) => servers.iter().find(|s| s.languages.iter().any(|l| l == language))?.name.clone(),
+                    Some(servers) => crate::lsp::main_server(servers, language)?.name.clone(),
                     None => self.config.lsp.server_for(language)?.name,
                 };
                 match b.path.as_ref() {
@@ -868,13 +992,30 @@ impl App {
         })
     }
 
+    /// The first extra server of buffer `b`'s language (never for scratch files).
+    fn buffer_extra(&self, b: &Buffer) -> Option<String> {
+        let language = b.language()?.name;
+        if b.path.as_ref().is_some_and(|p| p.starts_with(self.paths.scratches_dir())) {
+            return None;
+        }
+        let owned;
+        let servers: &[ServerConfig] = match &self.lsp.servers {
+            Some(servers) => servers,
+            None => {
+                owned = self.config.lsp.servers();
+                &owned
+            }
+        };
+        crate::lsp::extra_servers(servers, language).next().map(|s| s.name.clone())
+    }
+
     /// The status bar segment for the active buffer: its server's name,
     /// with what it is busy with, or why it is not there.
     pub fn lsp_status(&self) -> Option<LspStatus> {
         let b = self.editor.active_buffer()?;
         b.path.as_ref()?;
         b.language()?;
-        let name = self.buffer_server(b)?;
+        let name = self.buffer_server(b).or_else(|| self.buffer_extra(b))?;
         if !self.config.lsp.enabled {
             return Some(LspStatus::Down("LSP: off".into()));
         }
@@ -935,6 +1076,26 @@ pub(crate) mod tests {
         app.lsp.connector = Connector::Fake(Box::new(move |_| {
             let (conn, server) = fake::connect(caps.clone());
             let _ = tx.send(server);
+            Ok(conn)
+        }));
+        rx
+    }
+
+    /// Like [`with_fake_servers`], with each server arriving as `(client key, server)`; a key in
+    /// `missing` fails to start as if its command were not installed.
+    pub(crate) fn with_named_fake_servers(
+        app: &mut App,
+        caps: Value,
+        missing: &'static [&'static str],
+    ) -> UnboundedReceiver<(String, FakeServer)> {
+        app.config.lsp.enabled = true;
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        app.lsp.connector = Connector::Fake(Box::new(move |key| {
+            if missing.contains(&key) {
+                return Err(std::io::ErrorKind::NotFound.into());
+            }
+            let (conn, server) = fake::connect(caps.clone());
+            let _ = tx.send((key.to_string(), server));
             Ok(conn)
         }));
         rx
@@ -1775,6 +1936,206 @@ pub(crate) mod tests {
         publish_v(&server, &path, Some(7), json!([diag_json(0, 0, 0, 1, 1, "e")]));
         handle_next(&mut app, is_lsp).await;
         assert_eq!(stored(&app, &path), [lsp_range(0, 0, 0, 1)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Make `typos` an extra server for every language.
+    fn typos(app: &mut App) {
+        let o = crate::lsp::ServerOverride {
+            command: Some(vec!["typos-lsp".into()]),
+            languages: Some(vec!["*".into()]),
+            extra: true,
+            ..Default::default()
+        };
+        app.config.lsp.servers.insert("typos".into(), o);
+    }
+
+    /// The servers that `lsp_sync` just started, by client key, once they all run.
+    async fn started(app: &mut App, rx: &mut UnboundedReceiver<(String, FakeServer)>, names: &[&str]) -> HashMap<String, FakeServer> {
+        let servers: HashMap<_, _> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        let mut got: Vec<_> = servers.keys().map(String::as_str).collect();
+        got.sort();
+        assert_eq!(got, names);
+        let ids: Vec<ServerId> = names.iter().map(|n| app.lsp.clients[*n].id).collect();
+        for _ in &ids {
+            handle_next(app, |m| matches!(m, AppMsg::Lsp(LspMsg::Started { server, .. }) if ids.contains(server))).await;
+        }
+        servers
+    }
+
+    fn definition_caps() -> Value {
+        let mut caps = incremental();
+        caps["definitionProvider"] = json!(true);
+        caps
+    }
+
+    #[tokio::test]
+    async fn an_extra_server_syncs_next_to_the_main_one() {
+        let (mut app, dir) = test_app("lsp-extra-sync");
+        let mut rx = with_named_fake_servers(&mut app, definition_caps(), &[]);
+        typos(&mut app);
+        let path = load(&mut app, "a.rs", "fn main() {}\n");
+        app.lsp_sync();
+        let mut servers = started(&mut app, &mut rx, &["rust-analyzer", "typos"]).await;
+        for s in servers.values_mut() {
+            let open = s.recv("textDocument/didOpen").await;
+            let doc = &open["params"]["textDocument"];
+            assert_eq!((doc["version"].as_i64(), doc["text"].as_str()), (Some(1), Some("fn main() {}\n")));
+        }
+        act(&mut app, EditorAction::InsertChar('x'));
+        for s in servers.values_mut() {
+            let change = s.recv("textDocument/didChange").await;
+            assert_eq!(change["params"]["textDocument"]["version"], 2);
+            assert_eq!(change["params"]["contentChanges"], json!([{"range": range(0, 0, 0, 0), "text": "x"}]));
+        }
+        act(&mut app, EditorAction::Save);
+        for s in servers.values_mut() {
+            s.recv("textDocument/didSave").await;
+        }
+        publish_v(&servers["rust-analyzer"], &path, None, json!([diag_json(0, 3, 0, 7, 1, "from rustc")]));
+        publish_v(&servers["typos"], &path, None, json!([diag_json(0, 8, 0, 12, 3, "teh")]));
+        handle_next(&mut app, is_lsp).await;
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(app.lsp.diagnostics.get(&path).len(), 2);
+        assert_eq!(app.problem_counts().map(|c| c.errors), Some(1));
+        assert_eq!(app.lsp.diagnostics.counts(&path).infos, 1);
+        // Requests go to the main server only.
+        app.perform(Action::Lsp(LspAction::GotoDefinition));
+        servers.get_mut("rust-analyzer").unwrap().recv("textDocument/definition").await;
+        let typos_sent = servers.get_mut("typos").unwrap().sent_so_far(&app.lsp.clients["typos"]).await;
+        assert!(typos_sent.iter().all(|m| m["method"] != "textDocument/definition"), "{typos_sent:?}");
+        assert_eq!(app.lsp_status(), Some(LspStatus::Idle("rust-analyzer".into())));
+        app.editor.force_close(app.editor.active().unwrap());
+        app.lsp_sync();
+        for s in servers.values_mut() {
+            s.recv("textDocument/didClose").await;
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_extra_server_alone_serves_a_language_without_a_main_server() {
+        let (mut app, dir) = test_app("lsp-extra-alone");
+        let mut rx = with_named_fake_servers(&mut app, incremental(), &[]);
+        typos(&mut app);
+        let off = crate::lsp::ServerOverride { command: Some(vec![]), ..Default::default() };
+        app.config.lsp.servers.insert("rust-analyzer".into(), off);
+        load(&mut app, "a.rs", "fn main() {}\n");
+        app.lsp_sync();
+        let mut servers = started(&mut app, &mut rx, &["typos"]).await;
+        let server = servers.get_mut("typos").unwrap();
+        server.recv("textDocument/didOpen").await;
+        let id = app.editor.active_buffer().unwrap().id;
+        assert!(!app.lsp.docs.contains_key(&id) && app.lsp.has_doc(id));
+        assert_eq!(app.lsp_status(), Some(LspStatus::Idle("typos".into())));
+        for (version, col, c) in [(2, 0, 'x'), (3, 1, 'y')] {
+            act(&mut app, EditorAction::InsertChar(c));
+            let change = server.recv("textDocument/didChange").await;
+            assert_eq!(change["params"]["textDocument"]["version"], version);
+            assert_eq!(change["params"]["contentChanges"], json!([{"range": range(0, col, 0, col), "text": c.to_string()}]));
+        }
+        assert_eq!(app.problem_counts(), Some(Counts::default()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn edits_reach_the_extra_server_while_the_main_one_is_missing() {
+        let (mut app, dir) = test_app("lsp-extra-main-missing");
+        let mut rx = with_named_fake_servers(&mut app, incremental(), &["rust-analyzer"]);
+        typos(&mut app);
+        load(&mut app, "a.rs", "fn main() {}\n");
+        app.lsp_sync();
+        let mut servers = started(&mut app, &mut rx, &["typos"]).await;
+        let server = servers.get_mut("typos").unwrap();
+        server.recv("textDocument/didOpen").await;
+        let missing =
+            app.notifications.iter().filter(|n| n.text.starts_with("Language server rust-analyzer not found")).collect::<Vec<_>>();
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].level, Level::Info);
+        for (version, col, c) in [(2, 0, 'x'), (3, 1, 'y')] {
+            act(&mut app, EditorAction::InsertChar(c));
+            let change = server.recv("textDocument/didChange").await;
+            assert_eq!(change["params"]["textDocument"]["version"], version);
+            assert_eq!(change["params"]["contentChanges"], json!([{"range": range(0, col, 0, col), "text": c.to_string()}]));
+        }
+        assert_eq!(app.lsp_status(), Some(LspStatus::Down("LSP: rust-analyzer missing".into())));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_extra_server_going_away_keeps_the_main_one() {
+        let (mut app, dir) = test_app("lsp-extra-gone");
+        let mut rx = with_named_fake_servers(&mut app, incremental(), &[]);
+        typos(&mut app);
+        let path = load(&mut app, "a.rs", "fn main() {}\n");
+        app.lsp_sync();
+        let mut servers = started(&mut app, &mut rx, &["rust-analyzer", "typos"]).await;
+        for s in servers.values_mut() {
+            s.recv("textDocument/didOpen").await;
+        }
+        publish_v(&servers["rust-analyzer"], &path, None, json!([diag_json(0, 3, 0, 7, 1, "from rustc")]));
+        publish_v(&servers["typos"], &path, None, json!([diag_json(0, 8, 0, 12, 3, "teh")]));
+        handle_next(&mut app, is_lsp).await;
+        handle_next(&mut app, is_lsp).await;
+        assert_eq!(app.lsp.diagnostics.get(&path).len(), 2);
+        let id = app.lsp.clients["typos"].id;
+        app.lsp_server_down("typos", id, "gone".into());
+        assert!(app.lsp.diagnostics.of_server(&path, "typos").is_empty());
+        assert_eq!(app.lsp.diagnostics.get(&path).len(), 1);
+        let buf = app.editor.active_buffer().unwrap();
+        assert!(app.lsp.docs.contains_key(&buf.id) && buf.lsp_tracked);
+        act(&mut app, EditorAction::InsertChar('x'));
+        let change = servers.get_mut("rust-analyzer").unwrap().recv("textDocument/didChange").await;
+        assert_eq!(change["params"]["contentChanges"], json!([{"range": range(0, 0, 0, 0), "text": "x"}]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_main_server_with_the_wildcard_is_ignored_with_a_warning() {
+        let (mut app, dir) = test_app("lsp-wildcard");
+        let mut rx = with_named_fake_servers(&mut app, incremental(), &[]);
+        let o = crate::lsp::ServerOverride { command: Some(vec!["spell".into()]), languages: Some(vec!["*".into()]), ..Default::default() };
+        app.config.lsp.servers.insert("spell".into(), o);
+        load(&mut app, "a.rs", "fn main() {}\n");
+        app.lsp_sync();
+        app.lsp_sync();
+        let text = "Language server spell is ignored: languages = [\"*\"] needs extra = true in [lsp.servers.spell]";
+        let warns = |app: &App| app.notifications.iter().filter(|n| n.level == Level::Warn && n.text == text).count();
+        assert_eq!(warns(&app), 1);
+        assert!(!app.lsp.clients.contains_key("spell"));
+        assert!(rx.try_recv().is_ok_and(|(k, _)| k == "rust-analyzer"));
+        app.lsp_restart();
+        assert_eq!(warns(&app), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn will_file_ops_and_workspace_symbols_skip_extra_servers() {
+        use crate::lsp::caps::{DID_RENAME_FILES, WILL_RENAME_FILES};
+        let (mut app, dir) = test_app("lsp-extra-fileops");
+        let filters = json!([{"scheme": "file", "pattern": {"glob": "**/*.rs", "matches": "file"}}]);
+        let mut caps = incremental();
+        caps["workspace"] = json!({"fileOperations": {"willRename": {"filters": filters}, "didRename": {"filters": filters}}});
+        caps["workspaceSymbolProvider"] = json!(true);
+        let mut rx = with_named_fake_servers(&mut app, caps, &[]);
+        typos(&mut app);
+        load(&mut app, "a.rs", "fn main() {}\n");
+        app.lsp_sync();
+        let mut servers = started(&mut app, &mut rx, &["rust-analyzer", "typos"]).await;
+        for s in servers.values_mut() {
+            s.recv("textDocument/didOpen").await;
+        }
+        let root = app.workspace.root.clone();
+        let op = crate::files::ops::FsOp::Rename { from: root.join("m.rs"), to: root.join("n.rs"), overwrite: false };
+        assert_eq!(app.file_op_servers(WILL_RENAME_FILES, &op, false), ["rust-analyzer"]);
+        assert_eq!(app.file_op_servers(DID_RENAME_FILES, &op, false), ["rust-analyzer", "typos"]);
+        app.open_palette(crate::actions::PaletteKind::Symbols);
+        for c in "hel".chars() {
+            key(&mut app, crossterm::event::KeyCode::Char(c), crossterm::event::KeyModifiers::NONE);
+        }
+        servers.get_mut("rust-analyzer").unwrap().recv("workspace/symbol").await;
+        let typos_sent = servers.get_mut("typos").unwrap().sent_so_far(&app.lsp.clients["typos"]).await;
+        assert!(typos_sent.iter().all(|m| m["method"] != "workspace/symbol"), "{typos_sent:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
