@@ -2,7 +2,8 @@
 //! `ViewState`, so split panes fold independently) and the regions that can
 //! fold (`fold_candidates`, from the syntax tree and the trees of embedded
 //! languages, in patch tabs from the diff's sections, or else from the
-//! indentation).
+//! indentation; `fold_candidates` also takes custom regions from marker
+//! comments such as `// region` and `// endregion`).
 //!
 //! A fold is two char anchors mapped through every edit like carets. Its
 //! header line (the one holding `start`) stays visible; the lines after it
@@ -407,6 +408,74 @@ fn per_header(folds: Vec<Fold>, rope: &Rope, lines: &Range<usize>) -> Vec<Fold> 
     out
 }
 
+/// The pairs of custom region markers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Family {
+    Region,
+    EditorFold,
+}
+
+/// A custom region marker on a line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Marker {
+    Start(Family),
+    End(Family),
+}
+
+/// The marker `text` (a line without its leading blanks) holds, if any.
+/// `comment` is the language's line comment token: a marker is a comment
+/// (`// region Setup`), except `#region` / `#endregion`, which also stand
+/// bare.
+fn region_marker(text: &str, comment: Option<&str>) -> Option<Marker> {
+    let (r, commented) = match comment.and_then(|c| text.strip_prefix(c)) {
+        Some(rest) => (rest.trim_start_matches([' ', '\t']), true),
+        None => (text, false),
+    };
+    let word = |w: &str| r.strip_prefix(w).is_some_and(|rest| rest.chars().next().is_none_or(char::is_whitespace));
+    if word("#region") || (commented && word("region")) {
+        return Some(Marker::Start(Family::Region));
+    }
+    if word("#endregion") || (commented && word("endregion")) {
+        return Some(Marker::End(Family::Region));
+    }
+    if commented {
+        if r.strip_prefix("<editor-fold").is_some_and(|rest| rest.chars().next().is_none_or(|c| c.is_whitespace() || c == '>')) {
+            return Some(Marker::Start(Family::EditorFold));
+        }
+        if r.starts_with("</editor-fold") {
+            return Some(Marker::End(Family::EditorFold));
+        }
+    }
+    None
+}
+
+/// The custom regions of `rope`: each start marker line paired with the
+/// end marker of its family that closes it (nesting by a stack per family),
+/// as a fold from the start marker's first non-blank char to the end of the
+/// end marker's line. Unmatched markers make none.
+pub(super) fn region_folds(rope: &Rope, comment: Option<&str>) -> Vec<Fold> {
+    let mut stacks: [Vec<usize>; 2] = [Vec::new(), Vec::new()];
+    let mut out = Vec::new();
+    for line in 0..rope.len_lines() {
+        let text = rope.line(line);
+        let blanks = text.chars().take_while(|c| *c == ' ' || *c == '\t').count();
+        let head: String = text.chars().skip(blanks).take(80).collect();
+        let Some(marker) = region_marker(&head, comment) else { continue };
+        let slot = |f: Family| f as usize;
+        match marker {
+            Marker::Start(f) => stacks[slot(f)].push(rope.line_to_char(line) + blanks),
+            Marker::End(f) => {
+                let Some(start) = stacks[slot(f)].pop() else { continue };
+                let fold = Fold { start, end: rope.line_to_char(line) + line_len_no_eol(rope, line) };
+                if fold.lines(rope).is_some() {
+                    out.push(fold);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The syntax, parsed up to date, to read the trees of (host first, then
 /// injections); `None` without a syntax or a host tree.
 fn fold_syntax<'a>(syntax: &'a mut Option<Syntax>, rope: &Rope) -> Option<&'a Syntax> {
@@ -417,6 +486,20 @@ fn fold_syntax<'a>(syntax: &'a mut Option<Syntax>, rope: &Rope) -> Option<&'a Sy
 }
 
 impl Buffer {
+    /// The custom regions of the text, cached per version and line comment.
+    fn regions(&mut self) -> Vec<Fold> {
+        let comment = self.language().and_then(|d| d.line_comment);
+        if let Some((v, c, folds)) = &self.region_cache
+            && *v == self.version
+            && *c == comment
+        {
+            return folds.clone();
+        }
+        let folds = region_folds(&self.rope, comment);
+        self.region_cache = Some((self.version, comment, folds.clone()));
+        folds
+    }
+
     /// The regions that can fold with their header on `lines`, one per
     /// header line (the largest), sorted. From the syntax tree when there
     /// is one, else from the indentation. Cached per version and lines.
@@ -439,13 +522,14 @@ impl Buffer {
         if let Some(p) = &self.patch {
             return per_header(p.folds(&self.rope), &self.rope, lines);
         }
+        let regions = self.regions();
         match fold_syntax(&mut self.syntax, &self.rope) {
             Some(syn) => {
                 let visit = |first: usize, last: usize| last >= lines.start && first <= lines.end;
-                let all = syn.trees().flat_map(|t| tree_folds(t, &self.rope, visit)).collect();
+                let all = syn.trees().flat_map(|t| tree_folds(t, &self.rope, visit)).chain(regions).collect();
                 per_header(all, &self.rope, lines)
             }
-            None => lines.clone().filter_map(|l| indent_fold(&self.rope, l)).collect(),
+            None => per_header(lines.clone().filter_map(|l| indent_fold(&self.rope, l)).chain(regions).collect(), &self.rope, lines),
         }
     }
 
@@ -511,6 +595,7 @@ impl Buffer {
     /// The regions that can fold holding `line` (as header or hidden
     /// line), innermost first.
     pub fn fold_chain(&mut self, line: usize) -> Vec<Fold> {
+        let regions = if self.patch.is_some() { Vec::new() } else { self.regions() };
         let patch = self.patch.as_ref().map(|p| p.folds(&self.rope));
         let syn = if patch.is_some() { None } else { fold_syntax(&mut self.syntax, &self.rope) };
         let rope = &self.rope;
@@ -537,6 +622,7 @@ impl Buffer {
                 out
             }
         };
+        folds.extend(regions);
         let mut keyed: Vec<((usize, usize), Fold)> =
             folds.drain(..).filter_map(|f| f.lines(rope).filter(|(h, l)| *h <= line && line <= *l).map(|l| (l, f))).collect();
         keyed.sort_by_key(|((h, l), f)| (l - h, *h, f.end - f.start));
@@ -744,6 +830,123 @@ pub(crate) mod tests {
     fn injected_code_folds() {
         let mut b = buf("a.md", "# T\n\n```rust\nfn a() {\n    x();\n}\n```\n");
         assert!(cands(&mut b).iter().any(|(header, _)| *header == 3), "fold of `fn a() {{` from the inner tree");
+    }
+
+    #[test]
+    fn region_markers() {
+        use Family::{EditorFold, Region};
+        use Marker::{End, Start};
+        let slash = Some("//");
+        let table: &[(&str, Option<&str>, Option<Marker>)] = &[
+            ("// region Setup", slash, Some(Start(Region))),
+            ("//region", slash, Some(Start(Region))),
+            ("// #region x", slash, Some(Start(Region))),
+            ("#region x", slash, Some(Start(Region))),
+            ("// endregion", slash, Some(End(Region))),
+            ("// #endregion", slash, Some(End(Region))),
+            ("// <editor-fold desc=\"x\">", slash, Some(Start(EditorFold))),
+            ("//<editor-fold>", slash, Some(Start(EditorFold))),
+            ("// </editor-fold>", slash, Some(End(EditorFold))),
+            ("# region", Some("#"), Some(Start(Region))),
+            ("#region", Some("#"), Some(Start(Region))),
+            ("#endregion", Some("#"), Some(End(Region))),
+            ("#region", None, Some(Start(Region))),
+            ("// regional", slash, None),
+            ("/// region", slash, None),
+            ("region x", slash, None),
+            ("region x", None, None),
+            ("<editor-fold>", slash, None),
+            ("// Region", slash, None),
+            ("// region", None, None),
+        ];
+        for (text, comment, want) in table {
+            assert_eq!(region_marker(text, *comment), *want, "{text:?} with {comment:?}");
+        }
+    }
+
+    #[test]
+    fn regions_nest_and_pair_by_family() {
+        let text = "\
+// endregion
+// region A
+x
+    // region B
+y
+// endregion
+// <editor-fold desc=\"f\">
+z
+// </editor-fold>
+w
+// endregion
+// region C
+// region D
+// <editor-fold>
+// endregion
+// </editor-fold>
+";
+        let rope = Rope::from_str(text);
+        let got: Vec<_> = region_folds(&rope, Some("//")).iter().map(|f| f.lines(&rope).unwrap()).collect();
+        assert_eq!(got, vec![(3, 5), (6, 8), (1, 10), (12, 14), (13, 15)]);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn rust_region_candidates() {
+        let text = "\
+use std::fmt;
+// region Setup
+fn a() {
+    x();
+}
+fn b() {
+    y();
+}
+// endregion
+";
+        let mut b = buf("r.rs", text);
+        let c = cands(&mut b);
+        assert!(c.contains(&(1, 8)), "{c:?}");
+        assert!(c.contains(&(2, 4)), "{c:?}");
+        b.view.sels = Selections::single(Selection::point(b.rope.line_to_char(1)));
+        b.fold_collapse(false);
+        let folds: Vec<_> = b.view.folds.iter().collect();
+        assert_eq!(folds.len(), 1);
+        assert_eq!(folds[0].1, (1, 8));
+        assert_eq!(crate::editor::view::placeholder(&b.rope, folds[0].0, 8), "…");
+        b.view.folds = Folds::default();
+        b.fold_collapse_all();
+        assert!(b.view.folds.iter().any(|f| f.1 == (1, 8)));
+    }
+
+    #[cfg(feature = "lang-python")]
+    #[test]
+    fn python_hash_regions() {
+        let mut b = buf("r.py", "#region x\na = 1\n#endregion\n# region y\nb = 2\n# endregion\n");
+        let c = cands(&mut b);
+        assert!(c.contains(&(0, 2)), "{c:?}");
+        assert!(c.contains(&(3, 5)), "{c:?}");
+    }
+
+    #[test]
+    fn plain_text_takes_only_bare_hash_regions() {
+        let mut b = buf("a.txt", "#region\nx\n#endregion\n// region\ny\n// endregion\n");
+        assert_eq!(cands(&mut b), vec![(0, 2)]);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn region_cache_follows_edits() {
+        let mut b = buf("r.rs", "// region\nlet a = 1;\n// endregion\n");
+        assert_eq!(cands(&mut b), vec![(0, 2)]);
+        // Language change without an edit: plain text has no `//` comment.
+        b.set_language(None, None);
+        assert_eq!(cands(&mut b), Vec::<(usize, usize)>::new());
+        let rust = crate::editor::syntax::language_for_name("rust").unwrap();
+        b.set_language(Some(rust), None);
+        assert_eq!(cands(&mut b), vec![(0, 2)]);
+        let end = b.rope.line_to_char(2);
+        b.apply(vec![crate::editor::undo::Change::delete(end, "// endregion\n")], Selection::point(0), crate::editor::TxKind::Other);
+        assert_eq!(cands(&mut b), Vec::<(usize, usize)>::new());
     }
 
     #[cfg(feature = "lang-rust")]

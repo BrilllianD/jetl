@@ -193,7 +193,7 @@ Ranked after 0.9.0 against JetBrains, Zed, Helix and VS Code; tracked as yman ep
 | 4 | LSP document highlight (read/write kinds) | S | `highlight_occurrences` |
 | 5 | Inline values while debugging | M | inlay hint virtual text, Variables |
 | 6 | Hot exit: unsaved buffers kept across quit | M | `recovery.rs`, session, Local History |
-| 7 | Custom folding regions, fold selection | S-M | `editor/fold.rs` |
+| 7 | Custom folding regions, fold selection | S-M | Done: custom regions from comment markers (`region`/`endregion`, `#region`/`#endregion`, `<editor-fold>`); fold selection was already Ctrl+. / Alt+Shift+F |
 | 8 | Preserve case in replace | S | editor search, Replace in Files |
 | 9 | Bracket pair colours | S | tree-sitter brackets, theme keys |
 | 10 | New file from a template | S | snippet engine |

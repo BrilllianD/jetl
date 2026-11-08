@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Custom folding regions: comment lines `// region Name` … `// endregion` (also `#region` / `#endregion` and `// <editor-fold desc="…">` … `// </editor-fold>`, with the language's line comment) fold like code, nest, and show their start line when collapsed.
 - Navigate > Next Method and Previous Method (Alt+Down, Alt+Up in the editor) move the caret to the name of the next or previous function, method or constructor, nested ones included, from the language's symbols (as the breadcrumbs); Back returns from a long jump. The Git and Local History windows keep their Alt+Up/Down.
 
 ### Fixed

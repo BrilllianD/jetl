@@ -579,6 +579,19 @@ Ctrl+= need the kitty protocol (tmux sends Ctrl+- as Ctrl+7, which toggles
 a line comment); in foot or kitty check them and Ctrl+Shift+- (collapse
 all) too.
 
+Custom regions: create `/tmp/jetl-regions/r.rs` with a nested
+`// region Setup` / `// region Inner` ... `// endregion` pair around two
+functions and a `// <editor-fold desc="x">` / `// </editor-fold>` pair, and open
+it at 80x24 and 120x40:
+
+```sh
+/tmp/tm.sh send-keys -t jetl M-,                 # on the outer region's first line: `// region Setup…`, ▸ in the marker column, line numbers jump past the end marker
+/tmp/tm.sh send-keys -t jetl M-.                 # opens it
+/tmp/tm.sh send-keys -t jetl 'M-<'               # collapse all: the regions fold with the functions
+press 0 $G 2; release 0 $G 2                     # clicking the ▸ marker toggles a region
+/tmp/tm.sh send-keys -t jetl 'M->'               # expand all
+```
+
 ### Scenario: soft wrap
 
 At 80x24 and at 120x40, on a Markdown file with paragraphs longer than the

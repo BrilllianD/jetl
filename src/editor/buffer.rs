@@ -262,6 +262,8 @@ pub struct Buffer {
     pub lightbulb: Option<(u64, usize)>,
     /// The last `fold_candidates` answer: version, lines and the folds.
     pub fold_cache: Option<(u64, std::ops::Range<usize>, Vec<super::fold::Fold>)>,
+    /// The custom fold regions (`fold::region_folds`) for a version and line comment token.
+    pub region_cache: Option<(u64, Option<&'static str>, Vec<super::fold::Fold>)>,
     /// No edit changes the text (the conflict resolver's yours and theirs
     /// panes): `apply` only moves the carets, undo and redo do nothing.
     pub read_only: bool,
@@ -335,6 +337,7 @@ impl Buffer {
             diag_marks: Default::default(),
             lightbulb: None,
             fold_cache: None,
+            region_cache: None,
             read_only: false,
             recovered: false,
             base_path: None,
