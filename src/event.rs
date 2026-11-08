@@ -278,6 +278,13 @@ pub enum AppMsg {
         session: crate::dap::session::SessionId,
         lines: Vec<crate::run::matcher::RunLine>,
     },
+    /// `VmRSS` of the debug adapter's process, in kB, read off the main thread (`App::debug_adapter_memory`); `None`
+    /// when `/proc` could not be read. Stale when `generation` or `session` is not the live session's.
+    DebugAdapterMemory {
+        generation: u64,
+        session: crate::dap::session::SessionId,
+        kb: Option<u64>,
+    },
     /// Definitions or usages with their line previews, the ones in files
     /// that are not open read from disk; shown in the Locations palette
     /// unless a newer definition or usages request (`seq`) was made.

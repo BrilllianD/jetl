@@ -793,6 +793,7 @@ impl App {
         self.debug_sync_breakpoints();
         self.debug_sync_vars();
         self.debug_offer_artifacts();
+        self.debug_adapter_memory(Instant::now());
     }
 
     fn autosave(&mut self) {

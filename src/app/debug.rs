@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use tokio::task::JoinHandle;
@@ -90,6 +90,51 @@ pub(super) struct Live {
     pub(super) run_to: Option<RunTo>,
     /// Open from the answer that placed a fresh temporary breakpoint to the next stop.
     pub(super) run_to_quiet: Option<RunToQuiet>,
+    /// The adapter's memory, watched once a second.
+    pub(super) mem: MemWatch,
+}
+
+/// The adapter's `VmRSS` at which one Warn is raised: gdb passes it under a program that floods its output.
+pub(super) const MEM_WARN_BYTES: u64 = 1 << 30;
+/// How often the adapter's memory is read.
+pub(super) const MEM_EVERY: Duration = Duration::from_secs(1);
+
+/// The adapter's memory, watched once a second; per session, since `Live` is.
+#[derive(Default)]
+pub(super) struct MemWatch {
+    next: Option<Instant>,
+    asking: bool,
+    warned: bool,
+}
+
+impl MemWatch {
+    /// Whether to read now: not while a read is in flight, and not before `next`. Marks the read as asked and sets
+    /// `next = now + MEM_EVERY`.
+    fn ask(&mut self, now: Instant) -> bool {
+        if self.asking || self.next.is_some_and(|t| now < t) {
+            return false;
+        }
+        self.asking = true;
+        self.next = Some(now + MEM_EVERY);
+        true
+    }
+
+    /// A reading came back: clears `asking`. `Some(bytes)` only for the first one at or above `MEM_WARN_BYTES`.
+    fn answered(&mut self, kb: Option<u64>) -> Option<u64> {
+        self.asking = false;
+        let bytes = kb?.saturating_mul(1024);
+        if self.warned || bytes < MEM_WARN_BYTES {
+            return None;
+        }
+        self.warned = true;
+        Some(bytes)
+    }
+}
+
+/// `VmRSS` in kB from the text of `/proc/<pid>/status`; `None` when the line is missing or malformed.
+fn vm_rss_kb(status: &str) -> Option<u64> {
+    let rest = status.lines().find_map(|l| l.strip_prefix("VmRSS:"))?;
+    rest.split_whitespace().next()?.parse().ok()
 }
 
 /// Run to Cursor's temporary `setBreakpoints` entry: never a mark, never in `Live::sent`.
@@ -880,6 +925,7 @@ impl App {
             trusted_paging,
             run_to: None,
             run_to_quiet: None,
+            mem: MemWatch::default(),
         });
         self.notify(Level::Info, format!("Debugging {} with {}", p.name, p.adapter.name));
         if let Some(c) = lost_cwd {
@@ -1149,6 +1195,40 @@ impl App {
             return;
         }
         self.debug_panel.push(lines);
+    }
+
+    /// From `on_tick`: starts a read of the adapter's `VmRSS` when the live session's `MemWatch` asks and the adapter has
+    /// a pid. The read runs off the main thread and comes back as `AppMsg::DebugAdapterMemory`.
+    pub(super) fn debug_adapter_memory(&mut self, now: Instant) {
+        let (generation, tx) = (self.workspace.generation, self.bus_tx.clone());
+        let Some(live) = self.debug.session.as_mut() else { return };
+        let Some(pid) = live.client.pid() else { return };
+        if !live.mem.ask(now) {
+            return;
+        }
+        let session = live.id;
+        drop(tokio::task::spawn_blocking(move || {
+            let kb = std::fs::read_to_string(format!("/proc/{pid}/status")).ok().as_deref().and_then(vm_rss_kb);
+            let _ = tx.send(AppMsg::DebugAdapterMemory { generation, session, kb });
+        }));
+    }
+
+    /// The read's answer: dropped unless `generation` and `session` are the live ones; at most one Warn per session.
+    pub(super) fn debug_adapter_memory_read(&mut self, generation: u64, session: SessionId, kb: Option<u64>) {
+        let stale = generation != self.workspace.generation;
+        let Some(live) = self.debug.session.as_mut().filter(|l| l.id == session && !stale) else {
+            tracing::debug!("dropping the memory reading of an old debug session");
+            return;
+        };
+        if let Some(bytes) = live.mem.answered(kb) {
+            self.notify(
+                Level::Warn,
+                format!(
+                    "Debug adapter memory is at {:.1} GiB and grows while the program prints this fast. Stopping the session frees it.",
+                    bytes as f64 / (1u64 << 30) as f64
+                ),
+            );
+        }
     }
 
     /// Whether the Debug window is on screen. Another maximized window covers it and the editor.
@@ -1875,8 +1955,6 @@ impl App {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::time::Instant;
-
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use serde_json::json;
     use tokio::sync::mpsc::UnboundedReceiver;
@@ -8439,5 +8517,67 @@ pub(crate) mod tests {
         placed(&mut app).await;
         assert_eq!(rows(&app), [row("a.log:2", "", "verified")], "after it");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vm_rss_kb_reads_the_status_line() {
+        let status = "Name:\tgdb\nVmHWM:\t  2000 kB\nVmRSS:\t 1048576 kB\nThreads:\t3\n";
+        assert_eq!(vm_rss_kb(status), Some(1_048_576));
+        assert_eq!(vm_rss_kb("Name:\tgdb\nVmHWM:\t  2000 kB\n"), None);
+        assert_eq!(vm_rss_kb("VmRSS:\t abc kB\n"), None);
+    }
+
+    #[test]
+    fn mem_watch_asks_once_a_second() {
+        let t0 = Instant::now();
+        let mut w = MemWatch::default();
+        assert!(w.ask(t0));
+        assert!(!w.ask(t0 + Duration::from_millis(10)), "a read is in flight");
+        assert!(!w.ask(t0 + Duration::from_millis(5000)), "a slow read is still in flight");
+        w.answered(Some(1));
+        assert!(!w.ask(t0 + Duration::from_millis(999)));
+        assert!(w.ask(t0 + Duration::from_millis(1000)));
+    }
+
+    #[test]
+    fn mem_watch_warns_at_one_gib_once() {
+        let mut w = MemWatch::default();
+        assert_eq!(w.answered(Some(1_048_575)), None);
+        assert_eq!(w.answered(Some(1_048_576)), Some(1 << 30));
+        assert_eq!(w.answered(Some(4_000_000)), None);
+        let t0 = Instant::now();
+        assert!(w.ask(t0));
+        assert_eq!(w.answered(None), None);
+        assert!(w.ask(t0 + Duration::from_millis(1000)), "a failed read clears `asking`");
+    }
+
+    #[tokio::test]
+    async fn memory_warns_once_per_session() {
+        let (mut app, dir, _fakes, _fake) = live("debug-mem", Order::LaunchDeferred).await;
+        let (generation, session) = (app.workspace.generation, app.debug.session.as_ref().unwrap().id);
+        let before = app.notifications.len();
+        app.debug_adapter_memory_read(generation, SessionId(session.0 + 1), Some(2_000_000));
+        assert_eq!(app.notifications.len(), before, "another session's reading raised a toast");
+        app.debug_adapter_memory_read(generation + 1, session, Some(2_000_000));
+        assert_eq!(app.notifications.len(), before, "an old generation's reading raised a toast");
+        app.debug_adapter_memory_read(generation, session, Some(1_100_000));
+        assert_eq!(app.notifications.len(), before + 1, "the live session's reading did not warn");
+        let (level, text) = last(&app);
+        assert_eq!(level, Level::Warn);
+        assert!(text.starts_with("Debug adapter memory is at 1.0 GiB"), "{text}");
+        app.debug_adapter_memory_read(generation, session, Some(1_100_000));
+        app.debug_adapter_memory_read(generation, session, Some(4_000_000));
+        assert_eq!(app.notifications.len(), before + 1, "a second warning in the same session");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Fake adapter only: it has no pid, so no read is asked for and `MemWatch` stays idle.
+    #[tokio::test]
+    async fn memory_watch_ignores_an_adapter_without_a_pid() {
+        let (mut app, dir, _fakes, _fake) = live("debug-mem-pid", Order::LaunchDeferred).await;
+        assert_eq!(app.debug.session.as_ref().unwrap().client.pid(), None);
+        app.debug_adapter_memory(Instant::now());
+        assert!(!app.debug.session.as_ref().unwrap().mem.asking, "a read was asked for");
+        std::fs::remove_dir_all(dir).ok();
     }
 }

@@ -110,6 +110,7 @@ impl App {
             AppMsg::Lsp(m) => self.lsp_msg(m),
             AppMsg::Dap(m) => self.dap_msg(m),
             AppMsg::DebugOutput { generation, session, lines } => self.debug_output(generation, session, lines),
+            AppMsg::DebugAdapterMemory { generation, session, kb } => self.debug_adapter_memory_read(generation, session, kb),
             AppMsg::DebugReady { generation, seq, result } => self.debug_ready(generation, seq, *result),
             AppMsg::DebugBuilt { generation, seq, end, artifacts } => self.debug_built(generation, seq, end, artifacts),
             AppMsg::Locations { generation, seq, title, items } => self.locations_loaded(generation, seq, title, items),

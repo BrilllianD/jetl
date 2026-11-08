@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A warning when the debug adapter's own memory passes 1 GiB, as gdb's does while a program floods its output; jetl keeps reading, and stopping the session frees it.
+
 ### Fixed
 
 - The screen no longer redraws for every message from a debug adapter or another background task: those redraws come at most 60 times a second, while keys and mouse still draw at once.
