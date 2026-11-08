@@ -879,6 +879,21 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_file_written_in_the_dumps_second_counts_as_changed() {
+        let (mut app, dir) = test_app("hot-exit-same-second");
+        let path = app.workspace.root.join("a.txt");
+        std::fs::write(&path, "pulled\n").unwrap();
+        let secs = crate::editor::buffer::file_mtime(&path).unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        // Mtimes compare in whole seconds: a pull in the dump's own second is not older than the dump.
+        seed_hot(&app, secs, "mine\n");
+        app.handle_msg(session_with(&app, &["a.txt"]));
+        assert_eq!(warns(&app).len(), 1, "{:?}", warns(&app));
+        app.perform(Action::Editor(EditorAction::Save));
+        assert_eq!(app.dialog.as_ref().map(|d| matches!(d.id, DialogId::OverwriteExternal(_))), Some(true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn restore_of_an_unchanged_file_saves_without_asking() {
         let (mut app, dir) = test_app("hot-exit-unchanged");
         std::fs::write(app.workspace.root.join("a.txt"), "disk\n").unwrap();
