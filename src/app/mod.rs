@@ -2857,6 +2857,24 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_template_body_from_an_older_root_is_not_expanded() {
+        use crate::config::templates::Template;
+        let (mut app, dir) = test_app("tree-template-stale");
+        let root = app.workspace.root.clone();
+        let global = app.paths.templates_dir();
+        write_template(&global, "t.rs", "fn ${1:f}() {}\n");
+        let t = Template { name: "t.rs".into(), path: global.join("t.rs"), project: false };
+        app.template_named(root.clone(), t, "a".into());
+        handle_next(&mut app, fs_op_done).await;
+        assert!(app.pending_template.is_some());
+        app.workspace.generation += 1;
+        app.file_loaded(root.join("a.rs"), Ok(Vec::new()), true, None);
+        assert_eq!(app.editor.active_buffer().unwrap().text(), "", "opened as on disk");
+        assert!(!app.editor.snippet_active());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn tree_new_kind_row_two_lists_templates() {
         let (mut app, dir) = test_app("tree-template-kind");
         let root = app.workspace.root.clone();

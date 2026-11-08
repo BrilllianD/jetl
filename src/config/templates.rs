@@ -67,11 +67,20 @@ pub fn list(global: &Path, project: &Path) -> Vec<Template> {
 
 /// The body: UTF-8, at most [`MAX_BYTES`]; Err is the message tail.
 pub fn read_body(path: &Path) -> Result<String, String> {
+    use std::io::Read;
     let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("not a regular file".into());
+    }
     if meta.len() > MAX_BYTES {
         return Err("the file is over 1 MiB".into());
     }
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    // Bounded: the file may grow between the check and the read.
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).and_then(|f| f.take(MAX_BYTES + 1).read_to_end(&mut bytes)).map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > MAX_BYTES {
+        return Err("the file is over 1 MiB".into());
+    }
     String::from_utf8(bytes).map_err(|_| "the file is not UTF-8".to_string())
 }
 
@@ -146,6 +155,7 @@ mod tests {
         assert_eq!(read_body(&d.join("big")), Err("the file is over 1 MiB".into()));
         assert_eq!(read_body(&d.join("bad")), Err("the file is not UTF-8".into()));
         assert_eq!(read_body(&d.join("ok")), Ok("fine $1".into()));
+        assert_eq!(read_body(&d), Err("not a regular file".into()));
         let _ = std::fs::remove_dir_all(&d);
     }
 
