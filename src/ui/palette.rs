@@ -898,7 +898,7 @@ impl Palette {
             // A filter row toggles with an empty query; every other case types the space the key stands for.
             PaletteAction::ToggleItem => {
                 let on_filter = self.source() == Source::Breakpoints
-                    && self.input.text.is_empty()
+                    && self.input.text.trim().is_empty()
                     && self.rows.get(self.list.selected).is_some_and(|&i| i < self.exception_filters.len());
                 if on_filter {
                     return self.accept(self.list.selected);
@@ -1679,6 +1679,11 @@ mod tests {
         // On a breakpoint row the key types a space.
         p.handle_action(&PaletteAction::Down);
         assert_eq!(p.handle_action(&PaletteAction::ToggleItem), None);
+        assert_eq!(p.input.text, " ");
+        // A blank query ranks every row, so a filter row still toggles under it.
+        assert_eq!(p.rows, vec![0, 1, 2, 3], "the space leaves every row");
+        assert_eq!(p.rows_selected().1, 0, "the list is back on its first row");
+        assert_eq!(p.handle_action(&PaletteAction::ToggleItem), toggle_of("throw"));
         assert_eq!(p.input.text, " ");
         // With a query it types too, and Enter toggles.
         p.set_query("caught");

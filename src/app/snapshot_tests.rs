@@ -1442,6 +1442,7 @@ async fn palette_breakpoints_filters() {
     let term = draw_app(app, 80, 24);
     let mut marks = palette_marks(&app.theme);
     marks.push(Mark::style('B', "breakpoint", app.theme.breakpoint));
+    marks.push(Mark::style('D', "dim tag", app.theme.dim.bg(app.theme.popup_bg)));
     assert_snapshot!("palette_breakpoints_filters", snapshot(&term, &marks, None));
 }
 

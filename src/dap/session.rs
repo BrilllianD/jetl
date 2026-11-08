@@ -265,6 +265,8 @@ pub struct Session {
     /// Expired in `seq` order, deterministic.
     pending: BTreeMap<i64, Pending>,
     newest_breakpoints: BTreeMap<PathBuf, i64>,
+    /// Seq of the newest `setExceptionBreakpoints`; an older one's failure or timeout is dropped.
+    newest_exception_filters: Option<i64>,
     /// The warning that a condition or log message was left out has been shown.
     spec_warned: bool,
     /// The newest stop's event, given again when a refused resume returns to it.
@@ -289,6 +291,7 @@ impl Session {
             stop: None,
             pending: BTreeMap::new(),
             newest_breakpoints: BTreeMap::new(),
+            newest_exception_filters: None,
             spec_warned: false,
             last_stop: StoppedEvent::default(),
         }
@@ -384,7 +387,7 @@ impl Session {
         let capable = self.caps.supports_configuration_done_request;
         if !self.caps.exception_breakpoint_filters.is_empty() || !capable {
             let filters = chosen_filters(&self.caps.exception_breakpoint_filters, &self.spec.exception_filters);
-            self.send("setExceptionBreakpoints", json!({ "filters": filters }), PendingKind::SetExceptionBreakpoints, now, out);
+            self.send_set_exception_breakpoints(filters, now, out);
         }
         if capable {
             self.send("configurationDone", Value::Null, PendingKind::ConfigurationDone, now, out);
@@ -440,6 +443,11 @@ impl Session {
         let kind = PendingKind::SetBreakpoints { source: source.clone(), requested: lines };
         let seq = self.send("setBreakpoints", args, kind, now, out);
         self.newest_breakpoints.insert(source, seq);
+    }
+
+    fn send_set_exception_breakpoints(&mut self, filters: Vec<String>, now: Instant, out: &mut Vec<Action>) {
+        let seq = self.send("setExceptionBreakpoints", json!({ "filters": filters }), PendingKind::SetExceptionBreakpoints, now, out);
+        self.newest_exception_filters = Some(seq);
     }
 
     fn is_newest(&self, source: &PathBuf, seq: i64) -> bool {
@@ -535,7 +543,7 @@ impl Session {
                 out.push(Action::Emit(DapBody::Breakpoints { source, requested, result: body.breakpoints }));
             }
             PendingKind::SetExceptionBreakpoints => {
-                if !r.success {
+                if !r.success && self.newest_exception_filters == Some(r.request_seq) {
                     self.report(format!("setExceptionBreakpoints: {}", r.error_text()), out);
                 }
             }
@@ -680,7 +688,7 @@ impl Session {
                 self.spec.exception_filters = choices;
                 if self.configured && !self.caps.exception_breakpoint_filters.is_empty() {
                     let filters = chosen_filters(&self.caps.exception_breakpoint_filters, &self.spec.exception_filters);
-                    self.send("setExceptionBreakpoints", json!({ "filters": filters }), PendingKind::SetExceptionBreakpoints, now, out);
+                    self.send_set_exception_breakpoints(filters, now, out);
                 }
             }
             Command::Stop => {
@@ -721,7 +729,9 @@ impl Session {
                     }
                 }
                 PendingKind::SetExceptionBreakpoints => {
-                    self.report("setExceptionBreakpoints timed out".into(), out);
+                    if self.newest_exception_filters == Some(seq) {
+                        self.report("setExceptionBreakpoints timed out".into(), out);
+                    }
                 }
                 PendingKind::ConfigurationDone => {
                     self.report("configurationDone timed out".into(), out);
@@ -1284,6 +1294,30 @@ mod tests {
         h.cmd(Command::SetExceptionFilters { choices: choices(&[("off", true)]) });
         h.fail("setExceptionBreakpoints", "nope");
         assert!(h.errors().contains(&"setExceptionBreakpoints: nope".to_string()), "{:?}", h.errors());
+    }
+
+    #[test]
+    fn a_superseded_filter_change_fails_silently() {
+        // Timeout: both unanswered requests expire together; only the newest reports.
+        for timeout in [false, true] {
+            let mut h = H::new(&[]);
+            h.answer("initialize", caps());
+            h.event("initialized", json!({}));
+            h.answer("setExceptionBreakpoints", Value::Null);
+            h.cmd(Command::SetExceptionFilters { choices: choices(&[("on", true)]) });
+            h.cmd(Command::SetExceptionFilters { choices: choices(&[("off", true)]) });
+            assert_eq!(h.requests("setExceptionBreakpoints").len(), 3);
+            h.answer("configurationDone", Value::Null);
+            if timeout {
+                h.advance(REQUEST_TIMEOUT);
+                assert_eq!(h.errors(), ["setExceptionBreakpoints timed out"]);
+            } else {
+                h.fail("setExceptionBreakpoints", "old");
+                assert!(h.errors().is_empty(), "{:?}", h.errors());
+                h.fail("setExceptionBreakpoints", "new");
+                assert_eq!(h.errors(), ["setExceptionBreakpoints: new"]);
+            }
+        }
     }
 
     #[test]
