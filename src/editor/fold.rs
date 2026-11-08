@@ -323,10 +323,17 @@ fn node_fold(node: &Node, rope: &Rope) -> Option<Fold> {
 
 /// Runs among `kids` (siblings in order) that fold as one: two or more
 /// line comments on consecutive lines, each first on its line, and
-/// consecutive imports (blank lines between allowed).
-fn runs(kids: &[Node], rope: &Rope, out: &mut Vec<Fold>) {
+/// consecutive imports (blank lines between allowed). A line comment that
+/// is a region marker (`comment` is the language's line comment token)
+/// belongs to no run.
+fn runs(kids: &[Node], rope: &Rope, comment: Option<&str>, out: &mut Vec<Fold>) {
+    // A region marker line is not part of a comment run: it ends the run.
+    let marker = |n: &Node| region_marker(&line_head(rope, rope.byte_to_char(n.start_byte())), comment).is_some();
     let line_comment = |n: &Node| {
-        n.kind().contains("comment") && last_row(n, rope) == first_row(n, rope) && starts_line(rope, rope.byte_to_char(n.start_byte()))
+        n.kind().contains("comment")
+            && last_row(n, rope) == first_row(n, rope)
+            && starts_line(rope, rope.byte_to_char(n.start_byte()))
+            && !marker(n)
     };
     let import = |n: &Node| IMPORT_KINDS.contains(&n.kind());
     let mut push = |run: &[Node]| {
@@ -356,14 +363,14 @@ fn runs(kids: &[Node], rope: &Rope, out: &mut Vec<Fold>) {
 
 /// The folds of the nodes of `tree` that `visit` lets through (it gets the
 /// node's first and last row); subtrees it refuses are skipped.
-fn tree_folds(tree: &Tree, rope: &Rope, visit: impl Fn(usize, usize) -> bool) -> Vec<Fold> {
+fn tree_folds(tree: &Tree, rope: &Rope, comment: Option<&str>, visit: impl Fn(usize, usize) -> bool) -> Vec<Fold> {
     let mut out = Vec::new();
     let mut stack = vec![tree.root_node()];
     let mut cursor = tree.walk();
     while let Some(node) = stack.pop() {
         out.extend(node_fold(&node, rope));
         let kids: Vec<Node> = node.children(&mut cursor).collect();
-        runs(&kids, rope, &mut out);
+        runs(&kids, rope, comment, &mut out);
         stack.extend(kids.into_iter().rev().filter(|k| visit(first_row(k, rope), rope.byte_to_line(k.end_byte()))));
     }
     out
@@ -449,11 +456,33 @@ fn region_marker(text: &str, comment: Option<&str>) -> Option<Marker> {
     None
 }
 
+/// The first 80 chars of the line holding `char_idx`, from its first
+/// non-blank char on, as `region_marker` reads them.
+fn line_head(rope: &Rope, char_idx: usize) -> String {
+    rope.line(rope.char_to_line(char_idx)).chars().skip_while(|c| *c == ' ' || *c == '\t').take(80).collect()
+}
+
+/// Whether byte `at` starts inside a comment node of any tree of `syntax`.
+fn in_comment(syntax: &Syntax, at: usize) -> bool {
+    syntax.trees().any(|t| {
+        let mut node = t.root_node().descendant_for_byte_range(at, at + 1);
+        while let Some(n) = node {
+            if n.kind().contains("comment") {
+                return true;
+            }
+            node = n.parent();
+        }
+        false
+    })
+}
+
 /// The custom regions of `rope`: each start marker line paired with the
 /// end marker of its family that closes it (nesting by a stack per family),
 /// as a fold from the start marker's first non-blank char to the end of the
-/// end marker's line. Unmatched markers make none.
-pub(super) fn region_folds(rope: &Rope, comment: Option<&str>) -> Vec<Fold> {
+/// end marker's line. Unmatched markers make none. With a `syntax`, a
+/// marker written with the comment token counts only where that token
+/// starts inside a comment node (not in a string).
+pub(super) fn region_folds(rope: &Rope, comment: Option<&str>, syntax: Option<&Syntax>) -> Vec<Fold> {
     let mut stacks: [Vec<usize>; 2] = [Vec::new(), Vec::new()];
     let mut out = Vec::new();
     for line in 0..rope.len_lines() {
@@ -461,9 +490,16 @@ pub(super) fn region_folds(rope: &Rope, comment: Option<&str>) -> Vec<Fold> {
         let blanks = text.chars().take_while(|c| *c == ' ' || *c == '\t').count();
         let head: String = text.chars().skip(blanks).take(80).collect();
         let Some(marker) = region_marker(&head, comment) else { continue };
+        let at = rope.line_to_char(line) + blanks;
+        if let (Some(syn), Some(c)) = (syntax, comment)
+            && head.starts_with(c)
+            && !in_comment(syn, rope.char_to_byte(at))
+        {
+            continue;
+        }
         let slot = |f: Family| f as usize;
         match marker {
-            Marker::Start(f) => stacks[slot(f)].push(rope.line_to_char(line) + blanks),
+            Marker::Start(f) => stacks[slot(f)].push(at),
             Marker::End(f) => {
                 let Some(start) = stacks[slot(f)].pop() else { continue };
                 let fold = Fold { start, end: rope.line_to_char(line) + line_len_no_eol(rope, line) };
@@ -495,7 +531,7 @@ impl Buffer {
         {
             return folds.clone();
         }
-        let folds = region_folds(&self.rope, comment);
+        let folds = region_folds(&self.rope, comment, fold_syntax(&mut self.syntax, &self.rope));
         self.region_cache = Some((self.version, comment, folds.clone()));
         folds
     }
@@ -523,10 +559,11 @@ impl Buffer {
             return per_header(p.folds(&self.rope), &self.rope, lines);
         }
         let regions = self.regions();
+        let comment = self.language().and_then(|d| d.line_comment);
         match fold_syntax(&mut self.syntax, &self.rope) {
             Some(syn) => {
                 let visit = |first: usize, last: usize| last >= lines.start && first <= lines.end;
-                let all = syn.trees().flat_map(|t| tree_folds(t, &self.rope, visit)).chain(regions).collect();
+                let all = syn.trees().flat_map(|t| tree_folds(t, &self.rope, comment, visit)).chain(regions).collect();
                 per_header(all, &self.rope, lines)
             }
             None => per_header(lines.clone().filter_map(|l| indent_fold(&self.rope, l)).chain(regions).collect(), &self.rope, lines),
@@ -596,6 +633,7 @@ impl Buffer {
     /// line), innermost first.
     pub fn fold_chain(&mut self, line: usize) -> Vec<Fold> {
         let regions = if self.patch.is_some() { Vec::new() } else { self.regions() };
+        let comment = self.language().and_then(|d| d.line_comment);
         let patch = self.patch.as_ref().map(|p| p.folds(&self.rope));
         let syn = if patch.is_some() { None } else { fold_syntax(&mut self.syntax, &self.rope) };
         let rope = &self.rope;
@@ -603,7 +641,7 @@ impl Buffer {
             (Some(folds), _) => folds,
             (None, Some(syn)) => {
                 let visit = |first: usize, last: usize| last >= line && first <= line + 1;
-                syn.trees().flat_map(|t| tree_folds(t, rope, visit)).collect()
+                syn.trees().flat_map(|t| tree_folds(t, rope, comment, visit)).collect()
             }
             (None, None) => {
                 // Headers above, each indented less than the one below it.
@@ -885,7 +923,7 @@ w
 // </editor-fold>
 ";
         let rope = Rope::from_str(text);
-        let got: Vec<_> = region_folds(&rope, Some("//")).iter().map(|f| f.lines(&rope).unwrap()).collect();
+        let got: Vec<_> = region_folds(&rope, Some("//"), None).iter().map(|f| f.lines(&rope).unwrap()).collect();
         assert_eq!(got, vec![(3, 5), (6, 8), (1, 10), (12, 14), (13, 15)]);
     }
 
@@ -947,6 +985,39 @@ fn b() {
         let end = b.rope.line_to_char(2);
         b.apply(vec![crate::editor::undo::Change::delete(end, "// endregion\n")], Selection::point(0), crate::editor::TxKind::Other);
         assert_eq!(cands(&mut b), Vec::<(usize, usize)>::new());
+    }
+
+    #[cfg(feature = "lang-rust")]
+    fn chain_lines(b: &mut Buffer, line: usize) -> Vec<(usize, usize)> {
+        let chain = b.fold_chain(line);
+        chain.iter().filter_map(|f| f.lines(&b.rope)).collect()
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn region_markers_stay_out_of_comment_runs() {
+        // `// region B` right after `// endregion` is not a run of two comments.
+        let text = "// region A\nfn a() {\n    x();\n}\n// endregion\n// region B\nfn b() {\n    y();\n}\n// endregion\n";
+        let mut b = buf("r.rs", text);
+        assert_eq!(chain_lines(&mut b, 5)[0], (5, 9));
+        b.fold_collapse_all();
+        let folds: Vec<_> = b.view.folds.iter().map(|f| f.1).collect();
+        assert!(folds.contains(&(0, 4)) && folds.contains(&(5, 9)), "{folds:?}");
+        assert!(!folds.contains(&(4, 5)), "{folds:?}");
+        // `// region` right before a doc comment.
+        let mut b = buf("r.rs", "// region S\n/// Doc.\nfn f() {\n    x();\n}\n// endregion\n");
+        assert_eq!(chain_lines(&mut b, 0)[0], (0, 5));
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn region_markers_inside_strings_do_not_count() {
+        let text = "// region R\nfn f() {\n    let s = r#\"\n// endregion\n\"#;\n}\n// endregion\n";
+        let mut b = buf("r.rs", text);
+        assert_eq!(chain_lines(&mut b, 0)[0], (0, 6));
+        // A start marker in a string opens nothing.
+        let mut b = buf("r.rs", "fn f() {\n    let s = r#\"\n// region\n\"#;\n}\n// endregion\n");
+        assert!(!cands(&mut b).iter().any(|c| c.1 == 5 && c.0 == 2), "{:?}", cands(&mut b));
     }
 
     #[cfg(feature = "lang-rust")]

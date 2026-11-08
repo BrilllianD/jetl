@@ -541,8 +541,11 @@ with the Project window hidden (`M-1`):
 ```
 
 On a `.txt` file `M-Down` shows the toast `No method navigation for this
-language`. With the Git window focused on the Commit tab diff, `M-Up` /
-`M-Down` still move its line cursor. tmux sends `M-Up` as `ESC [1;3A`.
+language`. With the Git window open (`M-9`) on the Commit tab, a click in the
+diff pane (SGR press and release at a column right of the file list, on a diff
+row) and then `M-Down` / `M-Up` still move its line cursor over the changed rows
+(reverse video on the line number of `-3`, then `+three`, and back), at both sizes.
+tmux sends `M-Up` as `ESC [1;3A`.
 
 ### Scenario: code folding
 
@@ -591,6 +594,13 @@ it at 80x24 and 120x40:
 press 0 $G 2; release 0 $G 2                     # clicking the ▸ marker toggles a region
 /tmp/tm.sh send-keys -t jetl 'M->'               # expand all
 ```
+
+Add `// endregion` directly followed by `// region B` (no blank line between),
+and a raw string line `// endregion` inside a region: M-, on `// region B` folds
+that region (not a two-line comment run), collapse all keeps the line after an
+`// endregion` visible, and the string line does not end the region it is in.
+Known limit: a buffer without a syntax tree (plain text) reads markers by text
+only.
 
 ### Scenario: soft wrap
 
