@@ -6693,6 +6693,8 @@ pub(crate) mod tests {
         stop_listed(&mut app, &mut fake, 7, frames, json!([{"id": 7, "name": "t"}])).await;
         pump_until(&mut app, |x| point(x).is_some()).await;
         assert_eq!(point(&app), Some((c.clone(), 4)));
+        assert_eq!(app.editor.active_path(), Some(c.as_path()), "the stop opened the chosen frame's file over a.log");
+        assert!(app.debug_stop_stands(), "choosing the stop row is not a user choice: the selection seq stays");
         assert_eq!(names(&app), ["__cxa_throw", "depth", "main"], "the adapter's order is kept");
         assert_eq!(app.debug_panel.selected_frame().unwrap().id, 31);
         assert_eq!(selected(&app), None, "the stop row is the point, so no frame line mark");
