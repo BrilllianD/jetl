@@ -3097,6 +3097,25 @@ Setup as above.
 6. Open `fence.md` (the injections fixture): guides inside the fence's indented line.
 7. Repeat at 120x40 and 80x24.
 
+### Scenario: column rulers
+
+Setup as above.
+
+1. Append `[editor]\nrulers = [80, 100]\n` to `/tmp/jt-home/config/jetl/config.toml` and open
+   `src/app/mod.rs` (Ctrl+N) at 120x40: `capture-pane -p` shows `│` right after text columns 80 and 100
+   (0-based cells 80 and 100) on every row whose text is shorter, and none on rows longer than 80 or
+   100 columns (an exactly 80-column line still shows the 80 ruler);
+   `capture-pane -e` shows the ruler colour and, on the caret line, the current-line background
+   under it.
+2. Press End on a long line and scroll sideways (soft wrap off): the rulers move with the text.
+3. Toggle soft wrap (View menu): at 120x40 both rulers fit; at 80x24 only those left of the
+   pane's right edge are drawn, and continuation rows show them past their text.
+4. Fold a function (Ctrl+-) whose header line is short: its placeholder covers a ruler it
+   reaches. With `[lsp] inlay_hints` and rust-analyzer, a line-end hint is never crossed.
+5. Click on a ruler cell: the caret goes to that line's end (or the virtual column), as before.
+6. Set `rulers = []`: the rulers disappear without a restart.
+7. Repeat at 80x24.
+
 ### Scenario: inlay hints
 
 Setup as above, but rust-analyzer on: no `[lsp] enabled = false`. Wait for indexing (the status

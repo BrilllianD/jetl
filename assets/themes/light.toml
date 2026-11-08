@@ -64,6 +64,7 @@ diag_info = { fg = "#3574f0", underline = true }
 diag_hint = "#9a9da6"
 lightbulb = "#a85f00"
 indent_guide = "#e4e6eb"
+ruler = "#d0d7de"
 inlay_hint = { fg = "#6c707e", bg = "#e2e5ec" }
 inline_blame = { fg = "#818594" }
 breadcrumbs = { fg = "#494b57", bg = "#f7f8fa" }

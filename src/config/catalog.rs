@@ -164,6 +164,13 @@ pub static SETTINGS: &[Setting] = &[
         |c| Value::Bool(c.editor.indent_guides)
     ),
     row!(
+        "editor.rulers",
+        "Column rulers",
+        "A vertical line after each of these columns, on rows whose text does not reach it, e.g. [80, 100]. Edit the list in config.toml.",
+        Kind::External,
+        none
+    ),
+    row!(
         "editor.inline_blame",
         "Inline blame on the caret line",
         "Author, date and summary of the commit that last changed the caret line, shown after its text (files in a git repository).",
@@ -494,6 +501,7 @@ pub static PAGES: &[Page] = &[
             "editor.auto_close",
             "editor.highlight_occurrences",
             "editor.indent_guides",
+            "editor.rulers",
             "editor.inline_blame",
             "editor.breadcrumbs",
             "editor.sticky_scroll",

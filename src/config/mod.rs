@@ -126,6 +126,8 @@ pub struct EditorConfig {
     pub highlight_occurrences: bool,
     /// Draw a vertical guide at each indent stop of a line's leading whitespace.
     pub indent_guides: bool,
+    /// Columns after which a vertical ruler is drawn (0-based cell n) on rows whose text does not reach it; 0 is ignored.
+    pub rulers: Vec<usize>,
     /// Show the caret line's blame (author, date, summary) after its text in the focused pane.
     pub inline_blame: bool,
     /// A row at the bottom of each editor pane naming the definitions around the caret.
@@ -320,6 +322,7 @@ impl Default for EditorConfig {
             auto_close: true,
             highlight_occurrences: true,
             indent_guides: true,
+            rulers: Vec::new(),
             inline_blame: false,
             breadcrumbs: false,
             sticky_scroll: false,

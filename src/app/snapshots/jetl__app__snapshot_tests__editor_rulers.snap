@@ -1,0 +1,18 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+40x8 cursor=(7,1)
+00   rulers.log ×
+01   1    short       │       │
+02   2    a line that is longer than twenty
+03   3                │       │
+04   4    mid length ok       │
+05   5                │       │
+06
+07
+-- marks: R=ruler C=caret S=selection F=fold O=occurrence
+01        OOOOO       R       R
+03                    R       R
+04                            R
+05                    R       R

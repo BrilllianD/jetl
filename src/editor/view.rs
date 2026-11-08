@@ -483,6 +483,8 @@ pub struct RenderOpts<'a> {
     pub occurrences: bool,
     /// Draw indent guides (`editor.indent_guides`).
     pub indent_guides: bool,
+    /// Columns after which a ruler is drawn, on 0-based cell n, where the text leaves it empty (`editor.rulers`, cleaned: no 0, ascending).
+    pub rulers: &'a [usize],
     /// Draw the fold arrows in the gutter.
     pub fold_marks: bool,
     /// Paint the caret line's blame after its text (`editor.inline_blame`).
@@ -650,6 +652,7 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     let mut cursor = None;
     let guide_step = if buf.indent.hard_tabs { o.tab_width } else { buf.indent.width }.max(1);
     let guide_fg = theme.indent_guide.fg.unwrap_or(theme.fg);
+    let ruler_fg = theme.ruler.fg.unwrap_or(theme.fg);
     let guides = o.indent_guides && buf.patch.is_none();
     let levels = if guides { blank_guide_levels(rope, window.clone(), o.tab_width) } else { Vec::new() };
 
@@ -762,7 +765,9 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         let virt_end = virt_on
             && sels.as_slice().iter().any(|s| s.head == line_end && s.virt.head.is_some_and(|c| c > visual_col(rope, s.head, o.tab_width)));
         let mut hint_caret: Option<usize> = None;
+        let mut row_end = 0usize;
         layout_row(rope, &rows, row, o.tab_width, scroll_col + text_area.width as usize, &mut |g, c, rx| {
+            row_end = row_end.max(rx + c.width);
             if c.is_inlay() {
                 // Hint cells get no highlight, selection or search styling,
                 // only the secondary caret of their anchor. Pads keep the row
@@ -886,6 +891,18 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
                 }
                 screen[(x as u16, y)].set_symbol("│").set_fg(guide_fg);
             }
+        }
+        // Rulers: the cells past this row's text (hints included), pure paint
+        // under the line-end selection, carets, placeholder and inline blame.
+        for &n in o.rulers {
+            if n < row_end || n < scroll_col {
+                continue;
+            }
+            let x = text_area.x as usize + n - scroll_col;
+            if x >= right as usize {
+                break;
+            }
+            screen[(x as u16, y)].set_symbol("│").set_fg(ruler_fg);
         }
         // Selection that spans the line break: mark one cell past the text;
         // a caret at the line end is drawn there too. Both on the line's
@@ -1135,6 +1152,7 @@ mod tests {
             hscrolloff: 0,
             occurrences: false,
             indent_guides: false,
+            rulers: &[],
             fold_marks: true,
             inline_blame: false,
             theme: &theme,
@@ -1174,6 +1192,7 @@ mod tests {
                 hscrolloff: 0,
                 occurrences: false,
                 indent_guides: false,
+                rulers: &[],
                 fold_marks: true,
                 inline_blame: false,
                 theme: &theme,
@@ -1235,6 +1254,7 @@ mod tests {
             hscrolloff: 0,
             occurrences: false,
             indent_guides: false,
+            rulers: &[],
             fold_marks: true,
             inline_blame: false,
             theme: &theme,
@@ -1280,6 +1300,7 @@ mod tests {
             hscrolloff: 0,
             occurrences: false,
             indent_guides: false,
+            rulers: &[],
             fold_marks: true,
             inline_blame: false,
             theme,
@@ -1549,6 +1570,108 @@ mod tests {
         buf.indent = IndentStyle::spaces(4);
         let (screen, _) = draw_guides(&mut buf, &theme, true, 40, 6);
         assert!((0..6).all(|y| bars(&screen, y, 40).is_empty()));
+    }
+
+    fn ruler_opts<'a>(theme: &'a Theme, rulers: &'a [usize]) -> RenderOpts<'a> {
+        RenderOpts { rulers, ..resize_opts(theme) }
+    }
+
+    /// Render `buf` at `w` x `h` with `o`; the screen and the text area.
+    fn draw_with(buf: &mut Buffer, o: &RenderOpts, w: u16, h: u16) -> (Screen, Rect) {
+        let area = Rect::new(0, 0, w, h);
+        let mut screen = Screen::empty(area);
+        let out = render(buf, &mut screen, area, o);
+        (screen, out.text_area)
+    }
+
+    #[test]
+    fn rulers_fill_the_cells_past_the_text() {
+        let theme = Theme::default();
+        let text = format!("ab\n{}\n\tc\n", "x".repeat(12));
+        let mut buf = Buffer::from_text(1, None, &text, false);
+        buf.view.set_sel(Selection::point(0));
+        let rulers = [4, 10];
+        let (screen, ta) = draw_with(&mut buf, &ruler_opts(&theme, &rulers), 40, 6);
+        let x0 = ta.x;
+        assert_eq!(bars(&screen, 0, 40), [x0 + 4, x0 + 10]);
+        assert_eq!(screen[(x0 + 4, 0)].fg, theme.ruler.fg.unwrap());
+        assert_eq!(screen[(x0 + 4, 0)].bg, theme.current_line_bg, "the caret line's background stays under the ruler");
+        assert!(bars(&screen, 1, 40).is_empty(), "12 chars reach both rulers");
+        assert_eq!(screen[(x0 + 4, 1)].symbol(), "x");
+        assert_eq!(screen[(x0 + 10, 1)].symbol(), "x");
+        assert_eq!(screen[(x0 + 4, 2)].symbol(), "c", "the tab ends at cell 4, c is on cell 4");
+        assert_eq!(bars(&screen, 2, 40), [x0 + 10]);
+        let (screen, _) = draw_with(&mut buf, &ruler_opts(&theme, &[]), 40, 6);
+        assert!((0..3).all(|y| bars(&screen, y, 40).is_empty()));
+    }
+
+    #[test]
+    fn rulers_follow_horizontal_scroll() {
+        let theme = Theme::default();
+        let mut buf = Buffer::from_text(1, None, "ab\n0123456789\n", false);
+        buf.view.scroll_col = 5;
+        let rulers = [2, 8, 11];
+        let o = RenderOpts { follow: false, ..ruler_opts(&theme, &rulers) };
+        let (screen, ta) = draw_with(&mut buf, &o, 40, 3);
+        let x0 = ta.x;
+        assert_eq!(bars(&screen, 0, 40), [x0 + 3, x0 + 6], "cells 8 and 11 minus the scroll; cell 2 is scrolled off");
+        assert_eq!(bars(&screen, 1, 40), [x0 + 6], "the 10-char line reaches cell 8, not 11");
+        assert_eq!(screen[(x0 + 3, 1)].symbol(), "8");
+    }
+
+    #[test]
+    fn rulers_fit_the_wrapped_view_only() {
+        let theme = Theme::default();
+        let text = format!("ab\n{}\n", "y".repeat(25));
+        let mut buf = Buffer::from_text(1, None, &text, false);
+        buf.view.wrap.on = true;
+        let rulers = [9, 24];
+        let o = ruler_opts(&theme, &rulers);
+        let (_, probe) = draw_with(&mut buf, &o, 40, 6);
+        let w = probe.x + 20;
+        let (screen, ta) = draw_with(&mut buf, &o, w, 6);
+        assert_eq!(ta.width, 20);
+        let x0 = ta.x;
+        assert_eq!(bars(&screen, 0, w), [x0 + 9], "cell 24 is past the view");
+        assert!(bars(&screen, 1, w).is_empty(), "the first row of the y line (19 cells) passes the ruler");
+        assert_eq!(screen[(x0, 2)].symbol(), "y");
+        assert_eq!(screen[(x0 + 5, 2)].symbol(), "y");
+        assert_eq!(screen[(x0 + 6, 2)].symbol(), " ", "the first row took 19 cells, the continuation has 6");
+        assert_eq!(bars(&screen, 2, w), [x0 + 9], "the continuation row ends before the ruler");
+        for y in 0..6 {
+            assert!(bars(&screen, y, w).iter().all(|&x| x < ta.right()), "row {y}");
+        }
+    }
+
+    #[test]
+    fn rulers_never_cover_hints() {
+        let theme = Theme::default();
+        let mut buf = Buffer::from_text(1, None, HINTED, false);
+        buf.inlays = hinted_line();
+        buf.view.set_sel(Selection::new(18, 5));
+        let rulers = [26, 32];
+        let (screen, ta) = draw_with(&mut buf, &ruler_opts(&theme, &rulers), 60, 3);
+        let x0 = ta.x;
+        assert_eq!(screen[(x0 + 26, 0)].symbol(), " ");
+        assert_eq!(screen[(x0 + 26, 0)].bg, theme.current_line_bg);
+        assert_eq!(screen[(x0 + 28, 0)].fg, theme.inlay_hint.fg.unwrap());
+        assert_eq!(bars(&screen, 0, 60), [x0 + 32]);
+    }
+
+    #[test]
+    fn rulers_go_under_the_fold_placeholder() {
+        let theme = Theme::default();
+        let mut buf = Buffer::from_text(1, None, "fn x() {\n    a;\n}\nz\n", false);
+        buf.fold_collapse(false);
+        let (f, last) = buf.view.folds.header_at(0).expect("folded");
+        let w = 8 + placeholder(&buf.rope, f, last).width();
+        let rulers = [w - 1];
+        let (screen, ta) = draw_with(&mut buf, &ruler_opts(&theme, &rulers), 60, 4);
+        let x0 = ta.x;
+        let (plain, _) = draw_with(&mut buf, &ruler_opts(&theme, &[]), 60, 4);
+        assert_ne!(screen[(x0 + w as u16 - 1, 0)].symbol(), "│");
+        assert_eq!(screen[(x0 + w as u16 - 1, 0)].symbol(), plain[(x0 + w as u16 - 1, 0)].symbol());
+        assert_eq!(bars(&screen, 1, 60), [x0 + w as u16 - 1]);
     }
 
     #[test]

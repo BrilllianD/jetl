@@ -506,6 +506,20 @@ async fn editor_indent_guides() {
 }
 
 #[tokio::test]
+async fn editor_rulers() {
+    let mut fx = stable_app("rulers");
+    let app = &mut fx.app;
+    let mut c = app.config.clone();
+    c.editor.rulers = vec![12, 20];
+    app.editor.apply_config(&c);
+    load(app, "rulers.log", "short\na line that is longer than twenty cells\n\nmid length ok\n");
+    let term = draw_editor(app, 40, 8);
+    let mut marks = vec![Mark::style('R', "ruler", app.theme.ruler)];
+    marks.extend(editor_marks(&app.theme));
+    assert_snapshot!("editor_rulers", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn editor_inline_blame() {
     use crate::git::model::{Blame, BlameCommit};
     let mut fx = stable_app("inline-blame");

@@ -116,6 +116,7 @@ hscrolloff = 5                 # columns kept visible left and right of the care
 auto_close = true              # type brackets and quotes in pairs, step over closers, wrap selections
 highlight_occurrences = true   # highlight the word at the caret (or the selected text) elsewhere on screen
 indent_guides = true           # a │ at each indent stop in a line's leading whitespace (theme style indent_guide)
+rulers = []                    # a │ (theme style ruler) after each of these columns on rows whose text does not reach it, e.g. [80, 100]; 0 is ignored
 inline_blame = false           # author, date and summary of the caret line's commit after its text (theme style inline_blame)
 breadcrumbs = false            # a row at the bottom of each editor pane naming the definitions around the caret, e.g. "impl Point › fn new"; click one to go there (theme style breadcrumbs)
 sticky_scroll = false          # pin the header lines of the definitions scrolled past at the top of each pane; click one to go there (theme style sticky_scroll)
@@ -1249,12 +1250,13 @@ Style fields: `border border_focused title title_focused strip_item
 strip_item_active strip_drop status_accent tab tab_active tab_dirty line_number
 line_number_current bracket_match secondary_caret bookmark breakpoint breakpoint_unverified debug_execution_arrow fold_placeholder git_added git_modified git_deleted git_untracked
 git_conflicted git_ignored popup_border list_selected list_selected_unfocused
-dim error warn info diag_error diag_warn diag_info diag_hint lightbulb indent_guide inlay_hint inline_blame breadcrumbs sticky_scroll splitter`.
+dim error warn info diag_error diag_warn diag_info diag_hint lightbulb indent_guide ruler inlay_hint inline_blame breadcrumbs sticky_scroll splitter`.
 `strip_drop` marks the drop target while a tool strip button is dragged; fg and bg are used.
 `breakpoint` is the gutter's `●`, `breakpoint_unverified` its `○`, for a breakpoint the adapter has not verified or has refused.
 `debug_execution_arrow` is the `▶` on the line a paused program is on, drawn before a breakpoint or bookmark on that line, and `debug_execution_line_bg` is that line's background. `debug_frame_line_bg` is the line of a stack frame chosen in the Debug window, when it is not the line the program is paused on.
 `indent_guide` colours the indent guides (`editor.indent_guides`); only its
 foreground is used.
+`ruler` colours the column rulers (`editor.rulers`); only its foreground is used.
 `inlay_hint` draws the language server's inlay hints (`[lsp] inlay_hints`); fg and
 bg are used.
 `inline_blame` colours the inline blame after the caret line (`editor.inline_blame`); only its foreground is used.

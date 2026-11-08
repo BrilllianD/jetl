@@ -69,6 +69,7 @@ diag_info = { fg = "{{blue}}", underline = true }
 diag_hint = "{{muted}}"
 lightbulb = "{{yellow}}"
 indent_guide = "{{mix background foreground 20}}"
+ruler = "{{mix background foreground 30}}"
 inlay_hint = { fg = "{{mix foreground background 45}}", bg = "{{mix background foreground 12}}" }
 inline_blame = { fg = "{{mix foreground background 45}}" }
 breadcrumbs = { fg = "{{mix foreground background 25}}", bg = "{{dark_background}}" }

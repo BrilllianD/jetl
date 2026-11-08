@@ -608,6 +608,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rulers_reload_live() {
+        let (mut app, dir) = test_app("reload-rulers");
+        assert_eq!(reload::class_of("editor.rulers"), Some(ReloadClass::Live));
+        write(&app, "config.toml", &format!("[editor]\nrulers = [100, 0, 80, 80]\n{NO_LSP}"));
+        reload(&mut app, &[ConfigFile::Config]);
+        assert_eq!(app.config.editor.rulers, [100, 0, 80, 80]);
+        assert_eq!(app.editor.rulers(), [80, 100], "cleaned: no 0, ascending, no duplicates");
+        write(&app, "config.toml", &format!("[editor]\n{NO_LSP}"));
+        reload(&mut app, &[ConfigFile::Config]);
+        assert!(app.editor.rulers().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn semantic_tokens_reload_live() {
         let (mut app, dir) = test_app("reload-semantic");
         crate::app::tests::load(&mut app, "a.rs", "fn main() {}\n");

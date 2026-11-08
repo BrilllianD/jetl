@@ -269,6 +269,8 @@ theme_fields! {
         lightbulb,
         /// Indent guides (│ in leading whitespace): only the foreground is used.
         indent_guide,
+        /// Column rulers (`editor.rulers`): only the foreground is used.
+        ruler,
         /// Inlay hints (virtual text from the language server): foreground and
         /// background are used.
         inlay_hint,
@@ -919,7 +921,7 @@ mod tests {
     }
 
     #[test]
-    fn indent_guide_differs_from_the_backgrounds() {
+    fn indent_guide_and_ruler_differ_from_the_backgrounds() {
         use crate::config::omarchy::fixtures;
         let mut themes = Vec::new();
         for b in BUILTIN_THEMES {
@@ -941,6 +943,9 @@ mod tests {
             let fg = t.indent_guide.fg.unwrap_or_else(|| panic!("{name} ansi256={ansi256}: no indent_guide fg"));
             assert_ne!(fg, t.bg, "{name} ansi256={ansi256}");
             assert_ne!(fg, t.current_line_bg, "{name} ansi256={ansi256}");
+            let rfg = t.ruler.fg.unwrap_or_else(|| panic!("{name} ansi256={ansi256}: no ruler fg"));
+            assert_ne!(rfg, t.bg, "{name} ansi256={ansi256} ruler");
+            assert_ne!(rfg, t.current_line_bg, "{name} ansi256={ansi256} ruler");
         }
     }
 
