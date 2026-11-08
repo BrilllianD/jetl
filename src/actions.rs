@@ -200,6 +200,16 @@ pub enum EditorAction {
     FindToggleField,
     GotoLine,
     DuplicateLine,
+    /// Start or stop recording a keyboard macro (`macros.rs`). Handled by
+    /// `App::perform`, never by the editor.
+    MacroRecord,
+    /// Play back the last recorded macro.
+    MacroPlay,
+    /// Ask for a name and keep the last macro under it.
+    MacroSaveAs,
+    /// Play the saved macro of that name (a Find Action row per macro; not in
+    /// the registry).
+    MacroPlayNamed(String),
     DeleteLine,
     SelectAll,
     SelectLine,
@@ -965,6 +975,9 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.find_preserve_case" => "Find: toggle preserve case", Editor(E::FindTogglePreserveCase);
         "editor.find_field" => "Find: switch between find and replace fields", Editor(E::FindToggleField);
         "editor.goto_line" => "Go to line", Editor(E::GotoLine);
+        "editor.macro_record" => "Start or stop macro recording", Editor(E::MacroRecord);
+        "editor.macro_play" => "Play back the last macro", Editor(E::MacroPlay);
+        "editor.macro_save_as" => "Save the last macro as…", Editor(E::MacroSaveAs);
         "editor.duplicate_line" => "Duplicate line", Editor(E::DuplicateLine);
         "editor.delete_line" => "Delete line", Editor(E::DeleteLine);
         "editor.select_all" => "Select all", Editor(E::SelectAll);

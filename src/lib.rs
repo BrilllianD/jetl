@@ -12,6 +12,7 @@ pub mod history;
 pub mod http;
 pub mod layouts;
 pub mod lsp;
+pub mod macros;
 pub mod recent_projects;
 pub mod recovery;
 pub mod run;

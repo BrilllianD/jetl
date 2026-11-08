@@ -42,6 +42,9 @@ impl App {
         }
         if p.wants(Source::Actions) {
             p.set_actions(self.palette_actions());
+            if self.macros_watch {
+                self.macros_request(None, None);
+            }
         }
         if p.wants(Source::Symbols) {
             p.set_symbols(self.palette_symbols(), self.symbols.indexing());
@@ -94,11 +97,12 @@ impl App {
             .filter(|a| cfg!(debug_assertions) || a.action != Action::App(AppAction::DebugPanic))
             .filter(|a| self.git_action_available(&a.action))
             .map(|a| ActionEntry {
-                id: a.id,
-                desc: a.desc,
+                id: a.id.into(),
+                desc: a.desc.into(),
                 action: a.action.clone(),
                 shortcut: self.keymap.shortcut_for(&a.action, a.action.contexts()),
             })
+            .chain(self.macro_palette_entries())
             .collect()
     }
 

@@ -148,6 +148,7 @@ impl App {
             || self.finish_git_ops_dialog(&id, &res)
             || self.finish_tasks_dialog(&id, &res)
             || self.finish_layouts_dialog(&id, &res)
+            || self.finish_macro_dialog(&id, &res)
         {
             return;
         }

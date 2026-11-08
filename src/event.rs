@@ -202,6 +202,16 @@ pub enum AppMsg {
         error: Option<String>,
         done: Option<LayoutDone>,
     },
+    /// Named keyboard macros read (and changed, when an op was given) by
+    /// `macros::update`; `version` is taken under the file lock, a higher one
+    /// saw a later state. `error` is shown as a warning. `done` is the toast
+    /// the op's caller wants on success; it applies even to a stale reply.
+    Macros {
+        version: u64,
+        macros: Vec<crate::macros::NamedMacro>,
+        error: Option<String>,
+        done: Option<(Level, String)>,
+    },
     /// The system clipboard read by `editor.paste` (`App::paste`), tagged
     /// with the workspace generation and the request's seq.
     Paste {

@@ -48,6 +48,11 @@
 "ctrl-shift-f9" = "run.debug_test_at_caret"
 # Ctrl+Shift+F8 lists every breakpoint (View Breakpoints; Find Action too).
 "ctrl-shift-f8" = "debug.view_breakpoints"
+# Keyboard macros (Edit > Macros in JetBrains, which has no default keys); Ctrl+Shift+F3
+# would be lost in legacy terminals (read as a cursor position report). The keyboard
+# is recorded, the mouse is not.
+"ctrl-shift-f4" = "editor.macro_record"
+"ctrl-shift-f5" = "editor.macro_play"
 "f4" = "run.next_problem"
 "shift-f4" = "run.prev_problem"
 "alt-0" = "git.commit_box"

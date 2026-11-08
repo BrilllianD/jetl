@@ -62,7 +62,7 @@ use rows::{Row, Rows};
 use search::Field;
 use selection::{Selection, Selections, apply_motion_all, line_range, word_at};
 use split::{SplitNode, SplitterHit};
-use undo::TxKind;
+use undo::{TxKind, UndoMark};
 use view::RenderOpts;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,6 +147,9 @@ pub struct Editor {
     /// The group whose body a dragged tab hovers: it shows a ghost tab.
     tab_drop: Option<GroupId>,
     next_group: GroupId,
+    /// The action the find bar's last raw key ran (`handle_find_key`), for the
+    /// keyboard macro recorder to take (`take_find_action`).
+    find_action: Option<EditorAction>,
     /// Most recently used buffer ids, most recent first.
     mru: Vec<BufferId>,
     next_id: BufferId,
@@ -262,6 +265,7 @@ impl Editor {
     pub fn new(config: &Config) -> Self {
         let mut ed = Self {
             buffers: Vec::new(),
+            find_action: None,
             groups: vec![TabGroup::new(0)],
             tree: SplitNode::Leaf(0),
             splitters: Vec::new(),
@@ -407,6 +411,30 @@ impl Editor {
     pub fn index_of(&self, path: &Path) -> Option<usize> {
         self.buffers.iter().position(|b| b.path.as_deref() == Some(path))
     }
+    /// The action the find bar's last key ran, once.
+    pub fn take_find_action(&mut self) -> Option<EditorAction> {
+        self.find_action.take()
+    }
+
+    /// Mark every buffer's undo stack before a keyboard macro plays.
+    pub fn undo_marks(&mut self) -> Vec<(BufferId, UndoMark)> {
+        self.buffers.iter_mut().map(|b| (b.id, b.undo_mark())).collect()
+    }
+
+    /// Fold what a macro did to each buffer into one undo step; a buffer
+    /// opened since has no mark and folds from the start. Returns how many
+    /// buffers were folded.
+    pub fn squash_undo(&mut self, marks: &[(BufferId, UndoMark)]) -> usize {
+        let mut n = 0;
+        for b in &mut self.buffers {
+            let m = marks.iter().find(|(id, _)| *id == b.id).map(|(_, m)| *m).unwrap_or_default();
+            if b.squash_undo_since(m) {
+                n += 1;
+            }
+        }
+        n
+    }
+
     pub fn index_of_id(&self, id: BufferId) -> Option<usize> {
         self.buffers.iter().position(|b| b.id == id)
     }
@@ -1514,6 +1542,8 @@ impl Editor {
             | E::MarkdownPreview => {}
             // Only a diff tab handles these (`diff_tab_action`).
             E::DiffNextFile | E::DiffPrevFile => return false,
+            // `App::perform` takes the keyboard macro actions (`app/macros.rs`).
+            E::MacroRecord | E::MacroPlay | E::MacroSaveAs | E::MacroPlayNamed(_) => return false,
         }
         // A motion or edit that put a caret into a fold unfolds it.
         if let Some(b) = self.active_buffer_mut() {
@@ -2599,6 +2629,19 @@ mod tests {
 
     fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, mods)
+    }
+
+    #[test]
+    fn find_bar_leaves_the_action_it_ran_for_the_recorder() {
+        let mut ed = editor_with("a.txt", "foo bar foo");
+        with_cx(|cx| {
+            ed.handle_action(&EditorAction::Find, cx);
+            assert!(ed.handle_find_key(key(KeyCode::Char('f'), KeyModifiers::NONE), cx));
+            assert_eq!(ed.take_find_action(), None);
+            assert!(ed.handle_find_key(key(KeyCode::Enter, KeyModifiers::NONE), cx));
+            assert_eq!(ed.take_find_action(), Some(EditorAction::FindNext));
+            assert_eq!(ed.take_find_action(), None);
+        });
     }
 
     #[test]

@@ -550,6 +550,9 @@ impl Keymap {
         out.push_str("key goes to the shell, and Esc Esc at the shell prompt focuses the editor.\n");
         out.push_str("Alt+Shift+F7 steps into a call by one machine instruction; JetBrains binds it to Force Step\n");
         out.push_str("Into, which jetl does not have.\n");
+        out.push_str("Ctrl+Shift+F4 and Ctrl+Shift+F5 record and play keyboard macros (keyboard only; the mouse is not\n");
+        out.push_str("recorded). Ctrl+Shift+F3 is not used: crossterm reads its legacy sequence `CSI 1;6R` as a cursor\n");
+        out.push_str("position report.\n");
         for ctx in self.context_order() {
             let t = &self.tables[ctx];
             let mut rows: Vec<(usize, usize, String, &Action)> = t

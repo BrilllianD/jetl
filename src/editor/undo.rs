@@ -59,6 +59,14 @@ pub struct Transaction {
     pub folds: Vec<(usize, super::fold::Fold)>,
 }
 
+/// A place in the undo stack ([`UndoStack::mark`]): its length and the id of
+/// the transaction on top then (0 for an empty stack).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct UndoMark {
+    pub len: usize,
+    pub id: u64,
+}
+
 #[derive(Debug, Default)]
 pub struct UndoStack {
     undo: Vec<Transaction>,
@@ -129,6 +137,45 @@ impl UndoStack {
         self.undo.push(tx);
     }
 
+    /// Mark the top of the stack and stop the next edit from merging into it,
+    /// so [`Self::squash_since`] can fold everything after it.
+    pub fn mark(&mut self) -> UndoMark {
+        self.break_group = true;
+        UndoMark { len: self.undo.len(), id: self.undo.last().map(|t| t.id).unwrap_or(0) }
+    }
+
+    /// Fold the transactions pushed since `m` into one, so a single undo
+    /// reverts them all. Leaves the stack as it is (false) when fewer than two
+    /// are new, when the transaction below them is no longer the marked one
+    /// (an undo went below the mark), or when one converts the line ending.
+    /// The folded transaction keeps the last id, so a saved state id stays
+    /// valid. The redo stack is not touched.
+    pub fn squash_since(&mut self, m: UndoMark) -> bool {
+        if self.undo.len() <= m.len + 1 {
+            return false;
+        }
+        if m.len > 0 && self.undo[m.len - 1].id != m.id {
+            return false;
+        }
+        if self.undo[m.len..].iter().any(|t| t.line_ending.is_some()) {
+            return false;
+        }
+        let mut tail = self.undo.drain(m.len..);
+        let mut first = tail.next().expect("two or more new transactions");
+        for t in tail {
+            let offset = first.changes.len();
+            first.folds.extend(t.folds.into_iter().map(|(i, f)| (i + offset, f)));
+            first.changes.extend(t.changes);
+            first.sel_after = t.sel_after;
+            first.at = t.at;
+            first.id = t.id;
+        }
+        first.kind = TxKind::Other;
+        self.undo.push(first);
+        self.break_group = true;
+        true
+    }
+
     pub fn pop_undo(&mut self) -> Option<Transaction> {
         let tx = self.undo.pop()?;
         self.redo.push(tx.clone());
@@ -197,5 +244,64 @@ mod tests {
         // Carets that moved in between: not merged.
         u.push(tx(typed([3, 8]), sels(&[3, 10]), sels(&[4, 12]), TxKind::Typing));
         assert_eq!(u.len(), 2);
+    }
+
+    #[test]
+    fn squash_since_folds_the_new_transactions_into_one() {
+        let mut u = UndoStack::new();
+        u.push(tx(vec![Change::insert(0, "z")], sels(&[0]), sels(&[1]), TxKind::Other));
+        let m = u.mark();
+        u.push(tx(vec![Change::insert(1, "a")], sels(&[1]), sels(&[2]), TxKind::Other));
+        u.push(tx(vec![Change::insert(2, "b")], sels(&[2]), sels(&[3]), TxKind::Other));
+        u.push(tx(vec![Change::insert(3, "c")], sels(&[3]), sels(&[4]), TxKind::Other));
+        let id = u.state_id();
+        assert!(u.squash_since(m));
+        assert_eq!(u.len(), 2);
+        assert_eq!(u.state_id(), id);
+        let t = u.last_mut().unwrap();
+        let news: Vec<&str> = t.changes.iter().map(|c| c.new.as_str()).collect();
+        assert_eq!(news, ["a", "b", "c"]);
+        assert_eq!(t.sel_before, sels(&[1]));
+        assert_eq!(t.sel_after, sels(&[4]));
+        assert_eq!(t.kind, TxKind::Other);
+    }
+
+    #[test]
+    fn squash_since_keeps_a_stack_that_went_below_the_mark() {
+        let mut u = UndoStack::new();
+        u.push(tx(vec![Change::insert(0, "z")], sels(&[0]), sels(&[1]), TxKind::Other));
+        u.push(tx(vec![Change::insert(1, "y")], sels(&[1]), sels(&[2]), TxKind::Other));
+        let m = u.mark();
+        u.pop_undo();
+        u.push(tx(vec![Change::insert(1, "a")], sels(&[1]), sels(&[2]), TxKind::Other));
+        u.push(tx(vec![Change::insert(2, "b")], sels(&[2]), sels(&[3]), TxKind::Other));
+        u.push(tx(vec![Change::insert(3, "c")], sels(&[3]), sels(&[4]), TxKind::Other));
+        // Long enough to pass the length check: only the marked id tells.
+        assert_eq!(u.len(), 4);
+        assert!(!u.squash_since(m));
+        assert_eq!(u.len(), 4);
+    }
+
+    #[test]
+    fn squash_since_keeps_line_ending_conversions() {
+        use super::super::buffer::LineEnding;
+        let mut u = UndoStack::new();
+        let m = u.mark();
+        u.push(tx(vec![Change::insert(0, "a")], sels(&[0]), sels(&[1]), TxKind::Other));
+        let mut conv = tx(vec![Change::insert(1, "b")], sels(&[1]), sels(&[2]), TxKind::Other);
+        conv.line_ending = Some((LineEnding::Lf, LineEnding::CrLf));
+        u.push(conv);
+        assert!(!u.squash_since(m));
+        assert_eq!(u.len(), 2);
+    }
+
+    #[test]
+    fn squash_since_needs_two_new_transactions() {
+        let mut u = UndoStack::new();
+        let m = u.mark();
+        assert!(!u.squash_since(m));
+        u.push(tx(vec![Change::insert(0, "a")], sels(&[0]), sels(&[1]), TxKind::Other));
+        assert!(!u.squash_since(m));
+        assert_eq!(u.len(), 1);
     }
 }

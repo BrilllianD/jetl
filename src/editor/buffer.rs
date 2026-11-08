@@ -12,7 +12,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use super::fold::Fold;
 use super::indent::{FileSettings, IndentStyle};
 use super::selection::{self, Selection, Selections, Virt, line_len_no_eol, line_range};
-use super::undo::{Change, Transaction, TxKind, UndoStack};
+use super::undo::{Change, Transaction, TxKind, UndoMark, UndoStack};
 use super::view_state::{EditLog, LogEdit, ViewState};
 use crate::workspace::SessionFold;
 
@@ -550,6 +550,17 @@ impl Buffer {
                 self.lsp_full_resync = true;
             }
         }
+    }
+
+    /// Mark the undo stack (keyboard macro playback; see [`UndoStack::mark`]).
+    pub fn undo_mark(&mut self) -> UndoMark {
+        self.undo.mark()
+    }
+
+    /// Fold the edits made since `m` into one undo step; false when the stack
+    /// stays as it is ([`UndoStack::squash_since`]).
+    pub fn squash_undo_since(&mut self, m: UndoMark) -> bool {
+        self.undo.squash_since(m)
     }
 
     pub fn undo(&mut self) -> bool {
@@ -1944,6 +1955,24 @@ mod tests {
 
     fn b(text: &str) -> Buffer {
         Buffer::from_text(1, None, text, false)
+    }
+
+    #[test]
+    fn undo_after_squash_restores_text_and_carets() {
+        let mut buf = b("abc");
+        buf.view.set_sel(Selection::point(1));
+        let m = buf.undo_mark();
+        buf.apply(vec![Change::insert(1, "x")], Selections::single(Selection::point(2)), TxKind::Other);
+        buf.apply(vec![Change::insert(2, "y")], Selections::single(Selection::point(3)), TxKind::Other);
+        buf.apply(vec![Change::insert(3, "z")], Selections::single(Selection::point(4)), TxKind::Other);
+        assert!(buf.squash_undo_since(m));
+        assert_eq!(buf.text(), "axyzbc");
+        assert!(buf.undo());
+        assert_eq!(buf.text(), "abc");
+        assert_eq!(buf.view.sel().range(), 1..1);
+        assert!(buf.redo());
+        assert_eq!(buf.text(), "axyzbc");
+        assert_eq!(buf.view.sel().range(), 4..4);
     }
 
     #[test]

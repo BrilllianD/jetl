@@ -167,8 +167,8 @@ pub struct ExceptionFilterItem {
 /// One Find Action row.
 #[derive(Debug, Clone)]
 pub struct ActionEntry {
-    pub id: &'static str,
-    pub desc: &'static str,
+    pub id: std::borrow::Cow<'static, str>,
+    pub desc: std::borrow::Cow<'static, str>,
     pub action: Action,
     pub shortcut: Option<String>,
 }
@@ -724,7 +724,7 @@ impl Palette {
                 if q.is_empty() {
                     (0..self.actions.len()).collect()
                 } else {
-                    let texts = self.actions.iter().map(|a| [a.desc, a.id]);
+                    let texts = self.actions.iter().map(|a| [a.desc.as_ref(), a.id.as_ref()]);
                     rank_texts(q, texts, &mut self.matcher)
                 }
             }

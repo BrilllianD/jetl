@@ -3894,3 +3894,18 @@ Send Escape after start (the kitty-protocol warning swallows the first keys). Th
 3. `M-1 S-F10`: the third row is `New from Template…`.
 4. With `src` selected before `M-Insert`, the file lands in `src/`.
 5. With both template folders empty or missing, row 3 shows the toast `No file templates: add files to ... or .jetl/templates/`.
+
+### Scenario: keyboard macros
+
+At 80x24 and 120x40 (yman 465), private socket `/tmp/tm.sh` = `exec /usr/bin/tmux -L jetl-mac "$@"`, `XDG_*` under `/tmp/jt-mac-home`, project `/tmp/jt-mac` (`git init`) with `a.txt` = `one\ntwo\nthree\nfour\n`, `[lsp] enabled = false`. Keys go in as raw xterm sequences, so tmux's key naming does not matter: Ctrl+Shift+F4 is `send-keys -H 1b 5b 31 3b 36 53` (`ESC [1;6S`) and Ctrl+Shift+F5 is `-H 1b 5b 31 35 3b 36 7e` (`ESC [15;6~`). Send Escape after start.
+
+Recorded: keymap actions, typed text, bracketed pastes into the editor and the find bar's action keys. Not recorded: the mouse, dialogs, popups, find bar text (counted as "left out"). Playback does not wait for asynchronous results (LSP jumps, formatting, a system clipboard paste with an empty register).
+
+1. Ctrl+Shift+F4: toast `Recording macro (Ctrl+Shift+F4 stops)`, status bar `● REC`. Type `- `, Down, Home, Ctrl+Shift+F4: toast `Macro recorded: 4 steps`, no `● REC`.
+2. Ctrl+Shift+F5 twice: lines `- one`, `- two`, `- three`, `four`. `C-z` once: `three` is back, `- two` stays (one undo step per playback).
+3. Ctrl+Shift+F4, `C-g`, `4`, Enter, `!`, Ctrl+Shift+F4: toast `Macro recorded: 1 step; 1 left out (dialogs, popups, find bar text)`.
+4. Find Action (`C-S-a`, or F1), `save macro`, Enter: dialog `Save Macro As`, `Name of the macro:`. Type `bang`, Enter: toast `Saved macro 'bang'`, `state/jetl/macros.json` holds `{"name": "bang", "steps": [{"chars": "!"}]}`.
+5. Find Action, `bang`: row `Play macro 'bang'  macro.bang`; Enter inserts one more `!`.
+6. Two processes: start another jetl on another root with the same `XDG_STATE_HOME`; save `first` in one and `second` in the other. The file lists both, and Find Action in the first lists `Play macro 'second'` without a restart.
+7. Corrupt store: write `{bad` to the file, start, Save As `z`: a warning starting `macros ` and containing `not valid JSON`, and the file still reads `{bad`.
+8. Restart: Ctrl+Shift+F5 says `No macro recorded yet` (the unnamed macro is not kept); Find Action still lists `Play macro 'bang'`.

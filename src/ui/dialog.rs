@@ -316,6 +316,8 @@ pub enum DialogId {
     LayoutSwitch(Vec<String>),
     /// Save Layout as New: the new layout's name.
     LayoutSaveAsNew,
+    /// Name for the last keyboard macro (Edit > Save Macro As…).
+    MacroSaveAs,
     /// Rename Layout, the pick: item `i` renames `.0[i]`.
     LayoutRenamePick(Vec<String>),
     /// Rename Layout, the new name for layout `.0`.

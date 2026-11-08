@@ -5532,3 +5532,15 @@ async fn editor_template_expanded() {
     let marks = editor_marks(&app.theme);
     assert_snapshot!("editor_template_expanded", snapshot(&term, &marks, None));
 }
+
+#[tokio::test]
+async fn macro_recording_status_bar() {
+    let mut fx = stable_app("macro-recording");
+    let app = &mut fx.app;
+    load(app, "notes.log", PLAIN);
+    app.macros.start();
+    let term = draw_app(app, 80, 24);
+    let rec = app.theme.error.bg(app.theme.status_bg);
+    let marks = [Mark::style_on('R', "rec", rec, "●REC")];
+    assert_snapshot!("macro_recording_status_bar", snapshot(&term, &marks, None));
+}

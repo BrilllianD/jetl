@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Keyboard macros: Ctrl+Shift+F4 starts and stops recording (● REC in the status bar), Ctrl+Shift+F5 plays the last macro back as one undo step per file, and Edit > Save Macro As… keeps it under a name in the state dir, shared by every project, as a Find Action entry. Keyboard actions, typed text and pastes are recorded; dialogs, popups, find bar text and the mouse are not (yman 465).
 - Run > Step Over Instruction (Ctrl+Shift+F7) and Step Into Instruction (Alt+Shift+F7) step the paused program one machine instruction, and the Debug window's new Disassembly tab (Run > Show Disassembly) lists the instructions at the selected frame's pc with the pc marked, following it on every stop. Verified under gdb 17.2 only.
 - Extra language servers: a `[lsp.servers.<name>]` table with `extra = true` runs next to the file's main server (document sync, file notifications and diagnostics only, no requests), and `languages = ["*"]` attaches it to every file with a language. docs/CONFIG.md has recipes for spell checking with typos-lsp and harper-ls (yman 463).
 - New file from a template: Project tree > New > From Template… (or the context menu, or Find Action) lists the files of ~/.config/jetl/templates/ and .jetl/templates/ (a project one wins by name), asks for a name, and opens the new file with the template expanded: variables like $TM_FILENAME_BASE and tabstops as in live templates, one undo step (yman 462).

@@ -78,6 +78,10 @@ impl Paths {
     pub fn layouts_file(&self) -> PathBuf {
         self.state_dir.join("layouts.json")
     }
+    /// Named keyboard macros (`macros.rs`), shared by every project.
+    pub fn macros_file(&self) -> PathBuf {
+        self.state_dir.join("macros.json")
+    }
     pub fn log_file(&self) -> PathBuf {
         self.state_dir.join("jetl.log")
     }

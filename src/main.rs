@@ -50,6 +50,7 @@ async fn main() -> Result<()> {
     app.prune_recovery_dumps();
     app.start_recent_projects();
     app.load_layouts();
+    app.load_macros();
     // Debug builds only: panic tokio tasks to exercise the worker-panic path.
     if cfg!(debug_assertions)
         && let Some(n) = std::env::var("JETL_DEBUG_WORKER_PANIC").ok().and_then(|v| v.parse::<usize>().ok())

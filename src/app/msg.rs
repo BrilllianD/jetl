@@ -69,6 +69,7 @@ impl App {
             AppMsg::Dependencies { generation, seq, report } => self.dependencies_checked(generation, seq, report),
             AppMsg::RecentProjects { seq, version, roots, error } => self.recent_projects_loaded(seq, version, roots, error),
             AppMsg::Layouts { version, layouts, error, done } => self.layouts_loaded(version, layouts, error, done),
+            AppMsg::Macros { version, macros, error, done } => self.macros_loaded(version, macros, error, done),
             AppMsg::RenamePreview { generation, seq, result } => self.rename_preview_done(generation, seq, *result),
             AppMsg::FallbackUsages(f) => self.fallback_usages_done(*f),
             AppMsg::Find { generation, batch } if generation == self.workspace.generation => self.find.on_batch(batch),

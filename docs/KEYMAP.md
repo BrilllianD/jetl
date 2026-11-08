@@ -13,6 +13,9 @@ While the Terminal window has focus only its `terminal` table is searched: every
 key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 Alt+Shift+F7 steps into a call by one machine instruction; JetBrains binds it to Force Step
 Into, which jetl does not have.
+Ctrl+Shift+F4 and Ctrl+Shift+F5 record and play keyboard macros (keyboard only; the mouse is not
+recorded). Ctrl+Shift+F3 is not used: crossterm reads its legacy sequence `CSI 1;6R` as a cursor
+position report.
 
 ## global
 
@@ -65,6 +68,8 @@ Into, which jetl does not have.
 | `Alt+Shift+H` | `editor.local_history` | Local history of the file (editor) or the selected entry (Project tree; a folder lists its files), in its tool window |
 | `Alt+8` | `tool_window.local_history` | Local History tool window |
 | `Alt+F5` | `tool_window.debug` | Debug tool window |
+| `Ctrl+Shift+F4` | `editor.macro_record` | Start or stop macro recording |
+| `Ctrl+Shift+F5` | `editor.macro_play` | Play back the last macro |
 | `Ctrl+V` | `editor.paste` | Paste |
 | `Alt+Right` | `editor.next_tab` | Next tab |
 | `Alt+Left` | `editor.prev_tab` | Previous tab |
@@ -689,6 +694,7 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `editor.find_regex` | Find: toggle regex |
 | `editor.find_preserve_case` | Find: toggle preserve case |
 | `editor.find_field` | Find: switch between find and replace fields |
+| `editor.macro_save_as` | Save the last macro as… |
 | `editor.select_line` | Select line |
 | `editor.compare_with_clipboard` | Compare the file (or the selection) with the clipboard |
 | `editor.compare_with_file` | Compare the file with another file… |

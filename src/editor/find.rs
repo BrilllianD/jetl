@@ -235,6 +235,7 @@ impl Editor {
         };
         if let Some(a) = action {
             self.handle_action(&a, cx);
+            self.find_action = Some(a);
             return true;
         }
         let input = s.active_input();

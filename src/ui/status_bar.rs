@@ -1,7 +1,8 @@
 //! Bottom status bar: the active file's path as crumbs (relative to the
 //! project root, cut from the start), the git operation in progress and
 //! running git operations, notifications (else the diagnostic at the
-//! caret), then on the right the active file's problem counts, cursor
+//! caret), then on the right the active file's problem counts, `● REC` while
+//! a keyboard macro records, cursor
 //! position and `OVR` in overwrite mode, line ending, encoding, indent and language of the active
 //! buffer, its language server, and the current branch at the right edge
 //! (unless the toolbar's branch widget shows it and the menu bar does not cover it).
@@ -92,6 +93,9 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect) {
             theme.dim
         };
         right_parts.push((format!("✖ {} ⚠ {}", c.errors, c.warnings), style.bg(theme.status_bg), Some(StatusHit::Problems), 1));
+    }
+    if app.macros.is_recording() {
+        right_parts.push(("● REC".into(), theme.error.bg(theme.status_bg), None, 0));
     }
     if let Some(pos) = app.editor.status_position() {
         right_parts.push((pos, base, Some(StatusHit::Position), 0));

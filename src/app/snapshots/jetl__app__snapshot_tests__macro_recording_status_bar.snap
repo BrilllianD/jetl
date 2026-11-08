@@ -1,0 +1,31 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+80x24 cursor=(43,1)
+00  ≣ ┌ Project: root ───────────────┐│  notes.log ×
+01    │                              ││  1  ▾ alpha beta gamma
+02  ⌂ │                              ││  2    │ two indented
+03  ◫ │                              ││  3    │ three indented
+04  ⊢ │                              ││  4    four
+05    │                              ││  5
+06    │                              ││  6    six: the last line of the file
+07    │                              ││  7
+08    │                              ││
+09    │                              ││
+10    │                              ││
+11    │                              ││
+12  ◉ │                              ││
+13  ⋔ │                              ││
+14  ✎ │                              ││
+15  ✓ │                              ││
+16  ⟲ │                              ││
+17  ⚑ │                              ││
+18  ⎇ │                              ││
+19  ❯ │                              ││
+20  ⚠ │                              ││
+21  ► │                              ││
+22  ⌕ └──────────────────────────────┘│
+23  notes.log                  ● REC  Ln 1, Col 1  LF  UTF-8  4 spaces  Plain text
+-- marks: R=rec
+23                             R RRR

@@ -65,6 +65,7 @@ mod lsp;
 mod lsp_edit;
 mod lsp_nav;
 mod lsp_watch;
+mod macros;
 mod main_menu;
 mod markdown;
 mod merge;
@@ -236,6 +237,14 @@ pub struct App {
     layouts_version: u64,
     /// The layout last applied or saved as new, for Save Changes; not persisted.
     current_layout: Option<String>,
+    /// The keyboard macro recorder and the last macro (`app/macros.rs`).
+    pub(crate) macros: crate::macros::Recorder,
+    /// Saved macros as of the newest reply, file order.
+    pub(crate) named_macros: Vec<crate::macros::NamedMacro>,
+    /// The file version `named_macros` reflects; older replies are dropped.
+    macros_version: u64,
+    /// The macros file is in use (`load_macros` ran): Find Action re-reads it.
+    macros_watch: bool,
     /// Record the root in the recent projects file (at startup and on root
     /// switches). Off until `main.rs` calls [`App::start_recent_projects`],
     /// so tests never write it: the write would land after the test removed
@@ -451,6 +460,10 @@ impl App {
             named_layouts: Vec::new(),
             layouts_version: 0,
             current_layout: None,
+            macros: Default::default(),
+            named_macros: Vec::new(),
+            macros_version: 0,
+            macros_watch: false,
             record_recent: false,
             pick_project: false,
             branches_error_shown: false,
@@ -829,7 +842,10 @@ impl App {
             Event::Mouse(m) => self.handle_mouse(m),
             Event::Paste(text) => {
                 self.dirty_frame = true;
+                let was = std::mem::replace(&mut self.macros.keyboard, true);
+                self.macro_note_paste(&text);
                 self.handle_paste(text);
+                self.macros.keyboard = was;
             }
             Event::Resize(_, _) => {
                 self.needs_clear = true;
@@ -905,7 +921,9 @@ impl App {
         let undocked =
             self.focus.current.tool_window().filter(|tw| self.layout.view_mode(*tw) == ViewMode::Undocked && self.layout.is_visible(*tw));
         let esc = key.code == KeyCode::Esc && key.kind != KeyEventKind::Release;
+        let was = std::mem::replace(&mut self.macros.keyboard, true);
         self.handle_key_inner(key);
+        self.macros.keyboard = was;
         // Esc that leaves an Undocked window slides it away; a panel's own Esc
         // (find, filter) that keeps focus does not.
         if esc
@@ -1049,6 +1067,7 @@ impl App {
             let used = self.editor.handle_find_key(key, &mut cx);
             let fx = cx.effects;
             self.apply_effects(fx);
+            self.macro_find_key(used);
             if used {
                 self.dispatcher.reset();
                 return;
@@ -1119,7 +1138,19 @@ impl App {
         }
     }
 
+    /// Run an action. Keyboard-originated top-level actions are also noted for
+    /// the macro recorder (`app/macros.rs`).
     pub fn perform(&mut self, action: Action) {
+        let kept = self.macros.wants(&action).then(|| action.clone());
+        self.macros.depth += 1;
+        self.perform_action(action);
+        self.macros.depth -= 1;
+        if let Some(a) = kept {
+            self.macro_note(a);
+        }
+    }
+
+    fn perform_action(&mut self, action: Action) {
         self.dirty_frame = true;
         let mut cx = ctx!(self);
         let handled = match &action {
@@ -1135,6 +1166,14 @@ impl App {
                     ModeAction::Insert => Mode::Insert,
                     ModeAction::Visual => Mode::Visual,
                 };
+                return;
+            }
+            Action::Editor(
+                a @ (EditorAction::MacroRecord | EditorAction::MacroPlay | EditorAction::MacroSaveAs | EditorAction::MacroPlayNamed(_)),
+            ) => {
+                let a = a.clone();
+                drop(cx);
+                self.macro_action(a);
                 return;
             }
             Action::Editor(EditorAction::Paste) => {
@@ -1400,7 +1439,9 @@ impl App {
         self.apply_effects(effects);
         // The completion list follows the word at the caret, and typing
         // may ask for one.
-        if let Action::Editor(a) = &action {
+        if let Action::Editor(a) = &action
+            && !self.macros.playing
+        {
             let typed = if let EditorAction::InsertChar(c) = a { Some(*c) } else { None };
             self.completion_after_edit(typed);
             self.signature_after_edit(typed);
