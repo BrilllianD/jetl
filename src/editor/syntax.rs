@@ -1555,8 +1555,9 @@ impl Syntax {
     }
 
     /// The `()[]{}` tokens of `rows` lines from `first_line`, outside strings
-    /// and comments, as (char, nesting depth), sorted: the host tree's, then
-    /// those of the injections that meet the window. Cached like `highlights`.
+    /// and comments, as (char, nesting depth), sorted: the host tree's (none
+    /// for Markdown), then those of the injections that meet the window.
+    /// Cached like `highlights`.
     pub fn bracket_depths(&mut self, rope: &Rope, first_line: usize, rows: usize) -> Vec<(usize, usize)> {
         let key = (first_line as u64) << 32 | rows as u64;
         if let Some((k, d)) = &self.bracket_cache
