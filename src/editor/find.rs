@@ -8,7 +8,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::Editor;
 use super::buffer::Buffer;
-use super::search::{Field, SearchState};
+use super::search::{Field, SearchState, preserve_case};
 use super::selection::Selection;
 use super::undo::{Change, TxKind};
 use crate::actions::EditorAction;
@@ -25,6 +25,7 @@ pub(super) enum FindHit {
     Case,
     Word,
     Regex,
+    PreserveCase,
     Prev,
     Next,
     Close,
@@ -40,6 +41,7 @@ pub(super) struct LastSearch {
     case_sensitive: bool,
     whole_word: bool,
     regex: bool,
+    preserve_case: bool,
 }
 
 impl LastSearch {
@@ -48,6 +50,7 @@ impl LastSearch {
         s.case_sensitive = self.case_sensitive;
         s.whole_word = self.whole_word;
         s.regex = self.regex;
+        s.preserve_case = self.preserve_case;
         s
     }
 }
@@ -92,6 +95,7 @@ impl Editor {
                 case_sensitive: s.case_sensitive,
                 whole_word: s.whole_word,
                 regex: s.regex,
+                preserve_case: s.preserve_case,
             });
         }
     }
@@ -154,6 +158,7 @@ impl Editor {
             s.replace.text.clone()
         };
         let old = b.rope.slice(r.clone()).to_string();
+        let rep = if s.preserve_applies() { preserve_case(&old, &rep) } else { rep };
         let after = r.start + rep.chars().count();
         b.apply(vec![Change::replace(r.start, old, rep)], Selection::point(after), TxKind::Other);
         let Some(s) = b.view.search.as_mut() else { return };
@@ -175,6 +180,7 @@ impl Editor {
             return;
         }
         let text = s.regex.then(|| b.rope.to_string());
+        let preserve = s.preserve_applies();
         // Last to first so earlier positions stay valid.
         let changes: Vec<Change> = s
             .matches
@@ -185,7 +191,9 @@ impl Editor {
                     Some(t) => s.replacement_at(t, b.rope.char_to_byte(r.start)..b.rope.char_to_byte(r.end)),
                     None => s.replace.text.clone(),
                 };
-                Change::replace(r.start, b.rope.slice(r.clone()).to_string(), rep)
+                let old = b.rope.slice(r.clone()).to_string();
+                let rep = if preserve { preserve_case(&old, &rep) } else { rep };
+                Change::replace(r.start, old, rep)
             })
             .collect();
         let n = changes.len();
@@ -220,6 +228,7 @@ impl Editor {
                 'c' => Some(E::FindToggleCase),
                 'w' => Some(E::FindToggleWord),
                 'x' => Some(E::FindToggleRegex),
+                'p' => Some(E::FindTogglePreserveCase),
                 _ => return false,
             },
             _ => None,
@@ -276,6 +285,7 @@ impl Editor {
             FindHit::Case => E::FindToggleCase,
             FindHit::Word => E::FindToggleWord,
             FindHit::Regex => E::FindToggleRegex,
+            FindHit::PreserveCase => E::FindTogglePreserveCase,
             FindHit::Prev => E::FindPrev,
             FindHit::Next => E::FindNext,
             FindHit::Close => E::Escape,
@@ -311,7 +321,7 @@ fn place_cursor(frame: &mut Frame, input: &TextInput, field: Rect, covered: Rect
 /// Draw the find bar into `area` (1 row, 2 with replace) and return the
 /// clickable regions:
 /// `Find:    [query] Cc W .*  n/m  ↑ ↓ ×`
-/// `Replace: [text]  [Replace] [Replace all]`
+/// `Replace: [text]  AB [Replace] [Replace all]`
 pub(super) fn render_find_bar(
     frame: &mut Frame,
     area: Rect,
@@ -388,6 +398,9 @@ pub(super) fn render_find_bar(
         }
         hits.push((FindHit::ReplaceField, field));
         x += field.width;
+        put(frame, &mut x, y, " ", bar);
+        let r = put(frame, &mut x, y, " AB ", if s.preserve_applies() { on } else { off });
+        hits.push((FindHit::PreserveCase, r));
         for (hit, label) in [(FindHit::ReplaceOne, " Replace "), (FindHit::ReplaceAll, " Replace all ")] {
             put(frame, &mut x, y, " ", bar);
             let r = put(frame, &mut x, y, label, theme.tab_active);

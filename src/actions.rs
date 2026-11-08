@@ -196,6 +196,7 @@ pub enum EditorAction {
     FindToggleCase,
     FindToggleWord,
     FindToggleRegex,
+    FindTogglePreserveCase,
     FindToggleField,
     GotoLine,
     DuplicateLine,
@@ -484,6 +485,7 @@ pub enum FindAction {
     ToggleCase,
     ToggleWord,
     ToggleRegex,
+    TogglePreserveCase,
     ToggleStructural,
     ToggleReplace,
     ReplaceAll,
@@ -952,6 +954,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.find_case" => "Find: toggle match case", Editor(E::FindToggleCase);
         "editor.find_word" => "Find: toggle whole words", Editor(E::FindToggleWord);
         "editor.find_regex" => "Find: toggle regex", Editor(E::FindToggleRegex);
+        "editor.find_preserve_case" => "Find: toggle preserve case", Editor(E::FindTogglePreserveCase);
         "editor.find_field" => "Find: switch between find and replace fields", Editor(E::FindToggleField);
         "editor.goto_line" => "Go to line", Editor(E::GotoLine);
         "editor.duplicate_line" => "Duplicate line", Editor(E::DuplicateLine);
@@ -1172,6 +1175,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "find.toggle_case" => "Find: match case", Find(FindAction::ToggleCase);
         "find.toggle_word" => "Find: whole words", Find(FindAction::ToggleWord);
         "find.toggle_regex" => "Find: regex", Find(FindAction::ToggleRegex);
+        "find.toggle_preserve_case" => "Find: preserve case", Find(FindAction::TogglePreserveCase);
         "find.toggle_structural" => "Find: structural search (code pattern with $X)", Find(FindAction::ToggleStructural);
         "find.toggle_replace" => "Find: show or hide the replacement", Find(FindAction::ToggleReplace);
         "find.replace_all" => "Find: replace all results", Find(FindAction::ReplaceAll);

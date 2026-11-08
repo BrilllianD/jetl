@@ -26,7 +26,7 @@ use crate::actions::FindAction;
 use crate::app::Ctx;
 use crate::config::FileIcons;
 use crate::config::theme::Theme;
-use crate::editor::search::build_pattern;
+use crate::editor::search::{build_pattern, preserve_case, preserve_case_applies};
 use crate::event::{AppMsg, Effect, Level, Mouse};
 use crate::files::find::{Batch, Hit, MAX_HITS, Query, Search};
 use crate::files::rename_preview::{RenamePreview, RenameSource};
@@ -58,6 +58,7 @@ enum Btn {
     Word,
     Regex,
     Structural,
+    PreserveCase,
     ReplaceAll,
 }
 
@@ -77,6 +78,8 @@ pub struct FindPanel {
     pub case_sensitive: bool,
     pub whole_word: bool,
     pub regex: bool,
+    /// Replacements take the case pattern of their match (Replace in Files only; never persisted).
+    pub preserve_case: bool,
     /// The query is an ast-grep code pattern (feature `structural`).
     pub structural: bool,
     hits: Vec<Hit>,
@@ -119,6 +122,7 @@ impl FindPanel {
             case_sensitive: false,
             whole_word: false,
             regex: false,
+            preserve_case: false,
             structural: false,
             hits: Vec::new(),
             re: None,
@@ -177,6 +181,7 @@ impl FindPanel {
         self.case_sensitive = true;
         self.whole_word = true;
         self.regex = false;
+        self.preserve_case = false;
         self.structural = false;
         self.search(cx);
         // After `search`: it calls `reset`, which drops the set. Batches arrive later.
@@ -195,6 +200,7 @@ impl FindPanel {
         self.case_sensitive = true;
         self.whole_word = true;
         self.regex = false;
+        self.preserve_case = false;
         self.structural = false;
         self.capped = false;
         self.searching = false;
@@ -385,6 +391,9 @@ impl FindPanel {
                 Some(caps) => caps.expand(with, &mut s),
                 None => s.push_str(with),
             }
+            if preserve_case_applies(self.preserve_case, self.regex, with) {
+                s = preserve_case(&hit.matched, &s);
+            }
         }
         s.chars().map(|c| if matches!(c, '\n' | '\r' | '\t') { ' ' } else { c }).collect()
     }
@@ -477,6 +486,7 @@ impl FindPanel {
             FindAction::ToggleCase => self.toggle(|p| &mut p.case_sensitive, cx),
             FindAction::ToggleWord => self.toggle(|p| &mut p.whole_word, cx),
             FindAction::ToggleRegex => self.toggle(|p| &mut p.regex, cx),
+            FindAction::TogglePreserveCase => self.toggle_preserve_case(cx),
             FindAction::ToggleStructural => self.toggle_structural(cx),
             FindAction::ToggleReplace if self.structural => cx.notify(Level::Info, NO_STRUCTURAL_REPLACE),
             FindAction::ToggleReplace => {
@@ -510,6 +520,22 @@ impl FindPanel {
         let f = flag(self);
         *f = !*f;
         self.search(cx);
+    }
+
+    /// Flip preserve case. The matches do not depend on it, so no new search.
+    fn toggle_preserve_case(&mut self, cx: &mut Ctx) {
+        if self.structural {
+            cx.notify(Level::Info, NO_STRUCTURAL_REPLACE);
+            return;
+        }
+        self.preserve_case ^= true;
+        if self.preserve_case && !self.preserve_applies() {
+            cx.notify(Level::Info, "Preserve case is off while a regex replacement uses groups ($1, ${name})");
+        }
+    }
+
+    fn preserve_applies(&self) -> bool {
+        preserve_case_applies(self.preserve_case, self.regex, &self.replace.text)
     }
 
     fn ask_replace_all(&mut self, cx: &mut Ctx) {
@@ -547,10 +573,11 @@ impl FindPanel {
         }
         let files = self.included_by_file().len();
         let msg = format!(
-            "Replace {n} match{} in {files} file{} with \"{}\"?\nOpen files change in the editor (undoable); others are written to disk.",
+            "Replace {n} match{} in {files} file{} with \"{}\"{}?\nOpen files change in the editor (undoable); others are written to disk.",
             if n == 1 { "" } else { "es" },
             if files == 1 { "" } else { "s" },
-            self.replace.text
+            self.replace.text,
+            if self.preserve_applies() { " (preserving case)" } else { "" }
         );
         cx.effects.push(Effect::Dialog(Dialog::confirm(DialogId::ReplaceInFiles, "Replace in Files", &msg, &["Replace", "Cancel"])));
     }
@@ -573,6 +600,7 @@ impl FindPanel {
                         Btn::Word => self.toggle(|p| &mut p.whole_word, cx),
                         Btn::Regex => self.toggle(|p| &mut p.regex, cx),
                         Btn::Structural => self.toggle_structural(cx),
+                        Btn::PreserveCase => self.toggle_preserve_case(cx),
                         Btn::ReplaceAll => self.ask_replace_all(cx),
                     }
                     return true;
@@ -697,10 +725,16 @@ impl FindPanel {
         if self.replace_shown() && header_h > 1 {
             let (y, mut x) = (inner.y + 1, inner.x + 1);
             put(frame, &mut x, y, "Replace: ", bar);
-            let field = Rect::new(x, y, input_w.min(right.saturating_sub(x)), 1);
+            // Leave room for ` AB ` and ` Replace all ` with their gaps.
+            let replace_w = input_w.min(right.saturating_sub(x + 1 + 4 + 1 + 13).max(10));
+            let field = Rect::new(x, y, replace_w.min(right.saturating_sub(x)), 1);
             self.replace.render(frame, field, input_style, "replace with", theme.dim.bg(theme.bg), focused && self.field == Field::Replace);
             self.btns.push((Btn::Replace, field));
             x += field.width;
+            put(frame, &mut x, y, " ", bar);
+            let shaped = self.preserve_applies() && self.preview.is_none();
+            let r = put(frame, &mut x, y, " AB ", if shaped { on } else { off });
+            self.btns.push((Btn::PreserveCase, r));
             put(frame, &mut x, y, " ", bar);
             let r = put(frame, &mut x, y, " Replace all ", theme.tab_active);
             self.btns.push((Btn::ReplaceAll, r));
@@ -896,6 +930,95 @@ mod tests {
         assert_eq!(p.replacement_of(&h), "a!");
     }
 
+    #[test]
+    fn replacement_preview_preserves_case() {
+        let mut p = panel();
+        p.replace.set_text("bar");
+        let h = hit("a", 0, "Foo");
+        assert_eq!(p.replacement_of(&h), "bar");
+        p.preserve_case = true;
+        assert_eq!(p.replacement_of(&h), "Bar");
+        p.replace.set_text("$1");
+        p.regex = true;
+        p.re = Some(Regex::new("(?i)(foo)").unwrap());
+        assert_eq!(p.replacement_of(&h), "Foo", "groups: the expansion is not shaped");
+        p.re = Some(Regex::new("(?i)(foo)").unwrap());
+        p.replace.set_text("bar$$");
+        assert_eq!(p.replacement_of(&h), "Bar$", "no reference: shaped");
+    }
+
+    #[tokio::test]
+    async fn preserve_case_toggle_does_not_search() {
+        let (dir, config, theme, workspace) = temp_root("preserve-toggle");
+        let mut cx = test_ctx(&config, &theme, &workspace);
+        let mut p = FindPanel::new();
+        p.query.set_text("foo");
+        p.search(&mut cx);
+        let seq = p.current_seq();
+        cx.effects.clear();
+        assert!(p.handle_action(&FindAction::TogglePreserveCase, &mut cx));
+        assert!(p.preserve_case);
+        assert_eq!(p.current_seq(), seq, "no new search");
+        assert!(cx.effects.is_empty(), "no toast without groups");
+        p.regex = true;
+        p.replace.set_text("$1");
+        p.handle_action(&FindAction::TogglePreserveCase, &mut cx);
+        p.handle_action(&FindAction::TogglePreserveCase, &mut cx);
+        let warn = "Preserve case is off while a regex replacement uses groups ($1, ${name})";
+        assert!(matches!(cx.effects.as_slice(), [Effect::Notify(Level::Info, t)] if t == warn), "toast only when switching on");
+        p.preserve_case = false;
+        p.structural = true;
+        cx.effects.clear();
+        p.handle_action(&FindAction::TogglePreserveCase, &mut cx);
+        assert!(!p.preserve_case);
+        assert!(matches!(cx.effects.as_slice(), [Effect::Notify(Level::Info, t)] if t == NO_STRUCTURAL_REPLACE));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ask_replace_all_names_preserved_case() {
+        let (dir, config, theme, workspace) = temp_root("ask-pc");
+        let mut cx = test_ctx(&config, &theme, &workspace);
+        let mut p = panel();
+        p.show_replace = true;
+        p.replace.set_text("bar");
+        let msg = |cx: &mut Ctx| match cx.effects.pop() {
+            Some(Effect::Dialog(d)) => d.message.clone(),
+            _ => panic!("no dialog"),
+        };
+        p.ask_replace_all(&mut cx);
+        assert!(msg(&mut cx).starts_with("Replace 3 matches in 2 files with \"bar\"?"));
+        p.preserve_case = true;
+        p.ask_replace_all(&mut cx);
+        assert!(msg(&mut cx).starts_with("Replace 3 matches in 2 files with \"bar\" (preserving case)?"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preserve_case_button_is_drawn_on_the_replace_row() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let theme = Theme::default();
+        let (on, off) = (theme.strip_item_active, theme.dim.bg(theme.panel_bg));
+        let mut p = FindPanel::new();
+        p.show_replace = true;
+        let mut term = Terminal::new(TestBackend::new(100, 10)).unwrap();
+        let mut check = |p: &mut FindPanel, want: Style, why: &str| {
+            term.draw(|f| p.render(f, f.area(), true, &theme)).unwrap();
+            let buf = term.backend().buffer();
+            let r = p.btns.iter().find(|(b, _)| *b == Btn::PreserveCase).map(|(_, r)| *r).expect("button");
+            let label: String = (0..r.width).map(|dx| buf[(r.x + dx, r.y)].symbol()).collect();
+            assert_eq!(label, " AB ", "{why}");
+            let cell = &buf[(r.x + 1, r.y)];
+            assert_eq!((cell.fg, cell.bg), (want.fg.unwrap_or_default(), want.bg.unwrap_or_default()), "{why}");
+        };
+        check(&mut p, off, "flag off");
+        p.preserve_case = true;
+        check(&mut p, on, "flag on");
+        p.regex = true;
+        p.replace.set_text("$1");
+        check(&mut p, off, "regex with a group reference");
+    }
+
     fn test_ctx<'a>(config: &'a Config, theme: &'a Theme, workspace: &'a Workspace) -> Ctx<'a> {
         let (bus, _rx) = tokio::sync::mpsc::unbounded_channel();
         Ctx { effects: Vec::new(), config, theme, workspace, bus }
@@ -905,12 +1028,13 @@ mod tests {
     async fn open_rename_turns_structural_off() {
         let mut p = FindPanel::new();
         p.structural = true;
+        p.preserve_case = true;
         let dir = std::env::temp_dir().join(format!("jetl-test-find-rename-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (config, theme, workspace) = (Config::default(), Theme::default(), Workspace::new(dir.clone()));
         let mut cx = test_ctx(&config, &theme, &workspace);
         p.open_rename("old", "new", HashMap::new(), &mut cx);
-        assert!(!p.structural && p.show_replace && p.replace_shown());
+        assert!(!p.structural && !p.preserve_case && p.show_replace && p.replace_shown());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1002,10 +1126,11 @@ mod tests {
         let mut p = FindPanel::new();
         p.structural = true;
         p.regex = true;
+        p.preserve_case = true;
         let (preview, hits) = rows(0);
         p.open_preview(preview, hits, &mut cx);
         assert_eq!((p.query.text.as_str(), p.replace.text.as_str()), ("old", "new"));
-        assert!(p.show_replace && p.case_sensitive && p.whole_word && !p.regex && !p.structural && !p.searching);
+        assert!(p.show_replace && p.case_sensitive && p.whole_word && !p.regex && !p.preserve_case && !p.structural && !p.searching);
         assert_eq!(p.rows, [Row::File { first: 0, count: 2 }, Row::Hit(0), Row::Hit(1), Row::File { first: 2, count: 1 }, Row::Hit(2)]);
         assert_eq!(p.list.selected, 1, "starts on the first hit");
         assert!(p.rename_preview().is_some());

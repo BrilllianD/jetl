@@ -3,6 +3,7 @@
 //! the main thread; a file changed since the search is left alone.
 
 use super::{App, Ctx};
+use crate::editor::search::preserve_case_applies;
 use crate::event::{AppMsg, Level};
 use crate::files::find::{hit_replacements, replace_text};
 
@@ -20,10 +21,11 @@ impl App {
             Err(e) => return self.notify(Level::Error, format!("Replace in files: {e}")),
         };
         let (with, expand) = (self.find.replace.text.clone(), self.find.regex);
+        let preserve = preserve_case_applies(self.find.preserve_case, self.find.regex, &with);
         let (mut files, mut matches, mut disk, mut errors) = (0usize, 0usize, Vec::new(), Vec::new());
         for (path, hits) in self.find.included_by_file() {
             match self.editor.index_of(&path) {
-                Some(i) => match self.editor.replace_hits(i, &hits, &re, &with, expand) {
+                Some(i) => match self.editor.replace_hits(i, &hits, &re, &with, expand, preserve) {
                     Some(n) => {
                         files += usize::from(n > 0);
                         matches += n;
@@ -45,7 +47,7 @@ impl App {
                         continue;
                     }
                 };
-                let Some(reps) = hit_replacements(&text, &hits, &re, &with, expand) else {
+                let Some(reps) = hit_replacements(&text, &hits, &re, &with, expand, preserve) else {
                     errors.push(stale(&path));
                     continue;
                 };

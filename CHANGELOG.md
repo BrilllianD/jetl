@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Preserve case on replace: the AB toggle (Alt+P) on the Replace row of the editor find bar and of Replace in Files keeps each match's case pattern (foo to bar, Foo to Bar, FOO to BAR, snake_case and kebab-case part by part); it is off while a regex replacement uses groups ($1) (yman 460).
 - Hot exit: quitting with unsaved changes no longer asks; the changes are kept and come back, still unsaved and not autosaved, the next time the project opens. `[files] hot_exit = false` brings back the Save all / Discard question. The conflict resolver still asks first.
 - Custom folding regions: comment lines `// region Name` … `// endregion` (also `#region` / `#endregion` and `// <editor-fold desc="…">` … `// </editor-fold>`, with the language's line comment) fold like code, nest, and show their start line when collapsed.
 - Navigate > Next Method and Previous Method (Alt+Down, Alt+Up in the editor) move the caret to the name of the next or previous function, method or constructor, nested ones included, from the language's symbols (as the breadcrumbs); Back returns from a long jump. The Git and Local History windows keep their Alt+Up/Down.

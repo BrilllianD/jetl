@@ -2588,6 +2588,39 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[tokio::test]
+    async fn replace_in_files_preserves_case() {
+        let (mut app, dir) = test_app("replace-preserve-case");
+        let root = app.workspace.root.clone();
+        std::fs::write(root.join("b.txt"), "FOO foo\n").unwrap();
+        let a = load(&mut app, "a.txt", "Foo\n");
+        app.perform(Action::Find(FindAction::InFiles));
+        for c in "foo".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), crossterm::event::KeyModifiers::NONE));
+        }
+        run_find(&mut app);
+        assert_eq!(app.find.hit_count(), 3);
+        app.find.show_replace = true;
+        app.find.replace.set_text("bar");
+        app.find.preserve_case = true;
+        app.finish_dialog(DialogId::ReplaceInFiles, DialogResult::Button(0));
+        assert_eq!(app.editor.buffers[app.editor.index_of(&a).unwrap()].text(), "Bar\n");
+        let msg = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match app.bus_rx.recv().await {
+                    Some(m @ AppMsg::ReplaceDone { .. }) => break m,
+                    Some(_) => {}
+                    None => panic!("bus closed"),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        app.handle_msg(msg);
+        assert_eq!(std::fs::read_to_string(root.join("b.txt")).unwrap(), "BAR bar\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[cfg(all(feature = "structural", feature = "lang-rust"))]
     #[tokio::test]
     async fn structural_find_matches_code_and_refuses_text_options() {

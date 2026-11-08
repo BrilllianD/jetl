@@ -485,6 +485,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Alt+C` | `find.toggle_case` | Find: match case |
 | `Alt+W` | `find.toggle_word` | Find: whole words |
 | `Alt+X` | `find.toggle_regex` | Find: regex |
+| `Alt+P` | `find.toggle_preserve_case` | Find: preserve case |
 | `Alt+T` | `find.toggle_structural` | Find: structural search (code pattern with $X) |
 | `Alt+R` | `find.toggle_replace` | Find: show or hide the replacement |
 | `Alt+A` | `find.replace_all` | Find: replace all results |
@@ -682,6 +683,7 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `editor.find_case` | Find: toggle match case |
 | `editor.find_word` | Find: toggle whole words |
 | `editor.find_regex` | Find: toggle regex |
+| `editor.find_preserve_case` | Find: toggle preserve case |
 | `editor.find_field` | Find: switch between find and replace fields |
 | `editor.select_line` | Select line |
 | `editor.compare_with_clipboard` | Compare the file (or the selection) with the clipboard |

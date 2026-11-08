@@ -1,0 +1,17 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+80x10 cursor=(13,2)
+00  *notes.log ×
+01  Find:    foo                              Cc   W   .*   No matches     ↑  ↓  ×
+02  Replace: bar                              AB   Replace   Replace all
+03   1    bar Bar BAR
+04   2
+05
+06
+07
+08
+09
+-- marks: A=preserve on H=match S=selection
+02                                           AAAA

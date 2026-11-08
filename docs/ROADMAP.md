@@ -194,7 +194,7 @@ Ranked after 0.9.0 against JetBrains, Zed, Helix and VS Code; tracked as yman ep
 | 5 | Inline values while debugging | M | inlay hint virtual text, Variables. Done: `[debug] inline_values` (Live), a second virtual-text layer `InlineValues` in `editor/inlay.rs` drawn in the `inlay_hint` style after the line-end hints, rebuilt from the Variables tree at each stop (the window may be hidden), cleared on resume, stop and edit |
 | 6 | Hot exit: unsaved buffers kept across quit | M | Done: `[files] hot_exit` (on): quit asks nothing, dirty buffers kept in `state/hot_exit/<key>/` (crash-dump format), restored silently and unsaved at the next session load; last process to quit owns the dump, an earlier one goes to crash recovery |
 | 7 | Custom folding regions, fold selection | S-M | Done: custom regions from comment markers (`region`/`endregion`, `#region`/`#endregion`, `<editor-fold>`); fold selection was already Ctrl+. / Alt+Shift+F |
-| 8 | Preserve case in replace | S | editor search, Replace in Files |
+| 8 | Preserve case in replace | S | Done: Preserve case toggle (AB, Alt+P) in the editor find bar and Replace in Files; off with regex group references |
 | 9 | Bracket pair colours | S | tree-sitter brackets, theme keys |
 | 10 | New file from a template | S | snippet engine |
 | 11 | Spell checking through a language server | S-M | `[lsp]` |

@@ -1345,6 +1345,16 @@ impl Editor {
                     self.remember_search();
                 }
             }
+            E::FindTogglePreserveCase => {
+                if let Some(s) = &mut b.view.search {
+                    s.preserve_case ^= true;
+                    let warn = s.preserve_case && !s.preserve_applies();
+                    if warn {
+                        cx.notify(Level::Info, "Preserve case is off while a regex replacement uses groups ($1, ${name})");
+                    }
+                    self.remember_search();
+                }
+            }
             E::FindToggleField => {
                 if let Some(s) = &mut b.view.search {
                     if s.show_replace {
@@ -2611,6 +2621,57 @@ mod tests {
             assert!(ed.active_buffer().unwrap().view.search.is_none());
         });
         assert_eq!(notes.iter().filter(|n| *n == "Search wrapped").count(), 2);
+    }
+
+    #[test]
+    fn find_bar_preserve_case_replace() {
+        let alt = |c| key(KeyCode::Char(c), KeyModifiers::ALT);
+        let typ = |ed: &mut Editor, cx: &mut Ctx, text: &str| {
+            for c in text.chars() {
+                assert!(ed.handle_find_key(key(KeyCode::Char(c), KeyModifiers::NONE), cx));
+            }
+        };
+        let text = |ed: &Editor| ed.active_buffer().unwrap().rope.to_string();
+        let mut ed = editor_with("a.txt", "foo Foo FOO foo_bar");
+        with_cx(|cx| {
+            ed.handle_action(&EditorAction::Replace, cx);
+            typ(&mut ed, cx, "foo");
+            assert!(ed.handle_find_key(key(KeyCode::Tab, KeyModifiers::NONE), cx));
+            typ(&mut ed, cx, "bar");
+            assert!(ed.handle_find_key(alt('p'), cx));
+            assert!(ed.active_buffer().unwrap().view.search.as_ref().unwrap().preserve_case);
+            ed.handle_action(&EditorAction::ReplaceAll, cx);
+            assert_eq!(text(&ed), "bar Bar BAR bar_bar");
+            ed.handle_action(&EditorAction::Undo, cx);
+            assert_eq!(text(&ed), "foo Foo FOO foo_bar", "one transaction");
+        });
+        // Regex with a group reference: preserve case is off in effect.
+        let mut ed = editor_with("a.txt", "foo FOO");
+        let notes = with_cx(|cx| {
+            ed.handle_action(&EditorAction::Replace, cx);
+            assert!(ed.handle_find_key(alt('x'), cx));
+            typ(&mut ed, cx, "(f)oo");
+            assert!(ed.handle_find_key(key(KeyCode::Tab, KeyModifiers::NONE), cx));
+            typ(&mut ed, cx, "${1}x");
+            assert!(ed.handle_find_key(alt('p'), cx));
+            ed.handle_action(&EditorAction::ReplaceAll, cx);
+            assert_eq!(text(&ed), "fx Fx");
+        });
+        let warn = "Preserve case is off while a regex replacement uses groups ($1, ${name})";
+        assert_eq!(notes.iter().filter(|n| *n == warn).count(), 1);
+        // Replace one shapes the selected match only.
+        let mut ed = editor_with("a.txt", "foo Foo");
+        with_cx(|cx| {
+            ed.handle_action(&EditorAction::Replace, cx);
+            typ(&mut ed, cx, "foo");
+            assert!(ed.handle_find_key(key(KeyCode::Tab, KeyModifiers::NONE), cx));
+            typ(&mut ed, cx, "bar");
+            assert!(ed.handle_find_key(alt('p'), cx));
+            ed.handle_action(&EditorAction::FindNext, cx);
+            assert_eq!(ed.active_buffer().unwrap().view.sel().range(), 4..7);
+            ed.handle_action(&EditorAction::ReplaceOne, cx);
+            assert_eq!(text(&ed), "foo Bar");
+        });
     }
 
     #[test]

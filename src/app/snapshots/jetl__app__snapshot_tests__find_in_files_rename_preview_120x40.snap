@@ -30,7 +30,7 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 24  ✓ ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 25  8 ┌ Find ─────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 26  ⟲ │ Find:    parse                                                         Cc   W   .*   AST                          │
-27  5 │ Replace: read_input                                                    Replace all                                │
+27  5 │ Replace: read_input                                                    AB   Replace all                           │
 28  ⚑ │ 4 matches in 2 files; 1 excluded + 1 file operation                                                               │
 29  9 │ service.rs  src/  3                                                                                               │
 30  ⎇ │      1  fn parseread_input(s: &str) {}                                                                            │
@@ -45,6 +45,7 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 39
 -- marks: L=selected H=match D=parse A=read_input X=excluded
 26                                                                                     XXXX XXXXX
+27                                                                            XXXX
 28      XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 29                  XXXX  X
 30     LLLLLLLLLLLLDDDDDAAAAAAAAAALLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

@@ -27,6 +27,8 @@ pub struct SearchState {
     pub regex: bool,
     pub case_sensitive: bool,
     pub whole_word: bool,
+    /// Replacements take the case pattern of their match (see `preserve_case`).
+    pub preserve_case: bool,
     pub matches: Vec<Range<usize>>,
     /// More than `MAX_MATCHES` matches exist; only the first are kept.
     pub capped: bool,
@@ -52,6 +54,7 @@ impl Default for SearchState {
             regex: false,
             case_sensitive: false,
             whole_word: false,
+            preserve_case: false,
             matches: Vec::new(),
             capped: false,
             current: None,
@@ -77,7 +80,72 @@ pub fn build_pattern(query: &str, regex: bool, case_sensitive: bool, whole_word:
     Regex::new(&format!("{flags}{pat}")).map_err(|e| e.to_string())
 }
 
+/// `replacement` shaped like the case pattern of `matched`: all upper, all
+/// lower, or a capital first letter; `-` and `_` separated parts are shaped
+/// one by one when both strings have the same number of parts. A match with
+/// no letters carries no pattern. Port of VS Code's
+/// `buildReplaceStringWithCasePreserved`.
+pub fn preserve_case(matched: &str, replacement: &str) -> String {
+    if matched.is_empty() || replacement.is_empty() {
+        return replacement.to_string();
+    }
+    if !matched.chars().any(|c| c.is_uppercase() || c.is_lowercase()) {
+        return replacement.to_string();
+    }
+    let parts_match =
+        |sep: char| matched.contains(sep) && replacement.contains(sep) && matched.split(sep).count() == replacement.split(sep).count();
+    let (dash, under) = (parts_match('-'), parts_match('_'));
+    if dash != under {
+        let sep = if dash { '-' } else { '_' };
+        return matched.split(sep).zip(replacement.split(sep)).map(|(m, r)| preserve_case(m, r)).collect::<Vec<_>>().join(&sep.to_string());
+    }
+    if matched == matched.to_uppercase() {
+        return replacement.to_uppercase();
+    }
+    if matched == matched.to_lowercase() {
+        return replacement.to_lowercase();
+    }
+    let mut rep = replacement.chars();
+    let (Some(m0), Some(r0)) = (matched.chars().next(), rep.next()) else { return replacement.to_string() };
+    if m0.is_uppercase() {
+        r0.to_uppercase().chain(rep).collect()
+    } else if m0.is_lowercase() {
+        r0.to_lowercase().chain(rep).collect()
+    } else {
+        replacement.to_string()
+    }
+}
+
+/// `replacement` holds a `regex` expansion reference: `$` followed by `{`, an
+/// ASCII digit, an ASCII letter or `_`. `$$` is an escaped dollar.
+pub fn has_capture_ref(replacement: &str) -> bool {
+    let mut it = replacement.chars().peekable();
+    while let Some(c) = it.next() {
+        if c != '$' {
+            continue;
+        }
+        match it.peek() {
+            Some('$') => {
+                it.next();
+            }
+            Some(&n) if n == '{' || n == '_' || n.is_ascii_alphanumeric() => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Whether the preserve-case option shapes replacements: off in regex mode
+/// when the replacement uses groups, since the groups already decide the text.
+pub fn preserve_case_applies(preserve: bool, regex: bool, with: &str) -> bool {
+    preserve && !(regex && has_capture_ref(with))
+}
+
 impl SearchState {
+    pub fn preserve_applies(&self) -> bool {
+        preserve_case_applies(self.preserve_case, self.regex, &self.replace.text)
+    }
+
     pub fn new(initial: &str, show_replace: bool) -> Self {
         let mut s = Self { show_replace, ..Default::default() };
         s.query.set_text(initial);
@@ -325,6 +393,51 @@ pub fn occurrences(rope: &Rope, lines: Range<usize>, target: &str, whole_word: b
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preserve_case_rules() {
+        let cases = [
+            ("foo", "bar", "bar"),
+            ("Foo", "bar", "Bar"),
+            ("FOO", "bar", "BAR"),
+            ("foo", "Bar", "bar"),
+            ("FOO", "Bar", "BAR"),
+            ("fooBar", "bazQux", "bazQux"),
+            ("FooBar", "bazQux", "BazQux"),
+            ("FOO_BAR", "baz_qux", "BAZ_QUX"),
+            ("Foo_bar", "baz_qux", "Baz_qux"),
+            ("foo-Bar", "baz-qux", "baz-Qux"),
+            ("FOO_BAR", "bazQux", "BAZQUX"),
+            ("foo_bar-x", "a_b-c", "a_b-c"),
+            ("123", "abc", "abc"),
+            ("", "x", "x"),
+            ("Foo", "", ""),
+            ("Ёлка", "ель", "Ель"),
+            ("ÉCOLE", "école", "ÉCOLE"),
+            ("Foo", "ßa", "SSa"),
+        ];
+        for (m, r, want) in cases {
+            assert_eq!(preserve_case(m, r), want, "preserve_case({m:?}, {r:?})");
+        }
+    }
+
+    #[test]
+    fn capture_refs() {
+        for s in ["$1", "${name}", "a$x", "$_", "$$$1"] {
+            assert!(has_capture_ref(s), "{s:?}");
+        }
+        for s in ["plain", "$$1", "cost $", "$ 1", "$-"] {
+            assert!(!has_capture_ref(s), "{s:?}");
+        }
+    }
+
+    #[test]
+    fn preserve_applies_only_without_groups() {
+        assert!(preserve_case_applies(true, false, "$1"));
+        assert!(!preserve_case_applies(true, true, "$1"));
+        assert!(preserve_case_applies(true, true, "x$$"));
+        assert!(!preserve_case_applies(false, false, "x"));
+    }
 
     #[test]
     fn finds_and_navigates() {

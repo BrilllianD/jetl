@@ -3752,6 +3752,35 @@ async fn editor_find_replace_bar() {
 }
 
 #[tokio::test]
+async fn editor_find_replace_preserve_case() {
+    let mut fx = stable_app("find-replace-preserve-case");
+    let app = &mut fx.app;
+    load(app, "notes.log", "foo Foo FOO\n");
+    app.focus.set(PanelId::Editor);
+    editor(app, EditorAction::Replace);
+    for c in "foo".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    editor(app, EditorAction::FindToggleField);
+    for c in "bar".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    editor(app, EditorAction::FindTogglePreserveCase);
+    editor(app, EditorAction::ReplaceAll);
+    // The "Replaced 3 occurrences" toast would make the frame depend on timing.
+    app.notifications.clear();
+    app.notification_shown = false;
+    app.toasts = Default::default();
+    let term = draw_editor(app, 80, 10);
+    let marks = [
+        Mark::style('A', "preserve on", app.theme.strip_item_active),
+        Mark::bg('H', "match", app.theme.search_match_bg),
+        Mark::bg('S', "selection", app.theme.selection_bg),
+    ];
+    assert_snapshot!("editor_find_replace_preserve_case", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn editor_lightbulb() {
     use crate::lsp::diagnostics::Severity;
     use crate::lsp::diagnostics::tests::diag;

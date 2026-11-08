@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 
 use regex::Regex;
 
+use crate::editor::search::preserve_case;
+
 /// A search stops after this many hits.
 pub const MAX_HITS: usize = 10_000;
 /// Files larger than this are skipped.
@@ -203,9 +205,10 @@ pub struct Replacement {
 /// The replacement of each of `hits` (one file's, in `(line, col)` order),
 /// located by position: `re` runs once at each hit's start and must match
 /// exactly the text found by the search. `with` is used literally, or with
-/// `$1`/`${name}` expanded when `expand` (regex mode). `None` when any hit
-/// no longer matches where it was (the text changed since the search).
-pub fn hit_replacements(text: &str, hits: &[Hit], re: &Regex, with: &str, expand: bool) -> Option<Vec<Replacement>> {
+/// `$1`/`${name}` expanded when `expand` (regex mode); with `preserve` each
+/// result takes the case pattern of its match (`preserve_case`). `None` when
+/// any hit no longer matches where it was (the text changed since the search).
+pub fn hit_replacements(text: &str, hits: &[Hit], re: &Regex, with: &str, expand: bool, preserve: bool) -> Option<Vec<Replacement>> {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(hits.len());
     // Current line and its start; (byte, char) pair for incremental
@@ -247,13 +250,16 @@ pub fn hit_replacements(text: &str, hits: &[Hit], re: &Regex, with: &str, expand
         if m.start() != byte || m.as_str() != hit.matched {
             return None;
         }
-        let new = if expand {
+        let mut new = if expand {
             let mut s = String::new();
             caps.expand(with, &mut s);
             s
         } else {
             with.to_string()
         };
+        if preserve {
+            new = preserve_case(m.as_str(), &new);
+        }
         conv_char += text[conv_byte..byte].chars().count();
         conv_byte = byte;
         out.push(Replacement { start: conv_char, old: hit.matched.clone(), new });
@@ -319,11 +325,22 @@ mod tests {
         let mut hits = search_text(Path::new("f"), text.as_bytes(), &re, 10);
         assert_eq!(hits.len(), 3);
         hits.pop();
-        let reps = hit_replacements(text, &hits, &re, "$2@$1", true).unwrap();
+        let reps = hit_replacements(text, &hits, &re, "$2@$1", true, false).unwrap();
         assert_eq!(reps.iter().map(|r| (r.start, r.new.as_str())).collect::<Vec<_>>(), [(3, "b@a"), (10, "d@c")]);
         assert_eq!(replace_text(text, &reps), "мы b@a,\r\n d@c x@y");
-        let lit = hit_replacements(text, &hits, &re, "$2", false).unwrap();
+        let lit = hit_replacements(text, &hits, &re, "$2", false, false).unwrap();
         assert_eq!(replace_text(text, &lit), "мы $2,\r\n $2 x@y");
+    }
+
+    #[test]
+    fn hit_replacements_preserve_case() {
+        let re = build_pattern("foo", false, false, false).unwrap();
+        let text = "foo Foo\nFOO x";
+        let hits = search_text(Path::new("f"), text.as_bytes(), &re, 10);
+        let on = hit_replacements(text, &hits, &re, "bar", false, true).unwrap();
+        assert_eq!(replace_text(text, &on), "bar Bar\nBAR x");
+        let off = hit_replacements(text, &hits, &re, "bar", false, false).unwrap();
+        assert_eq!(replace_text(text, &off), "bar bar\nbar x");
     }
 
     #[test]
@@ -331,10 +348,10 @@ mod tests {
         let re = build_pattern("foo", false, true, false).unwrap();
         let text = "a\nfoo bar\nfoo";
         let hits = search_text(Path::new("f"), text.as_bytes(), &re, 10);
-        assert!(hit_replacements(text, &hits, &re, "x", false).is_some());
-        assert!(hit_replacements("new\na\nfoo bar\nfoo", &hits, &re, "x", false).is_none(), "line inserted above");
-        assert!(hit_replacements("a\nfao bar\nfoo", &hits, &re, "x", false).is_none(), "word changed");
-        assert!(hit_replacements("a\nfoo", &hits, &re, "x", false).is_none(), "text too short");
+        assert!(hit_replacements(text, &hits, &re, "x", false, false).is_some());
+        assert!(hit_replacements("new\na\nfoo bar\nfoo", &hits, &re, "x", false, false).is_none(), "line inserted above");
+        assert!(hit_replacements("a\nfao bar\nfoo", &hits, &re, "x", false, false).is_none(), "word changed");
+        assert!(hit_replacements("a\nfoo", &hits, &re, "x", false, false).is_none(), "text too short");
     }
 
     #[test]
@@ -343,7 +360,7 @@ mod tests {
         let text = "foo foobar foo";
         let hits = search_text(Path::new("f"), text.as_bytes(), &re, 10);
         assert_eq!(hits.len(), 2);
-        let reps = hit_replacements(text, &hits, &re, "x", false).unwrap();
+        let reps = hit_replacements(text, &hits, &re, "x", false, false).unwrap();
         assert_eq!(replace_text(text, &reps), "x foobar x");
     }
 

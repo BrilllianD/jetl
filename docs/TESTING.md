@@ -399,6 +399,20 @@ Alt+R, type `bar`: the Replace row sits between them. Tab, Down, Alt+Delete: `3 
 whole. With rust-analyzer, Shift+F6 on `mod util` in the rename preview scenario's project shows
 `+ 1 file operation`, whole, and the rows now read `3 matches in 1 file`. Stderr is empty and Ctrl+Q exits 0.
 
+### Scenario: preserve case on replace
+
+At 80x24 and 120x40 (yman 460), private socket (`/tmp/tm460.sh` = `exec /usr/bin/tmux -L jetl460 "$@"`), project,
+config and state under `/tmp/jetl-460` (`XDG_CONFIG_HOME`, `XDG_STATE_HOME`, a `config.toml` with `[lsp] enabled = false`),
+build `cargo build --no-default-features --features lang-rust`. Project: `n.txt` = `foo Foo FOO foo_bar`, `m.txt` = `FOO` and `Foo`.
+
+1. Open `n.txt`, Ctrl+R, type `foo`, Tab, type `bar`, `M-p`. The Replace row reads `AB`, highlighted, under `Cc`.
+   Click ` Replace all ` (SGR press and release at its cell). Line 1 reads `bar Bar BAR bar_bar`; Ctrl+Z restores it in one step.
+2. `M-x` (regex), query `(f)oo`, Replace field `$1x`; `M-p` twice (off, then on): the toast `Preserve case is off while a
+   regex replacement uses groups ($1, ${name})` appears and `AB` is dim.
+3. Esc, `M-3`, type `foo`, `M-r`, type `bar`, `M-p`: `AB` is highlighted and the `m.txt` rows preview `BAR` and `Bar`.
+   `M-a`: the dialog reads `with "bar" (preserving case)?`; Enter. `m.txt` holds `BAR` and `Bar`.
+4. Stderr is empty and Ctrl+Q exits 0.
+
 ### Scenario: rename with comments and strings
 
 At 120x40 and 80x24 (yman 397), with rust-analyzer, `[lsp]` enabled, a

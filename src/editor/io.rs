@@ -113,9 +113,10 @@ impl Editor {
         re: &regex::Regex,
         with: &str,
         expand: bool,
+        preserve: bool,
     ) -> Option<usize> {
         let b = self.buffers.get_mut(i)?;
-        let reps = crate::files::find::hit_replacements(&b.text(), hits, re, with, expand)?;
+        let reps = crate::files::find::hit_replacements(&b.text(), hits, re, with, expand, preserve)?;
         let n = reps.len();
         // Last to first so earlier offsets stay valid.
         let changes: Vec<Change> = reps.into_iter().rev().map(|r| Change::replace(r.start, r.old, r.new)).collect();
