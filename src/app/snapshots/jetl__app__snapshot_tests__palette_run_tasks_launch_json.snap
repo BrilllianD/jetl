@@ -1,0 +1,31 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+80x24 cursor=(6,5)
+00  ≣ ┌ Project: root ───────────────┐│
+01    │                              ││
+02  ⌂ │                              ││
+03  ◫ │                              ││
+04  ⊢┌ Run ─────────────────────────────────────────────────────────────────────┐
+05   │ › type a task name                                                     4 │
+06   │ demo  ./demo                                                 config.toml │
+07   │ (gdb) Launch  ${workspaceFolder}/demo                        launch.json │
+08   │ (gdb) Attach  attach ${command:pickProcess}                  launch.json │
+09   │ Python: Current File  debugpy (not supported)                launch.json │
+10   │                                                                          │
+11   │                                                                          │
+12  ◉└──────────────────────────────────────────────────────────────────────────┘
+13  ⋔ │                              ││         Ctrl+Shift+N finds a file.
+14  ✎ │                              ││
+15  ✓ │                              ││
+16  ⟲ │                              ││
+17  ⚑ │                              ││
+18  ⎇ │                              ││
+19  ❯ │                              ││
+20  ⚠ │                              ││
+21  ► │                              ││
+22  ⌕ └──────────────────────────────┘│
+23
+-- marks: L=selected
+06    LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

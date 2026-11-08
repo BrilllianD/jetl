@@ -105,7 +105,7 @@ impl App {
             AppMsg::Formatted { generation, id, seq, result } => self.format_done(generation, id, seq, result),
             AppMsg::RunOutput { generation, run, lines } => self.run_output(generation, run, lines),
             AppMsg::RunExited { generation, run, end } => self.run_exited(generation, run, end),
-            AppMsg::RunTasks { generation, seq, tasks, error } => self.run_tasks_loaded(generation, seq, tasks, error),
+            AppMsg::RunTasks { generation, seq, tasks, error, warnings } => self.run_tasks_loaded(generation, seq, tasks, error, warnings),
             AppMsg::TerminalOutput { generation, id } => self.terminal_output(generation, id),
             AppMsg::Lsp(m) => self.lsp_msg(m),
             AppMsg::Dap(m) => self.dap_msg(m),

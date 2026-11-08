@@ -2,7 +2,7 @@
 //! of the run configurations and a form for the selected one. Edits are
 //! staged in the entries; Apply / OK turn them into `ConfigEdit`s for
 //! `.jetl/run.toml` (`run::edit`). Only project entries can be edited;
-//! config.toml and detected ones are read-only and can be copied.
+//! config.toml and detected ones are read-only and can be copied; launch.json ones are read-only and cannot be copied.
 
 use std::collections::BTreeMap;
 
@@ -112,6 +112,7 @@ impl Entry {
         match self.task.origin {
             _ if self.editable() => None,
             Origin::Detected => Some("Detected from the project files: Copy makes an editable project copy"),
+            Origin::LaunchJson => Some("From .vscode/launch.json: edit that file to change it"),
             _ => Some("Defined in config.toml: Copy makes an editable project copy"),
         }
     }
@@ -419,6 +420,11 @@ impl RunConfigsWindow {
             return Some(r);
         }
         let e = self.selected()?;
+        if e.task.origin == Origin::LaunchJson {
+            return Some(ConfigsResult::Notify(
+                "A launch.json configuration cannot be copied: its debug settings live in .vscode/launch.json".into(),
+            ));
+        }
         let name = unique(&format!("{} (copy)", e.task.name), &self.names());
         let task = RunTask { name, ..e.task.clone() };
         self.push_new(task);
@@ -854,6 +860,23 @@ mod tests {
         // Removing a new entry leaves no trace.
         assert_eq!(key(&mut w, KeyCode::Delete), None);
         assert_eq!(w.edits().len(), 3);
+    }
+
+    #[test]
+    fn launch_json_entries_are_read_only() {
+        let lj = task("(gdb) Launch", TaskCommand::Shell("${workspaceFolder}/demo".into()), Origin::LaunchJson);
+        let mut w = RunConfigsWindow::new(String::new(), Ok(vec![]), vec![lj]);
+        let e = w.selected().unwrap();
+        assert_eq!(e.note(), Some("From .vscode/launch.json: edit that file to change it"));
+        assert_eq!(w.set_field(Field::Name, text("other")), Err("This configuration is read-only".into()));
+        assert_eq!(
+            ctrl(&mut w, 'd'),
+            Some(ConfigsResult::Notify(
+                "A launch.json configuration cannot be copied: its debug settings live in .vscode/launch.json".into()
+            ))
+        );
+        assert_eq!(w.entries.len(), 1, "no copy was made");
+        assert!(w.edits().is_empty() && !w.dirty());
     }
 
     #[test]

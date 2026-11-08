@@ -1,5 +1,5 @@
 //! Run tasks: `[[run.tasks]]` in config.toml, `[[tasks]]` in the project's
-//! `.jetl/run.toml`, or defaults detected from the project files when
+//! `.jetl/run.toml` (or `.vscode/launch.json`, `dap::launch_json`, listed after them), or defaults detected from the project files when
 //! neither has any. A task runs in its own process group with stdout and
 //! stderr merged (`process`); its output is matched for file locations
 //! (`matcher`) and shown in the Run tool window (`panel`).
@@ -105,6 +105,8 @@ pub enum Origin {
     Config,
     Project,
     Detected,
+    /// From `.vscode/launch.json` (`dap::launch_json`): listed and debugged, never run or edited.
+    LaunchJson,
 }
 
 impl Origin {
@@ -113,6 +115,7 @@ impl Origin {
             Origin::Config => "config.toml",
             Origin::Project => ".jetl/run.toml",
             Origin::Detected => "detected",
+            Origin::LaunchJson => "launch.json",
         }
     }
 }

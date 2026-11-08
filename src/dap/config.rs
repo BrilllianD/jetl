@@ -109,6 +109,8 @@ pub struct LaunchVars {
 const LANGUAGE_VAR: &str = "${language}";
 /// Filled in from the build's executable; see `fill_artifact`.
 const ARTIFACT_VAR: &str = "${artifact}";
+/// As the `pid` of an attach: Debug asks for the process (Attach to Process) instead.
+pub const PICK_PROCESS: &str = "${command:pickProcess}";
 
 struct Builtin {
     name: &'static str,
@@ -354,7 +356,8 @@ pub fn test_block(t: &RustTest) -> DebugBlock {
 /// takes the exact environment; left out when empty); the block's `launch`. Then `${workspaceFolder}`,
 /// `${file}` and `${artifact}` are replaced in every string; an unset one stays as written. The task's
 /// `command` and `args` are not used. For `StartRequest::Attach` the result is the block's `launch` alone
-/// (variables replaced): the adapter's base, `cwd` and `env` describe a process jetl starts.
+/// (variables replaced): the adapter's base, `cwd` and `env` describe a process jetl starts. `PICK_PROCESS`
+/// stays as written.
 pub fn resolve_launch(
     adapter: &AdapterConfig,
     block: &DebugBlock,

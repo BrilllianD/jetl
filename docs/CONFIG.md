@@ -450,7 +450,9 @@ alone as the `attach` arguments (the adapter's defaults, `cwd` and `env` are
 left out, since they describe a process jetl starts), and Stop detaches from
 the process and leaves it running. A value other than `launch` or `attach` is an error in the file.
 Run > Attach to Process… needs no block: it lists the running processes and
-attaches gdb to the one chosen. Verified under gdb 17.2 only; other adapters
+attaches gdb to the one chosen. A block may write `launch = { pid = "${command:pickProcess}" }`
+to ask for the process instead: Debug then opens the same picker and attaches to the one chosen (Escape starts
+nothing); such a block cannot have a `build`, and it is refused with a toast. Verified under gdb 17.2 only; other adapters
 name the pid argument differently and were not tried.
 
 The launch arguments are built in this order, each replacing the same
@@ -501,6 +503,44 @@ none is written: `build = ["cargo", "build", "--message-format=json"]` (`cargo t
 `--no-run`), `launch = { program = "${artifact}" }` and the language `rust`, so pressing Debug in a Cargo
 project needs no `.jetl/run.toml`. A block you write for that name wins whole. Tasks you wrote in
 `config.toml` or `.jetl/run.toml` have no default.
+
+### .vscode/launch.json
+
+jetl reads the `configurations` of `.vscode/launch.json` (VS Code's file, JSON with comments and trailing commas)
+and lists them with the run configurations, tagged `launch.json`, after the ones from `config.toml`,
+`.jetl/run.toml` and the detected defaults. A name that is already taken by an earlier entry (also by an earlier
+launch.json entry) is left out, so `config.toml` and `.jetl/run.toml` win a name clash. The list is read again when
+the file changes and each time the run picker opens. The entries are for Debug (Shift+F9 with the entry selected):
+Run (Shift+F10) refuses them with a message, Edit Configurations lists them read-only and cannot copy them, and the
+`[debug.*]` tables never apply to them. Nothing is written to the file. Verified under gdb 17.2 only; lldb-dap,
+codelldb and debugpy were not tried.
+
+Which entries debug: `type` `cppdbg` with `MIMode` `gdb` or none, and `type` `gdb`, both with the `gdb` adapter
+(`miDebuggerPath` is ignored: the command is `[debug.adapters.gdb]`'s). Every other `type` (`lldb`, `codelldb`,
+`debugpy`, `python`, `go`, `node`, `pwa-node`, `cppdbg` with another `MIMode`, no `type`) is listed, tagged
+`<type> (not supported)`, and Debug refuses it with a toast. `request` must be `launch` or `attach`; any other value
+skips the entry with a warning.
+
+| launch.json key | Becomes |
+|---|---|
+| `program`, `args` (a list of strings) | `launch.program`, `launch.args` |
+| `stopAtEntry` | `launch.stopAtBeginningOfMainSubprogram` (the gdb key of that name wins) |
+| `stopAtBeginningOfMainSubprogram`, `stopOnEntry` | the same `launch` keys |
+| `cwd` | the configuration's `cwd`, resolved against the project root |
+| `environment` (`[{name, value}]`), `env` (an object; wins by key) | the configuration's `env` (under gdb the whole environment, with jetl's beneath it) |
+| attach: `processId`, else `pid` | `launch.pid`: a number, digits in a string, or `${command:pickProcess}` |
+| attach: `miDebuggerServerAddress`, else `target` | `launch.target` |
+| attach: `program` | `launch.program`; `cwd`, `env`, `environment` and `args` are ignored |
+
+Every other key (`MIMode`, `setupCommands`, `externalConsole`, `console`, `logging`, `postDebugTask`, ...) is
+ignored with no warning. `inputs`, `compounds` and `version` are ignored too.
+
+Variables: `${workspaceFolder}` and `${file}` are filled when Debug starts, as in a debug block. `${env:NAME}` is
+filled when the list is read (an unset variable becomes empty, as in VS Code), so a value that itself holds
+`${file}` is filled later. `${command:pickProcess}` is supported as a whole `processId`: Debug opens Attach to
+Process and attaches to the chosen process (Escape starts nothing). Any other `${...}` skips the entry with a
+warning that names it. `preLaunchTask` is not run: the entry is kept, a warning says to build first, `postDebugTask` is not run either. Warnings are toasts, shown once each until they change; an unreadable
+file or invalid JSON gives one warning and no entries.
 
 **A project's `.jetl/run.toml` can run commands through Debug.** `launch`
 can carry debugger commands (`initCommands` in lldb-dap and codelldb, for

@@ -1193,6 +1193,58 @@ What gdb cannot show, and the unit tests prove instead: the `terminateDebuggee: 
 program runs with a breakpoint inserted leaves the program to die with SIGTRAP (see ARCHITECTURE, Pitfalls); the
 second Stop press (`Detaching from process <pid>...`, no kill) and the 2 s disconnect deadline (a Warn) are session unit tests, not tried live. lldb-dap, codelldb and debugpy were not tried.
 
+### Scenario: .vscode/launch.json
+
+Needs the setup of `### Scenario: Debug and Stop` (gdb 17.2, `gcc`, `XDG_*` under `/tmp`, `[lsp] enabled = false`,
+`[ui] toolbar = false`), at 80x24 and at 120x40, jetl on a private tmux socket, and the attach fixture of
+`### Scenario: Attach to Process` (`jetl-s8-target 1`, started with `setsid -f`, pid recorded). Clear
+`$XDG_STATE_HOME` before each size: jetl keeps the open tabs, the breakpoints and the selected configuration of a
+project, and a kept mark on line 4 would be toggled off by step 3. Fixture `/tmp/jetl-dap-demo`: `demo.c` (an
+`add(int, int)` on lines 3 to 5, called from `main`), `gcc -g -O0 -o demo demo.c`, no `.jetl/run.toml` at first, and
+`.vscode/launch.json` (saved as `backlog-run-26-S9-evidence/476/live/launch.json.orig`): a header comment, a
+`/* ... */` block and a trailing comma after the last entry; `(gdb) Launch` (`cppdbg`, `launch`, `program`
+`${workspaceFolder}/demo`, `MIMode` `gdb`, a `description` holding `https://example.org//x`, `preLaunchTask`
+`build`, `setupCommands`); `(gdb) Attach` (`cppdbg`, `attach`, `processId` `${command:pickProcess}`, `program` the
+fixture); `Python: Current File` (`debugpy`); `bad var` (`cwd` `${fileDirname}`). Start only when `pgrep -x
+jetl-s8-target` and `pgrep -f '[g]db -q -i=dap'` print nothing. Alt+Shift+F10 is `M-S-F10` in tmux, Alt+Shift+F9
+`M-S-F9`. Edit Configurations is F10, `r`, then 18 times Down, Enter.
+
+1. Open jetl in the fixture. Two Warn toasts: `.vscode/launch.json: skipped 'bad var': ${fileDirname} is not
+   supported (only ...)` and `.vscode/launch.json: '(gdb) Launch': preLaunchTask is not run by jetl; build before
+   debugging`. Alt+Shift+F10: `(gdb) Launch`, `(gdb) Attach` and `Python: Current File`, each tagged `launch.json`
+   on the right with its command text (`${workspaceFolder}/demo`, `attach ${command:pickProcess}`, `debugpy (not
+   supported)`); `bad var` is absent. Escape, wait 9 s, Alt+Shift+F10 again: no toast.
+2. Enter on `(gdb) Launch`: the Info toast `'(gdb) Launch' comes from .vscode/launch.json and can only be debugged:
+   Run > Debug`; no Run window opens.
+3. Alt+Shift+F9, Enter on `(gdb) Launch`. Open `demo.c` (Ctrl+Shift+N), Ctrl+G `4`, Ctrl+F8. Shift+F9: toast
+   `Debugging (gdb) Launch with gdb`, the Debug window reads `paused (breakpoint)` and the `▶` is on line 4. F9:
+   `Debug session ended, exit code 0`, the Console shows `x=3`, no gdb is left.
+4. Alt+Shift+F9, `Python`, Enter, Shift+F9: the Warn toast `Cannot debug 'Python: Current File': launch.json type
+   debugpy is not supported; jetl debugs type cppdbg (MIMode gdb) and type gdb with gdb` (cut at 80x24; the Event Log,
+   Alt+5, has all of it). No gdb starts.
+5. Alt+Shift+F9, `Attach`, Enter, Shift+F9: Attach to Process opens (starts with no toast); type `s8-target`, Enter
+   on the fixture's row: `Debugging (gdb) Attach with gdb`, `paused (attach)`; `/proc/<pid>/status` reads `State: t
+   (tracing stop)` and `TracerPid` = the gdb's pid. Ctrl+F2: `Debug session stopped; the process was detached`, and
+   the target reads `State: S (sleeping)`, `TracerPid: 0`. Shift+F9 and Escape in the picker: no session, no toast.
+6. Edit Configurations: the three entries are listed with the tag; on `(gdb) Launch` the note reads `From
+   .vscode/launch.json: edit that file to change it`. Enter, Enter on a field: that note as a toast. Left, Ctrl+D
+   (Copy): `A launch.json configuration cannot be copied: its debug settings live in .vscode/launch.json`. (The
+   `This configuration is read-only` text of a typed edit is a unit test, `launch_json_entries_are_read_only`.)
+   Escape.
+7. Name clash: write `.jetl/run.toml` with `[[configs]] name = "(gdb) Launch"`, `command = ["./demo"]` and
+   `[debug."(gdb) Launch"]` `adapter = "gdb"`, `launch = { program = "${workspaceFolder}/demo" }`. The picker shows
+   one `(gdb) Launch`, command `./demo`, tagged `.jetl/run.toml`. Remove the file and the directory: the
+   `launch.json` one is back.
+8. While jetl runs, rewrite `.vscode/launch.json` without `bad var` and with a `gdb` entry `native` (`program`
+   `${workspaceFolder}/demo`, `stopAtBeginningOfMainSubprogram` `true`). The picker lists `native`. Select it,
+   Shift+F9: `paused` with the `▶` on line 8, `main`'s first line. Ctrl+F2.
+9. Ctrl+Q: exit 0, empty stderr. Kill the target by pid; `pgrep -x jetl-s8-target` and `pgrep -f '[g]db -q -i=dap'`
+   print nothing; the tmux socket has no server.
+
+What gdb cannot show, and the unit tests prove instead: the exact `launch` and `attach` argument values beyond what
+gdb's behaviour shows, a `.jetl/run.toml` block with `launch = { pid = "${command:pickProcess}" }` (fake adapter)
+and its build-step refusal. Not tried: any adapter other than gdb.
+
 ### Scenario: breakpoints sent to a debug session
 
 Needs `gdb` 14 or newer and `gcc`. At 80x24 and at 120x40, with `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and

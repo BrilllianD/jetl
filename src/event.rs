@@ -238,12 +238,13 @@ pub enum AppMsg {
     },
     /// The task picker's tasks (`App::load_run_tasks`), tagged with the
     /// workspace generation and the request's seq; the error is an invalid
-    /// `.jetl/run.toml`.
+    /// `.jetl/run.toml`; `warnings`: what `.vscode/launch.json` skipped or ignores.
     RunTasks {
         generation: u64,
         seq: u64,
         tasks: Vec<crate::run::RunTask>,
         error: Option<String>,
+        warnings: Vec<String>,
     },
     /// Output (or the exit) of the Terminal window's shell `id` waits in its
     /// inbox (`terminal::pty::Session::drain`); tagged with the workspace

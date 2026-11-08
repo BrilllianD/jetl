@@ -1,0 +1,32 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &run_configs_marks(&app.theme), None)"
+---
+80x24 cursor=hidden
+00  ≣┌ Run Configurations ──────────────────────────────────────────────────────┐
+01   │  (gdb) Lau… launch.json│ (gdb) Launch                                    │
+02  ⌂│  (gdb) Att… launch.json│                                                 │
+03  ◫│  Python: C… launch.json│   Name               (gdb) Launch               │
+04  ⊢│                        │   Command            ${workspaceFolder}/demo    │
+05   │                        │   Arguments          (none)                     │
+06   │                        │   Working directory  (project root)             │
+07   │                        │   Environment        (none)                     │
+08   │                        │   Output             auto (problems)            │
+09   │                        │                                                 │
+10   │                        │                                                 │
+11   │                        │                                                 │
+12  ◉│                        │                                                 │
+13  ⋔│                        │                                                 │
+14  ✎│                        │                                                 │
+15  ✓│                        │                                                 │
+16  ⟲│                        │ Shown in the picker and the Run window.         │
+17  ⚑│                        │ From .vscode/launch.json: edit that file to     │
+18  ⎇│                        │ change it                                       │
+19  ❯│                                                                          │
+20  ⚠│[+] [−] [Copy]                              [ OK ]  [ Cancel ]  [ Apply ] │
+21  ►└──────────────────────────────────────────────────────────────────────────┘
+22  ⌕ └──────────────────────────────┘│
+23
+-- marks: L=selected U=unfocused M=modified
+01    LLLLLLLLLLLLLLLLLLLLLLLL
+03                              UUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUU

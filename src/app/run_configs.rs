@@ -5,6 +5,7 @@ use crossterm::event::KeyEvent;
 
 use super::App;
 use crate::config::FileText;
+use crate::dap::launch_json;
 use crate::event::{Level, Mouse};
 use crate::run::edit;
 use crate::run::{self, MatcherKind, Origin, RunTask};
@@ -29,6 +30,12 @@ impl App {
         if others.is_empty() && project.as_ref().is_ok_and(|p| p.is_empty()) {
             others = run::detect(root);
         }
+        // launch.json entries come last, read-only; a taken name is left out (its warnings are Run's to toast).
+        let mut taken = others.clone();
+        taken.extend(project.iter().flatten().map(|(_, t)| t.clone()));
+        let known = taken.len();
+        launch_json::append_tasks(&mut taken, &launch_json::load(root, &|k| std::env::var(k).ok()).entries);
+        others.extend(taken.split_off(known));
         RunConfigsWindow::new(base, project, others)
     }
 

@@ -55,7 +55,8 @@ impl App {
         }
         self.symbols_changed(&changes.paths);
         let run_file = crate::run::edit::project_file(&self.workspace.root);
-        if changes.paths.iter().any(|p| *p == run_file || Some(p.as_path()) == run_file.parent()) {
+        let launch_file = crate::dap::launch_json::path(&self.workspace.root);
+        if changes.paths.iter().any(|p| [&run_file, &launch_file].iter().any(|f| p == *f || Some(p.as_path()) == f.parent())) {
             self.load_run_tasks();
             self.run_configs_file_changed();
         }

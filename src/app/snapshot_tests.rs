@@ -1498,6 +1498,40 @@ async fn palette_select_run_config() {
     assert_snapshot!("palette_select_run_config", snapshot(&term, &marks, None));
 }
 
+const LAUNCH_JSON_SNAPSHOT: &str = r#"{
+    // two gdb entries and one this build cannot debug
+    "configurations": [
+        { "name": "(gdb) Launch", "type": "cppdbg", "request": "launch", "program": "${workspaceFolder}/demo", "MIMode": "gdb" },
+        { "name": "(gdb) Attach", "type": "cppdbg", "request": "attach", "processId": "${command:pickProcess}", "MIMode": "gdb" },
+        { "name": "Python: Current File", "type": "debugpy", "request": "launch", "program": "${file}" },
+    ]
+}"#;
+
+#[tokio::test]
+async fn palette_run_tasks_launch_json() {
+    let mut fx = stable_app("palette-run-tasks-launch-json");
+    let app = &mut fx.app;
+    let mut tasks = crate::config::Config::parse("[[run.tasks]]\nname = \"demo\"\ncommand = \"./demo\"\n").unwrap().run.tasks;
+    tasks.extend(crate::dap::launch_json::parse(LAUNCH_JSON_SNAPSHOT, &|_| None).entries.into_iter().map(|e| e.task));
+    app.open_palette(PaletteKind::RunTasks);
+    app.palette.as_mut().unwrap().set_tasks(tasks, false);
+    let term = draw_app(app, 80, 24);
+    let marks = palette_marks(&app.theme);
+    assert_snapshot!("palette_run_tasks_launch_json", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn run_configs_launch_json() {
+    let mut fx = stable_app("run-configs-launch-json");
+    let app = &mut fx.app;
+    let vscode = app.workspace.root.join(".vscode");
+    std::fs::create_dir_all(&vscode).unwrap();
+    std::fs::write(vscode.join("launch.json"), LAUNCH_JSON_SNAPSHOT).unwrap();
+    app.perform(Action::Run(crate::actions::RunAction::EditConfigs));
+    let term = draw_app(app, 80, 24);
+    assert_snapshot!("run_configs_launch_json", snapshot(&term, &run_configs_marks(&app.theme), None));
+}
+
 #[tokio::test]
 async fn palette_files_ascii() {
     let mut fx = stable_app("palette-files-ascii");

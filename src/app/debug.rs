@@ -18,10 +18,11 @@ use crate::actions::{Action, DebugAction, PaletteKind};
 use crate::dap::build::{Artifact, BuildTags, drive_build};
 use crate::dap::client::{DapClient, SHUTDOWN_LIMIT};
 use crate::dap::config::{
-    AdapterConfig, DebugBlock, DebugConfig, LaunchVars, StartRequest, choose_adapter, default_block, fill_artifact, load_debug_blocks,
-    needs_artifact, process_env, resolve_build, resolve_launch, test_block,
+    AdapterConfig, DebugBlock, DebugConfig, LaunchVars, PICK_PROCESS, StartRequest, choose_adapter, default_block, fill_artifact,
+    load_debug_blocks, needs_artifact, process_env, resolve_build, resolve_launch, test_block,
 };
 use crate::dap::console::{ConsoleGate, MAX_QUEUED, forward_output, spawn_console};
+use crate::dap::launch_json;
 use crate::dap::panel::{BuildStage, DebugTab, FrameRow, MAX_WATCHES};
 use crate::dap::procs;
 use crate::dap::protocol::{
@@ -42,7 +43,7 @@ use crate::lsp::client::{spawn_process, spawn_tied_to_thread};
 use crate::run::caret::RustTest;
 use crate::run::matcher::{Link, RunLine, Severity};
 use crate::run::process::{RunEnd, Spec, clean, kill_group};
-use crate::run::{RunTask, load_tasks, quote_word};
+use crate::run::{Origin, RunTask, load_tasks, quote_word};
 use crate::ui::dialog::{Dialog, DialogId};
 use crate::ui::focus::{PanelId, ToolWindowId};
 use crate::ui::menu::{ContextMenu, MenuItem};
@@ -333,6 +334,8 @@ pub struct Prepared {
     pub request: StartRequest,
     /// The warning the gdb start check gives when the program shows no sign.
     pub not_started: String,
+    /// The attach asks for its process first (`PICK_PROCESS`); `launch` then has no `pid`.
+    pub pick_process: bool,
 }
 
 /// A Debug Test at Caret start: what `prepare` debugs instead of choosing a configuration. `block` is
@@ -635,26 +638,40 @@ fn prepare(job: Job) -> Result<Prepared, String> {
         // A test start reads no configuration: a broken `.jetl/run.toml` is not its business.
         Some(TestStart { task, block, test }) => (task, block, Some(test)),
         None => {
-            let (t, tasks_error) = load_tasks(&job.root, &job.tasks);
+            let (mut t, tasks_error) = load_tasks(&job.root, &job.tasks);
             let (b, blocks_error) = load_debug_blocks(&job.root, &job.blocks);
+            let imported = launch_json::load(&job.root, &|k| std::env::var(k).ok());
+            launch_json::append_tasks(&mut t, &imported.entries);
             (tasks, blocks) = (t, b);
             // `load_debug_blocks` is the only reporter of a bad block: Run does not show it.
             if let Some(e) = blocks_error.or(tasks_error) {
                 return Err(e);
             }
-            let block_of = |t: &RunTask| blocks.get(&t.name).cloned().or_else(|| default_block(t));
+            // A launch.json entry takes its block from the import alone; the `[debug.*]` tables never apply to it.
+            let block_of = |t: &RunTask| -> Result<Option<DebugBlock>, String> {
+                if t.origin == Origin::LaunchJson {
+                    return launch_json::block_for(&imported, &t.name).transpose();
+                }
+                Ok(blocks.get(&t.name).cloned().or_else(|| default_block(t)))
+            };
+            let written = |t: &RunTask| -> Option<DebugBlock> {
+                if t.origin == Origin::LaunchJson {
+                    return launch_json::block_for(&imported, &t.name).and_then(Result::ok);
+                }
+                blocks.get(&t.name).cloned()
+            };
             let (task, block) = match &job.selected {
                 Some(name) => {
                     let task =
                         tasks.iter().find(|t| &t.name == name).ok_or_else(|| format!("Run configuration '{name}' no longer exists"))?;
-                    let block = block_of(task)
+                    let block = block_of(task)?
                         .ok_or_else(|| format!("Configuration '{name}' has no [debug.\"{name}\"] table in .jetl/run.toml"))?;
                     (task, block)
                 }
                 // A written block wins over a default, whatever the order of the tasks.
                 None => tasks
                     .iter()
-                    .find_map(|t| blocks.get(&t.name).map(|b| (t, b.clone())))
+                    .find_map(|t| written(t).map(|b| (t, b)))
                     .or_else(|| tasks.iter().find_map(|t| default_block(t).map(|b| (t, b))))
                     .ok_or_else(|| "No debug configuration: add [debug.<name>] to .jetl/run.toml".to_string())?,
             };
@@ -666,7 +683,7 @@ fn prepare(job: Job) -> Result<Prepared, String> {
     let adapter =
         choose_adapter(&job.debug, &block, job.language.as_deref(), &|cmd| crate::doctor::resolve(cmd, root, &crate::util::fs::which))?;
     let vars = LaunchVars { workspace_folder: root.to_string_lossy().into_owned(), file: job.file, artifact: None };
-    let launch = resolve_launch(&adapter, &block, task, &vars, &process_env);
+    let mut launch = resolve_launch(&adapter, &block, task, &vars, &process_env);
     let build = resolve_build(&block, task, &vars);
     if build.is_none() && needs_artifact(&launch) {
         return Err(format!("Cannot debug '{}': ${{artifact}} needs a build step: add build = [...] to its debug table", task.name));
@@ -677,7 +694,16 @@ fn prepare(job: Job) -> Result<Prepared, String> {
         StartRequest::Launch => NOT_STARTED.to_string(),
         StartRequest::Attach => procs::attach_failed_text(launch["pid"].as_i64(), procs::ptrace_scope(Path::new(procs::PTRACE_SCOPE))),
     };
-    Ok(Prepared { name: task.name.clone(), adapter, launch, build, test, request, not_started })
+    let pick_process = request == StartRequest::Attach && launch["pid"].as_str() == Some(PICK_PROCESS);
+    if pick_process {
+        if build.is_some() {
+            return Err(format!("Cannot debug '{}': an attach that asks for its process cannot have a build step", task.name));
+        }
+        if let Some(o) = launch.as_object_mut() {
+            o.remove("pid");
+        }
+    }
+    Ok(Prepared { name: task.name.clone(), adapter, launch, build, test, request, not_started, pick_process })
 }
 
 /// The adapter Attach to Process uses.
@@ -704,6 +730,7 @@ fn prepare_attach(job: AttachJob) -> Result<Prepared, String> {
         test: None,
         request: StartRequest::Attach,
         not_started: procs::attach_failed_text(Some(i64::from(pid)), procs::ptrace_scope(Path::new(procs::PTRACE_SCOPE))),
+        pick_process: false,
     })
 }
 
@@ -871,7 +898,6 @@ impl App {
     }
 
     /// Attaches with an already prepared start: sets `launch["pid"]`, the request and the failure text, then launches.
-    #[allow(dead_code)] // Called by the launch.json import (yman 476); tests call it here.
     pub(crate) fn debug_launch_attach(&mut self, mut p: Prepared, pid: u32) {
         if self.debug.active() || self.debug.starting() {
             return self.notify(Level::Info, "Attach cancelled: another debug session started");
@@ -941,6 +967,11 @@ impl App {
                 return self.notify(Level::Warn, e);
             }
         };
+        if p.pick_process {
+            // The picker is a start of its own: `debug_launch_attach` refuses while this one still counts.
+            self.debug.starting = false;
+            return self.debug_pick_process(Box::new(move |app, pid| app.debug_launch_attach(p, pid)));
+        }
         match p.build.take() {
             Some(spec) => self.debug_begin_build(p, spec),
             None => self.debug_launch(p, None),
@@ -9489,6 +9520,7 @@ pub(crate) mod tests {
             test: None,
             request: StartRequest::Launch,
             not_started: String::new(),
+            pick_process: false,
         };
         app.debug_launch_attach(p, 1);
         assert_eq!(last(&app), (Level::Info, "Attach cancelled: another debug session started".to_string()));
@@ -9513,5 +9545,161 @@ pub(crate) mod tests {
     async fn a_gone_process_is_not_attached() {
         let job = AttachJob { root: PathBuf::from("/"), debug: DebugConfig::default(), pid: u32::MAX };
         assert_eq!(prepare_attach(job).unwrap_err(), format!("Process {} has exited", u32::MAX));
+    }
+
+    /// A gdb adapter that is the fake, with `.vscode/launch.json` holding `configurations` and `name` selected.
+    fn launch_json_app(name: &str, configurations: &str, selected: &str) -> (App, PathBuf, UnboundedReceiver<FakeAdapter>) {
+        let (mut app, dir) = test_app(name);
+        let fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        app.config.debug.adapters.insert("gdb".into(), AdapterOverride { command: Some(vec!["sh".into()]), ..Default::default() });
+        let vscode = app.workspace.root.join(".vscode");
+        std::fs::create_dir_all(&vscode).unwrap();
+        std::fs::write(vscode.join("launch.json"), format!("{{\n // c\n \"configurations\": [{configurations}],\n}}\n")).unwrap();
+        app.run.selected = Some(selected.into());
+        (app, dir, fakes)
+    }
+
+    fn picker_open(a: &App) -> bool {
+        a.palette.as_ref().is_some_and(|p| p.kind == PaletteKind::Processes)
+    }
+
+    const PICK_ENTRY: &str = r#"{"name": "att", "type": "cppdbg", "request": "attach", "program": "${workspaceFolder}/demo",
+        "processId": "${command:pickProcess}", "MIMode": "gdb"}"#;
+
+    #[tokio::test]
+    async fn a_launch_json_entry_launches_under_gdb() {
+        let entry = r#"{"name": "(gdb) Launch", "type": "cppdbg", "request": "launch", "program": "${workspaceFolder}/demo",
+            "args": ["a"], "stopAtEntry": false, "cwd": "${workspaceFolder}/sub", "environment": [{"name": "A", "value": "1"}],
+            "MIMode": "gdb", "miDebuggerPath": "/usr/bin/gdb"}"#;
+        let (mut app, dir, mut fakes) = launch_json_app("lj-launch", entry, "(gdb) Launch");
+        let root = app.workspace.root.clone();
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        let mut fake = start(&mut app, &mut fakes).await;
+        let launch = fake.recv("launch").await;
+        let a = &launch["arguments"];
+        assert_eq!(a["program"], json!(root.join("demo").to_string_lossy()));
+        assert_eq!(a["args"], json!(["a"]));
+        assert_eq!(a["cwd"], json!(root.join("sub").to_string_lossy()));
+        assert_eq!(a["env"]["A"], json!("1"));
+        assert!(a["env"]["PATH"].is_string(), "gdb takes the exact environment: {a}");
+        assert_eq!(a["stopAtBeginningOfMainSubprogram"], json!(false));
+        assert!(texts(&app).contains(&"Debugging (gdb) Launch with gdb".to_string()), "{:?}", texts(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn run_toml_wins_a_name_clash() {
+        let entry = r#"{"name": "demo", "type": "gdb", "request": "launch", "program": "${workspaceFolder}/other"}"#;
+        let (mut app, dir, mut fakes) = launch_json_app("lj-clash", entry, "demo");
+        write_run_toml(&app, DEMO);
+        let mut fake = start(&mut app, &mut fakes).await;
+        let launch = fake.recv("launch").await;
+        let root = app.workspace.root.clone();
+        assert_eq!(launch["arguments"]["program"], json!(root.join("demo").to_string_lossy()));
+        assert!(texts(&app).contains(&"Debugging demo with fake".to_string()), "{:?}", texts(&app));
+        app.load_run_tasks();
+        handle_next(&mut app, |m| matches!(m, AppMsg::RunTasks { .. })).await;
+        let demos: Vec<Origin> = app.run.tasks.iter().filter(|t| t.name == "demo").map(|t| t.origin).collect();
+        assert_eq!(demos, [Origin::Project]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn debug_tables_never_apply_to_a_launch_json_entry() {
+        // A `[debug.lj]` table without a task of that name must not give the launch.json entry `lj` its block.
+        let entry = r#"{"name": "lj", "type": "gdb", "request": "launch", "program": "${workspaceFolder}/real"}"#;
+        let (mut app, dir, mut fakes) = launch_json_app("lj-tables", entry, "lj");
+        write_run_toml(&app, "[debug.lj]\nadapter = \"fake\"\nlaunch = { program = \"${workspaceFolder}/table\" }\n");
+        let mut fake = start(&mut app, &mut fakes).await;
+        let launch = fake.recv("launch").await;
+        let root = app.workspace.root.clone();
+        assert_eq!(launch["arguments"]["program"], json!(root.join("real").to_string_lossy()));
+        assert!(texts(&app).contains(&"Debugging lj with gdb".to_string()), "{:?}", texts(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_unsupported_entry_refuses() {
+        let entry = r#"{"name": "Python: Current File", "type": "debugpy", "request": "launch", "program": "${file}"}"#;
+        let (mut app, dir, _fakes) = launch_json_app("lj-unsupported", entry, "Python: Current File");
+        shift_f9(&mut app);
+        dap_until(&mut app, |a| !a.debug.starting()).await;
+        assert_eq!(
+            last(&app),
+            (
+                Level::Warn,
+                "Cannot debug 'Python: Current File': launch.json type debugpy is not supported; jetl debugs type cppdbg (MIMode gdb) and type gdb with gdb"
+                    .to_string()
+            )
+        );
+        assert!(app.debug.session.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_pick_process_entry_opens_the_picker() {
+        let (mut app, dir, mut fakes) = launch_json_app("lj-pick", PICK_ENTRY, "att");
+        shift_f9(&mut app);
+        dap_until(&mut app, picker_open).await;
+        assert!(!app.debug.starting());
+        let pid = std::process::id();
+        deliver(&mut app, vec![proc_info(pid, "me", "jetl-test")], Some(1));
+        press(&mut app, KeyCode::Enter);
+        dap_until(&mut app, |a| a.debug.session.is_some()).await;
+        let mut fake = fakes.try_recv().expect("an adapter was connected");
+        let attach = fake.recv("attach").await;
+        let root = app.workspace.root.clone();
+        assert_eq!(attach["arguments"], json!({"pid": pid, "program": root.join("demo").to_string_lossy()}));
+        assert_eq!(app.debug.session.as_ref().unwrap().request, StartRequest::Attach);
+        assert!(texts(&app).iter().all(|t| t != "Attach cancelled: another debug session started"), "{:?}", texts(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn escape_on_the_pick_starts_nothing() {
+        let (mut app, dir, _fakes) = launch_json_app("lj-pick-escape", PICK_ENTRY, "att");
+        shift_f9(&mut app);
+        dap_until(&mut app, picker_open).await;
+        let before = texts(&app);
+        press(&mut app, KeyCode::Esc);
+        assert!(app.palette.is_none() && app.debug.pick.is_none());
+        tokio::task::yield_now().await;
+        assert!(app.debug.session.is_none() && !app.debug.starting());
+        assert_eq!(texts(&app), before, "Escape says nothing");
+        shift_f9(&mut app);
+        dap_until(&mut app, picker_open).await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_run_toml_attach_block_can_pick() {
+        let toml = "[[configs]]\nname = \"demo\"\ncommand = [\"./demo\"]\n\n[debug.demo]\nadapter = \"fake\"\nrequest = \"attach\"\nlaunch = { pid = \"${command:pickProcess}\" }\n";
+        let (mut app, dir) = test_app("lj-toml-pick");
+        let mut fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        write_run_toml(&app, toml);
+        shift_f9(&mut app);
+        dap_until(&mut app, picker_open).await;
+        assert!(!app.debug.starting() && app.debug.session.is_none());
+        press(&mut app, KeyCode::Esc);
+        write_run_toml(&app, &toml.replace("request = ", "build = [\"true\"]\nrequest = "));
+        shift_f9(&mut app);
+        dap_until(&mut app, |a| !a.debug.starting()).await;
+        assert_eq!(
+            last(&app),
+            (Level::Warn, "Cannot debug 'demo': an attach that asks for its process cannot have a build step".to_string())
+        );
+        assert!(!picker_open(&app) && fakes.try_recv().is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_numeric_attach_entry_attaches_at_once() {
+        let entry = r#"{"name": "att", "type": "gdb", "request": "attach", "processId": "4242"}"#;
+        let (mut app, dir, mut fakes) = launch_json_app("lj-numeric", entry, "att");
+        let mut fake = start(&mut app, &mut fakes).await;
+        let attach = fake.recv("attach").await;
+        assert_eq!(attach["arguments"], json!({"pid": 4242}));
+        assert!(!picker_open(&app));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

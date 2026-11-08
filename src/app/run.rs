@@ -54,6 +54,8 @@ pub struct RunState {
     run_selected_pending: bool,
     /// The dropdown waits for the list: its anchor.
     menu_pending: Option<(u16, u16)>,
+    /// The launch.json warnings of the last list; only new ones are toasted.
+    launch_warned: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -139,6 +141,10 @@ impl Drop for RunState {
 impl App {
     /// Start `task` in the Run window, killing a task that still runs.
     pub(crate) fn run_task(&mut self, task: RunTask) {
+        if task.origin == Origin::LaunchJson {
+            self.notify(Level::Info, format!("'{}' comes from .vscode/launch.json and can only be debugged: Run > Debug", task.name));
+            return;
+        }
         self.run.kill();
         let root = self.workspace.root.clone();
         let cwd = match task.cwd.as_deref() {
@@ -346,12 +352,21 @@ impl App {
         let (root, generation, tx) = (self.workspace.root.clone(), self.workspace.generation, self.bus_tx.clone());
         let configured = self.config.run.all();
         tokio::task::spawn_blocking(move || {
-            let (tasks, error) = crate::run::load_tasks(&root, &configured);
-            let _ = tx.send(AppMsg::RunTasks { generation, seq, tasks, error });
+            let (mut tasks, error) = crate::run::load_tasks(&root, &configured);
+            let imported = crate::dap::launch_json::load(&root, &|k| std::env::var(k).ok());
+            crate::dap::launch_json::append_tasks(&mut tasks, &imported.entries);
+            let _ = tx.send(AppMsg::RunTasks { generation, seq, tasks, error, warnings: imported.warnings });
         });
     }
 
-    pub(super) fn run_tasks_loaded(&mut self, generation: u64, seq: u64, tasks: Vec<RunTask>, error: Option<String>) {
+    pub(super) fn run_tasks_loaded(
+        &mut self,
+        generation: u64,
+        seq: u64,
+        tasks: Vec<RunTask>,
+        error: Option<String>,
+        warnings: Vec<String>,
+    ) {
         if generation != self.workspace.generation || seq <= self.run.tasks_seq {
             tracing::debug!("dropping a stale task list");
             return;
@@ -362,6 +377,12 @@ impl App {
         if let Some(e) = error {
             self.notify(Level::Warn, e);
         }
+        for w in &warnings {
+            if !self.run.launch_warned.contains(w) {
+                self.notify(Level::Warn, w.clone());
+            }
+        }
+        self.run.launch_warned = warnings;
         let loading = seq < self.run.tasks_requested;
         if let Some(p) = self.palette.as_mut().filter(|p| p.wants(Source::Tasks)) {
             p.set_tasks(self.run.tasks.clone(), loading);
@@ -433,6 +454,7 @@ impl App {
         self.run.tasks_loaded = false;
         self.run.run_selected_pending = false;
         self.run.menu_pending = None;
+        self.run.launch_warned.clear();
         self.run_configs = None;
         self.run_panel.clear();
     }
@@ -671,6 +693,101 @@ mod tests {
         let requested = app.run.tasks_requested;
         app.handle_msg(AppMsg::FsChanged { generation, changes: Changes { paths: vec![root.join("src/other.rs")], ..Default::default() } });
         assert_eq!(app.run.tasks_requested, requested, "an unrelated path reloads nothing");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn write_launch_json(root: &std::path::Path, text: &str) {
+        std::fs::create_dir_all(root.join(".vscode")).unwrap();
+        std::fs::write(root.join(".vscode/launch.json"), text).unwrap();
+    }
+
+    fn gdb_entry(name: &str, extra: &str) -> String {
+        format!(r#"{{"name": {name:?}, "type": "gdb", "request": "launch", "program": "${{workspaceFolder}}/demo"{extra}}}"#)
+    }
+
+    #[tokio::test]
+    async fn launch_json_entries_are_listed_after_the_project_ones() {
+        let (mut app, dir) = test_app("run-launch-json-list");
+        let root = app.workspace.root.clone();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        std::fs::create_dir_all(root.join(".jetl")).unwrap();
+        std::fs::write(crate::run::edit::project_file(&root), "[[configs]]\nname = \"b\"\ncommand = \"true\"\n").unwrap();
+        write_launch_json(&root, &format!(r#"{{"configurations": [{}, {}]}}"#, gdb_entry("b", ""), gdb_entry("lj", "")));
+        app.load_run_tasks();
+        handle_next(&mut app, |m| matches!(m, AppMsg::RunTasks { .. })).await;
+        let got: Vec<(&str, Origin)> = app.run.tasks.iter().map(|t| (t.name.as_str(), t.origin)).collect();
+        assert_eq!(got, [("b", Origin::Project), ("lj", Origin::LaunchJson)]);
+        // Detection depends on config.toml and run.toml only: with neither, Cargo.toml still gives its defaults.
+        std::fs::remove_dir_all(root.join(".jetl")).unwrap();
+        app.load_run_tasks();
+        handle_next(&mut app, |m| matches!(m, AppMsg::RunTasks { .. })).await;
+        let got: Vec<(&str, Origin)> = app.run.tasks.iter().map(|t| (t.name.as_str(), t.origin)).collect();
+        assert!(got.contains(&("cargo build", Origin::Detected)), "{got:?}");
+        assert_eq!(got.last(), Some(&("lj", Origin::LaunchJson)));
+        assert_eq!(got.iter().filter(|(n, _)| *n == "b").count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn launch_json_warnings_toast_once() {
+        let (mut app, dir) = test_app("run-launch-json-warn");
+        let root = app.workspace.root.clone();
+        write_launch_json(&root, &format!(r#"{{"configurations": [{}]}}"#, gdb_entry("v", r#", "cwd": "${fileDirname}""#)));
+        let var_text = ".vscode/launch.json: skipped 'v': ${fileDirname} is not supported (only ${workspaceFolder}, ${file}, ${env:NAME} and a processId of ${command:pickProcess})";
+        let warns = |app: &App| -> Vec<String> {
+            app.notifications.iter().filter(|n| n.level == Level::Warn && n.text.starts_with(".vscode/")).map(|n| n.text.clone()).collect()
+        };
+        for _ in 0..2 {
+            app.load_run_tasks();
+            handle_next(&mut app, |m| matches!(m, AppMsg::RunTasks { .. })).await;
+        }
+        assert_eq!(warns(&app), [var_text]);
+        write_launch_json(&root, &format!(r#"{{"configurations": [{}]}}"#, gdb_entry("p", r#", "preLaunchTask": "build""#)));
+        app.load_run_tasks();
+        handle_next(&mut app, |m| matches!(m, AppMsg::RunTasks { .. })).await;
+        let pre = ".vscode/launch.json: 'p': preLaunchTask is not run by jetl; build before debugging";
+        assert_eq!(warns(&app), [var_text, pre]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn running_a_launch_json_entry_refuses() {
+        let (mut app, dir) = test_app("run-launch-json-refuse");
+        let lj = RunTask { origin: Origin::LaunchJson, ..shell("lj", "true") };
+        app.run_task(lj.clone());
+        let last = app.notifications.last().unwrap();
+        assert_eq!(
+            (last.level, last.text.as_str()),
+            (Level::Info, "'lj' comes from .vscode/launch.json and can only be debugged: Run > Debug")
+        );
+        assert!(app.run.last.is_none() && !app.run.running());
+        app.run_task(shell("long", "sleep 30"));
+        assert!(app.run.running());
+        app.run_task(lj);
+        assert!(app.run.running(), "the refusal kills nothing");
+        assert_eq!(app.run.last.as_ref().map(|t| t.name.as_str()), Some("long"));
+        app.run.kill();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn editing_launch_json_reloads_the_tasks() {
+        let (mut app, dir) = test_app("run-launch-json-reload");
+        let root = app.workspace.root.clone();
+        write_launch_json(&root, &format!(r#"{{"configurations": [{}]}}"#, gdb_entry("lj", "")));
+        let generation = app.workspace.generation;
+        let change = |app: &mut App, p: std::path::PathBuf| {
+            app.handle_msg(AppMsg::FsChanged { generation, changes: Changes { paths: vec![p], ..Default::default() } });
+        };
+        change(&mut app, root.join(".vscode/launch.json"));
+        handle_next(&mut app, |m| matches!(m, AppMsg::RunTasks { .. })).await;
+        assert!(app.run.tasks.iter().any(|t| t.name == "lj"));
+        let requested = app.run.tasks_requested;
+        change(&mut app, root.join(".vscode/settings.json"));
+        assert_eq!(app.run.tasks_requested, requested, "another file of .vscode reloads nothing");
+        change(&mut app, root.join(".vscode"));
+        assert_eq!(app.run.tasks_requested, requested + 1, "the directory itself does");
+        handle_next(&mut app, |m| matches!(m, AppMsg::RunTasks { .. })).await;
         let _ = std::fs::remove_dir_all(&dir);
     }
 
