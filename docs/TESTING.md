@@ -1179,8 +1179,8 @@ Use pids in every `kill`. The picker is F10, `r`, Down ten times, Enter (the row
    `TracerPid: 0` and its `voluntary_ctxt_switches` rise a second later (it runs untraced). The breakpoint is hit every
    100 ms, so the stop lands at the breakpoint or between two hits; both detach.
 5. Attach to A again, wait for `paused (attach)`, Ctrl+F2: the same readings as step 4.
-6. Attach to B: the Warn toast is the `ptrace_scope is 1` text for B's pid (it is cut at 80x24; Event Log, Alt+5, End,
-   Enter shows all of it) and B is unchanged (`S`, `TracerPid: 0`). Ctrl+F2 ends the session.
+6. Attach to B: the Warn toast starts `Could not attach to process <B>: ptrace_scope is 1 (` (the rest is cut at 80x24;
+   Event Log, Alt+5, End, Enter shows all of it) and B is unchanged (`S`, `TracerPid: 0`). Ctrl+F2 ends the session.
 7. Attach to A, F9, Ctrl+Q: jetl exits 0 with an empty stderr, no gdb is left, A runs untraced.
 8. Descendants: a `.jetl/run.toml` task `sleep 317` run from jetl (F10, `r`, Enter, Enter), and a control
    `setsid -f sleep 318`. In the picker, `sleep 31`: the `sleep 318` row is there, no row of the `sleep 317` pid. (The
@@ -1191,7 +1191,7 @@ Use pids in every `kill`. The picker is F10, `r`, Down ten times, Enter (the row
 What gdb cannot show, and the unit tests prove instead: the `terminateDebuggee: false` argument for an adapter that lacks
 `supportTerminateDebuggee`, and the `request = "attach"` block path (fake adapter). Killing gdb while the attached
 program runs with a breakpoint inserted leaves the program to die with SIGTRAP (see ARCHITECTURE, Pitfalls); the
-second Stop press and the 2 s disconnect deadline were not tried live. lldb-dap, codelldb and debugpy were not tried.
+second Stop press (`Detaching from process <pid>...`, no kill) and the 2 s disconnect deadline (a Warn) are session unit tests, not tried live. lldb-dap, codelldb and debugpy were not tried.
 
 ### Scenario: breakpoints sent to a debug session
 

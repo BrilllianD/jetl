@@ -115,17 +115,17 @@ pub fn ptrace_scope(path: &Path) -> Option<u8> {
 }
 
 /// What a refused attach is told. gdb gives no reason over DAP (the error is only in its own log), so this
-/// words the usual cause.
+/// words the usual cause. The reason comes first: a narrow toast cuts the end.
 pub fn attach_failed_text(pid: Option<i64>, scope: Option<u8>) -> String {
     let Some(pid) = pid else { return "Could not attach: gdb gave no reason over DAP. Check launch.pid or launch.target.".into() };
-    let head = format!("Could not attach to process {pid}: gdb gave no reason over DAP.");
+    let head = format!("Could not attach to process {pid}:");
     match scope {
         Some(1) => format!(
             "{head} ptrace_scope is 1 ({PTRACE_SCOPE}): only gdb's own descendants, or a process that called prctl(PR_SET_PTRACER, ...), can be attached."
         ),
         Some(2) => format!("{head} ptrace_scope is 2 ({PTRACE_SCOPE}): only a debugger with CAP_SYS_PTRACE can attach."),
         Some(3) => format!("{head} ptrace_scope is 3 ({PTRACE_SCOPE}): attaching is turned off until a reboot."),
-        _ => format!("{head} Check that the process still runs, is yours and is not being debugged already."),
+        _ => format!("{head} gdb gave no reason over DAP. Check that the process still runs, is yours and is not being debugged already."),
     }
 }
 
@@ -202,7 +202,7 @@ mod tests {
     #[test]
     fn attach_failed_text_names_ptrace_scope() {
         let p = "/proc/sys/kernel/yama/ptrace_scope";
-        let head = "Could not attach to process 42: gdb gave no reason over DAP.";
+        let head = "Could not attach to process 42:";
         assert_eq!(
             attach_failed_text(Some(42), Some(1)),
             format!(
@@ -217,7 +217,8 @@ mod tests {
             attach_failed_text(Some(42), Some(3)),
             format!("{head} ptrace_scope is 3 ({p}): attaching is turned off until a reboot.")
         );
-        let other = format!("{head} Check that the process still runs, is yours and is not being debugged already.");
+        let other =
+            format!("{head} gdb gave no reason over DAP. Check that the process still runs, is yours and is not being debugged already.");
         assert_eq!(attach_failed_text(Some(42), Some(0)), other);
         assert_eq!(attach_failed_text(Some(42), None), other);
         assert_eq!(attach_failed_text(None, Some(1)), "Could not attach: gdb gave no reason over DAP. Check launch.pid or launch.target.");

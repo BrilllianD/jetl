@@ -469,6 +469,14 @@ impl Session {
         }
     }
 
+    /// `process <pid>` of the attach, or `the process` when it attaches by something else.
+    fn attach_target(&self) -> String {
+        match self.spec.launch["pid"].as_i64() {
+            Some(pid) => format!("process {pid}"),
+            None => "the process".into(),
+        }
+    }
+
     /// The only place `disconnect` is built.
     fn disconnect(&mut self, now: Instant, out: &mut Vec<Action>) {
         let args = match self.spec.request {
@@ -705,6 +713,10 @@ impl Session {
                 match (self.phase, self.stop) {
                     (Phase::Initializing, _) => self.end("", true, out),
                     (Phase::Stopping, Some(StopStage::Terminate { .. })) => self.disconnect(now, out),
+                    // Killing gdb while it is attached can leave a breakpoint's `int3` in the user's process.
+                    (Phase::Stopping, Some(StopStage::Disconnect { .. })) if self.spec.request == StartRequest::Attach => {
+                        out.push(Action::Emit(DapBody::Info(format!("Detaching from {}...", self.attach_target()))));
+                    }
                     (Phase::Stopping, _) => self.end("", true, out),
                     _ => self.begin_stop(now, out),
                 }
@@ -717,6 +729,12 @@ impl Session {
         match self.stop {
             Some(StopStage::Terminate { deadline }) if now >= deadline => self.disconnect(now, out),
             Some(StopStage::Disconnect { deadline }) if now >= deadline => {
+                if self.spec.request == StartRequest::Attach {
+                    let target = self.attach_target();
+                    out.push(Action::Emit(DapBody::Warning(format!(
+                        "gdb did not detach in time and was stopped; {target} may have been stopped with it"
+                    ))));
+                }
                 self.end("", true, out);
                 return;
             }
@@ -2134,6 +2152,64 @@ mod tests {
         assert_eq!(sent_command(&h.last[0]), Some("disconnect"));
         h.cmd(Command::Stop);
         assert_eq!(h.last, end_actions(""));
+    }
+
+    fn notes(h: &H) -> Vec<String> {
+        h.emitted
+            .iter()
+            .filter_map(|b| match b {
+                DapBody::Info(t) | DapBody::Warning(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_second_stop_press_does_not_kill_an_attach() {
+        let mut h = attached_with(caps());
+        h.s.spec.launch = json!({"pid": 4242});
+        h.cmd(Command::Stop);
+        h.take_emitted();
+        h.cmd(Command::Stop);
+        assert!(!h.has_ended(), "gdb was killed by the second press");
+        assert!(!h.last.iter().any(|a| matches!(a, Action::Kill)), "{:?}", h.last);
+        assert_eq!(h.phase(), Phase::Stopping);
+        assert_eq!(notes(&h), ["Detaching from process 4242..."]);
+        assert_eq!(h.count("disconnect"), 1);
+        // The stage and its deadline are kept: the detach can still be answered.
+        h.answer("disconnect", Value::Null);
+        assert_eq!(h.last, end_actions(""));
+    }
+
+    #[test]
+    fn an_attach_that_does_not_detach_in_time_is_killed_with_a_warning() {
+        let mut h = attached_with(caps());
+        h.s.spec.launch = json!({"pid": 4242});
+        h.cmd(Command::Stop);
+        h.take_emitted();
+        h.cmd(Command::Stop);
+        h.advance(STOP_STAGE);
+        assert!(h.has_ended());
+        assert_eq!(
+            notes(&h),
+            ["Detaching from process 4242...", "gdb did not detach in time and was stopped; process 4242 may have been stopped with it"]
+        );
+    }
+
+    #[test]
+    fn a_launch_second_stop_press_still_kills_without_a_note() {
+        let mut h = running();
+        h.cmd(Command::Stop);
+        h.cmd(Command::Stop);
+        h.cmd(Command::Stop);
+        assert!(h.has_ended());
+        assert!(notes(&h).is_empty(), "{:?}", notes(&h));
+        let mut h = running();
+        h.cmd(Command::Stop);
+        h.advance(STOP_STAGE);
+        h.advance(STOP_STAGE);
+        assert!(h.has_ended());
+        assert!(notes(&h).is_empty(), "{:?}", notes(&h));
     }
 
     #[test]

@@ -790,8 +790,10 @@ under `prune.lock` (`drop_lines` / `write_index`).
   log, so jetl detects it with the start check (two empty `threads` answers) and explains `ptrace_scope` itself.
   `terminate` kills an attached process, so an attach never sends it. Killing gdb while the attached program runs with
   a breakpoint inserted leaves the `int3` in its memory, and the program dies with SIGTRAP at its next pass over it
-  (measured): the second Stop press, the 2 s disconnect deadline and jetl's own death (gdb is tied to jetl's main
-  thread) can each do that. A normal Stop and a normal quit detach first.
+  (measured): the 2 s disconnect deadline and jetl's own death (gdb is tied to jetl's main thread) can each do that.
+  A normal Stop and a normal quit detach first. A second Stop press while an attach detaches kills nothing: it shows
+  `Detaching from process <pid>...` and keeps the stage and its deadline (a launch session's second press still kills).
+  When the deadline passes for an attach, gdb is stopped and a Warn says the process may have been stopped with it.
 - Mouse capture blocks native selection; Shift+drag passes through in foot,
   alacritty and kitty, so Alt+Shift+drag rarely reaches jetl (Alt+drag
   makes the same block). Some window managers take Alt+click and Alt+drag

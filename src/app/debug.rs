@@ -1442,6 +1442,8 @@ impl App {
                 self.debug_program_seen();
             }
             DapBody::Error(e) => self.notify(Level::Error, e),
+            DapBody::Info(e) => self.notify(Level::Info, e),
+            DapBody::Warning(e) => self.notify(Level::Warn, e),
             DapBody::Stopped { epoch, event } => self.debug_stopped(epoch, event),
             DapBody::Running { epoch } => self.debug_running(epoch),
             DapBody::Response { tag, result } => self.debug_response(tag, result),
@@ -9395,14 +9397,12 @@ pub(crate) mod tests {
         assert_eq!(attach["arguments"], json!({"pid": pid}));
         let comm = procs::comm(Path::new(procs::PROC), pid).unwrap();
         assert!(texts(&app).contains(&format!("Debugging process {pid} ({comm}) with gdb")), "{:?}", texts(&app));
-        loop {
-            if fake.next().await["command"] == "configurationDone" {
-                break;
-            }
-        }
+        let mut seen = Vec::new();
+        recv_noting(&mut fake, "configurationDone", &mut seen).await;
         dap_until(&mut app, |a| a.debug.phase() == Some(Phase::Running)).await;
         ctrl_f2(&mut app);
-        let disconnect = fake.recv("disconnect").await;
+        let disconnect = recv_noting(&mut fake, "disconnect", &mut seen).await;
+        assert!(!seen.iter().any(|c| c == "terminate"), "terminate would kill the attached process: {seen:?}");
         assert_eq!(disconnect["arguments"], json!({"terminateDebuggee": false}));
         fake.respond(&disconnect, Value::Null);
         dap_until(&mut app, gone).await;

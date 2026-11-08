@@ -59,6 +59,10 @@ pub enum DapBody {
     },
     /// A failed launch or configuration step.
     Error(String),
+    /// Something the user should know that is not a failure: an attach's Stop press that waits.
+    Info(String),
+    /// A stop that may have cost the user's process something.
+    Warning(String),
     Exited(i64),
     /// The adapter has a program: it can arrive just after an empty threads answer.
     Process(ProcessEvent),
