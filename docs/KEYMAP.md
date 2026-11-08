@@ -701,6 +701,7 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `editor.toggle_blame` | Annotate with git blame (show or hide) |
 | `tree.new_file` | Tree: new file |
 | `tree.new_dir` | Tree: new directory |
+| `tree.new_from_template` | Tree: new file from a template |
 | `tree.toggle_hidden` | Tree: show or hide hidden files |
 | `tree.toggle_ignored` | Tree: show or hide ignored files |
 | `git.unstage_all` | Git: unstage all |

@@ -1162,6 +1162,44 @@ once per change of its text (`snippets/rust.toml is invalid: ...; its
 snippets are ignored`) and contributes nothing; the built-ins and the other
 files stay. A reload where no text changed says nothing.
 
+## File templates
+
+Project tree > New (Alt+Insert) > From Template…, the context menu row New from
+Template…, or Find Action `Tree: new file from a template` makes a file from a
+template. Templates are regular files directly in
+`~/.config/jetl/templates/` and in `<project>/.jetl/templates/` (no
+subfolders; a name ending in `.jetl-tmp` is skipped). A project template
+replaces a global one with the same file name. The chooser lists them by file
+name, project ones marked `(project)`. Both folders are read at each use, so
+nothing needs a reload.
+
+The body uses the same syntax as a live template body (see above): `$1`,
+`${1:default}`, `${1|a,b|}`, `$0` and every variable such as
+`$TM_FILENAME_BASE`, `$TM_FILENAME`, `$WORKSPACE_NAME`, `${CURRENT_YEAR}`.
+Tabs and line breaks are kept as written. A literal `$`, `}` or `\` must be
+written `\$`, `\}`, `\\`: a `$name` in a template written for a shell, PHP or
+a Makefile is read as a variable (an unknown one gives nothing).
+`~/.config/jetl/templates/test.rs`:
+
+```
+// ${TM_FILENAME_BASE}: tests
+#[test]
+fn ${1:name}() {
+    $0
+}
+```
+
+jetl then asks for the name. When the name has no extension, the template's
+extension is added (`foo` from `test.rs` is `foo.rs`; a template without an
+extension, such as `Makefile`, adds nothing and starts with its own name in the
+prompt). The file is created in the tree's target directory (the selected
+folder, or the folder of the selected file, or the root) through the same file
+operation as New File, so language servers hear `workspace/willCreateFiles` and
+`didCreateFiles`, then opened. Its text is the expanded template, one undo
+step; with tabstops the first is selected and Tab walks them. The file is
+created empty and opens modified: autosave (default `focus`) or Ctrl+S writes
+the text. A template must be UTF-8 and at most 1 MiB.
+
 ## keymap.toml
 
 Same format as the built-in keymap, `assets/keymap.default.toml`; every

@@ -5401,3 +5401,44 @@ async fn git_log_refs_take_what_a_short_subject_leaves() {
     let row = text(r.y + 4);
     assert!(row.contains("Initial commit feature/a-rather-lo\u{2026}"), "{row}");
 }
+
+#[tokio::test]
+async fn tree_template_dialog() {
+    use crate::config::templates;
+    let mut fx = stable_app("tree-template-dialog");
+    let app = &mut fx.app;
+    tree_fixture(app);
+    let (global, project) = (app.paths.templates_dir(), templates::project_dir(&app.workspace.root));
+    std::fs::create_dir_all(&global).unwrap();
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(global.join("test.rs"), "").unwrap();
+    std::fs::write(project.join("component.tsx"), "").unwrap();
+    std::fs::write(project.join("test.rs"), "").unwrap();
+    app.perform(Action::Tree(crate::actions::TreeAction::NewFromTemplate));
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap())];
+    assert_snapshot!("tree_template_dialog", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn editor_template_expanded() {
+    use super::tests::handle_next;
+    use crate::ui::dialog::{DialogId, DialogResult};
+    let mut fx = stable_app("editor-template-expanded");
+    let app = &mut fx.app;
+    let root = app.workspace.root.clone();
+    let dir = app.paths.templates_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("note.txt"), "Title: ${1:untitled}\nFile: $TM_FILENAME\n$0\n").unwrap();
+    app.perform(Action::Tree(crate::actions::TreeAction::NewFromTemplate));
+    let Some(id) = app.dialog.as_ref().map(|d| d.id.clone()) else { panic!("no chooser") };
+    app.finish_dialog(id, DialogResult::Choice(0));
+    let Some(DialogId::TreeTemplateName { dir, template }) = app.dialog.as_ref().map(|d| d.id.clone()) else { panic!("no name prompt") };
+    assert_eq!(dir, root);
+    app.finish_dialog(DialogId::TreeTemplateName { dir, template }, DialogResult::Text("todo".into()));
+    handle_next(app, |m| matches!(m, AppMsg::FsOpDone { .. })).await;
+    handle_next(app, |m| matches!(m, AppMsg::FileLoaded { .. })).await;
+    let term = draw_editor(app, 60, 8);
+    let marks = editor_marks(&app.theme);
+    assert_snapshot!("editor_template_expanded", snapshot(&term, &marks, None));
+}

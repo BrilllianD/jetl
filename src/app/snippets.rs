@@ -334,6 +334,38 @@ impl App {
         self.dirty_frame = true;
     }
 
+    /// Expand a file template into the active, just-opened buffer as one
+    /// transaction; its tabstops start a snippet session.
+    pub(super) fn template_apply(&mut self, body: &str) {
+        let group = self.editor.focused_group().id;
+        let (now, offset) = snippet_clock();
+        let root = self.workspace.root.clone();
+        let Some(b) = self.editor.active_buffer().filter(|b| !b.read_only) else { return };
+        let crlf = b.line_ending == LineEnding::CrLf;
+        let at_end = b.rope.len_chars();
+        let vars = SnippetVars::new(b, &root, at_end..at_end, now, offset);
+        let (text, at, stops) = snippet_text(body, &|n| vars.get(n), "", crlf);
+        if text.is_empty() {
+            return;
+        }
+        let Ok(plan) = edits::plan(&b.rope, &[CharEdit::new(at_end, at_end, text)]) else { return };
+        let shift = plan.starts[0];
+        let stops: Vec<Tabstop> = stops.into_iter().map(|t| Tabstop { range: t.range.start + shift..t.range.end + shift, ..t }).collect();
+        let session = SnippetSession::new(b.id, group, stops);
+        let sels = match &session {
+            Some(s) => s.selections(),
+            None => Selections::point(shift + at),
+        };
+        let Some(b) = self.editor.active_buffer_mut() else { return };
+        let before = b.version;
+        b.apply(plan.changes, sels, TxKind::Other);
+        if let Some(mut s) = session.filter(|_| b.version != before) {
+            s.attach(b);
+            self.editor.set_snippet(Some(s));
+        }
+        self.dirty_frame = true;
+    }
+
     /// Open a popup of the snippets matching the word at the caret, for
     /// Ctrl+Space without a server. False when none matches.
     pub(super) fn snippet_popup(&mut self, origin: Origin) -> bool {

@@ -4,19 +4,28 @@
 //! applied before the operation) and `did*Files` after it.
 
 use std::collections::VecDeque;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use lsp_types::WorkspaceEdit;
 use serde_json::{Value, json};
 
 use super::App;
+use crate::config::templates::{self, Template};
 use crate::event::{AppMsg, Level};
-use crate::files::ops::FsOp;
+use crate::files::ops::{FsOp, check_name};
 use crate::lsp::caps::{
     Caps, DID_CREATE_FILES, DID_DELETE_FILES, DID_RENAME_FILES, WILL_CREATE_FILES, WILL_DELETE_FILES, WILL_RENAME_FILES,
 };
 use crate::lsp::transport::ResponseError;
 use crate::lsp::{EditOrigin, PendingTag, SCRATCH_SUFFIX, sync};
+use crate::ui::dialog::{Dialog, DialogId};
+
+/// A template body waiting for its new file to open (`App::pending_template`).
+pub(crate) struct PendingTemplate {
+    pub(super) generation: u64,
+    pub(super) path: PathBuf,
+    pub(super) body: String,
+}
 
 /// A tree file operation waiting for the servers' `will*Files` answers, then applying their edits.
 pub(super) struct PendingFileOp {
@@ -202,6 +211,9 @@ impl App {
     pub(super) fn fs_op_done(&mut self, op: FsOp, is_dir: bool, result: Result<(), String>) {
         let what = op.describe(&self.workspace.root);
         if let Err(e) = result {
+            if let FsOp::Create { path, .. } = &op {
+                self.pending_template.take_if(|p| &p.path == path);
+            }
             return self.notify(Level::Error, format!("Cannot {what}: {e}"));
         }
         self.lsp_did_file_op(&op, is_dir);
@@ -239,6 +251,35 @@ impl App {
             }
         }
         self.git.refresh_status();
+    }
+
+    /// New > From Template: list the templates of both directories in a
+    /// Choice dialog (`DialogId::TreeTemplate`); the target is `dir`.
+    pub(super) fn new_from_template(&mut self, dir: PathBuf) {
+        let global = self.paths.templates_dir();
+        let list = templates::list(&global, &templates::project_dir(&self.workspace.root));
+        if list.is_empty() {
+            let msg = format!("No file templates: add files to {} or .jetl/templates/", global.display());
+            return self.notify(Level::Info, msg);
+        }
+        let rows = list.iter().map(Template::row).collect();
+        self.dialog = Some(Dialog::choice(DialogId::TreeTemplate { dir, templates: list }, "New from Template", "", rows));
+        self.dispatcher.reset();
+    }
+
+    /// Create the file `typed` names from `template` in `dir`, empty, through
+    /// `run_fs_op`; the body waits in `pending_template` until it opens.
+    pub(super) fn template_named(&mut self, dir: PathBuf, template: Template, typed: String) {
+        if let Err(e) = check_name(&typed, true) {
+            return self.notify(Level::Warn, format!("New from template: {e}"));
+        }
+        let body = match templates::read_body(&template.path) {
+            Ok(b) => b,
+            Err(e) => return self.notify(Level::Warn, format!("Template {}: {e}", template.name)),
+        };
+        let path = dir.join(templates::file_name(&typed, &template.name));
+        self.pending_template = Some(PendingTemplate { generation: self.workspace.generation, path: path.clone(), body });
+        self.run_fs_op(FsOp::Create { path, is_dir: false, overwrite: false });
     }
 
     /// Re-read the tree directories from the root down to `path`'s parent,
@@ -357,6 +398,27 @@ mod tests {
         assert_eq!(created["params"]["files"], json!([{"uri": sync::uri(&b).unwrap().to_string()}]));
         let methods: Vec<&str> = sent.iter().filter_map(|m| m["method"].as_str()).collect();
         assert!(!methods.iter().any(|m| m.starts_with("workspace/will") || *m == "workspace/didRenameFiles"), "{methods:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_template_file_is_announced_to_the_servers() {
+        use crate::config::templates::Template;
+        let (mut app, dir) = test_app("fileop-template");
+        let root = app.workspace.root.clone();
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", "fn main() {}\n").await;
+        let tdir = app.paths.templates_dir();
+        std::fs::create_dir_all(&tdir).unwrap();
+        std::fs::write(tdir.join("t.rs"), "fn ${1:x}() {}\n").unwrap();
+        let t = Template { name: "t.rs".into(), path: tdir.join("t.rs"), project: false };
+        app.template_named(root.clone(), t, "b".into());
+        handle_next(&mut app, fs_op_done).await;
+        let sent = sent(&app, &mut server).await;
+        let created = sent.iter().find(|m| m["method"] == "workspace/didCreateFiles").expect("didCreateFiles");
+        assert_eq!(created["params"]["files"], json!([{"uri": sync::uri(&root.join("b.rs")).unwrap().to_string()}]));
+        handle_next(&mut app, |m| matches!(m, AppMsg::FileLoaded { .. })).await;
+        assert_eq!(app.editor.active_buffer().unwrap().text(), "fn x() {}\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

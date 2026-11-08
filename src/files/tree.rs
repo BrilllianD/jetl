@@ -373,7 +373,7 @@ impl ProjectPanel {
 
     /// The directory new entries go to: the selected directory, or the
     /// selected file's directory, or the root.
-    fn target_dir(&self) -> PathBuf {
+    pub fn target_dir(&self) -> PathBuf {
         match self.selected_row() {
             Some(r) if r.is_dir => r.path.clone(),
             Some(r) => r.path.parent().map(Path::to_path_buf).unwrap_or_else(|| self.root.clone()),
@@ -395,6 +395,7 @@ impl ProjectPanel {
             vec![
                 MenuItem::new("New File…", t(TreeAction::NewFile)),
                 MenuItem::new("New Directory…", t(TreeAction::NewDir)),
+                MenuItem::new("New from Template…", t(TreeAction::NewFromTemplate)),
                 MenuItem::new("Rename…", t(TreeAction::Rename)).enabled(on_row),
                 MenuItem::new("Delete…", t(TreeAction::Delete)).enabled(on_row),
                 MenuItem::new("Copy Path", t(TreeAction::CopyPath)).enabled(on_row),
@@ -415,7 +416,12 @@ impl ProjectPanel {
         let row = self.selected_row().cloned();
         match a {
             TreeAction::New => {
-                let d = Dialog::choice(DialogId::TreeNewKind(self.target_dir()), "New", "", vec!["File".into(), "Directory".into()]);
+                let d = Dialog::choice(
+                    DialogId::TreeNewKind(self.target_dir()),
+                    "New",
+                    "",
+                    vec!["File".into(), "Directory".into(), "From Template…".into()],
+                );
                 cx.effects.push(Effect::Dialog(d));
             }
             TreeAction::NewFile | TreeAction::NewDir => {
@@ -577,7 +583,7 @@ impl ProjectPanel {
             | TreeAction::ToggleHidden
             | TreeAction::ToggleIgnored
             | TreeAction::ContextMenu => self.file_action(a, cx),
-            TreeAction::SelectInProject => return false,
+            TreeAction::SelectInProject | TreeAction::NewFromTemplate => return false,
         }
         true
     }

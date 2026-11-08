@@ -10,18 +10,18 @@ expression: "snapshot(&term, &marks, None)"
 04  ⊢ │  RE╭──────────────────────────────────────────────╮
 05    │    │ New File…                                    │
 06    │    │ New Directory…                               │
-07    │    │ Rename…                             Shift+F6 │
-08    │    │ Delete…                               Delete │
-09    │    │ Copy Path                             Ctrl+C │
-10    │    │ Copy Relative Path          Ctrl+Alt+Shift+C │
-11    │    │ Show History                           Alt+H │les open.
-12  ◉ │    │ Local History                    Alt+Shift+H │he Project view;
-13  ⋔ │    │ Local History: Put Label…                    │N finds a file.
-14  ✎ │    │ [x] Show Hidden Files                        │
-15  ✓ │    │ [ ] Show Ignored Files                       │
-16  ⟲ │    │ Refresh                                   F5 │
-17  ⚑ │    ╰──────────────────────────────────────────────╯
-18  ⎇ │                              ││
+07    │    │ New from Template…                           │
+08    │    │ Rename…                             Shift+F6 │
+09    │    │ Delete…                               Delete │
+10    │    │ Copy Path                             Ctrl+C │
+11    │    │ Copy Relative Path          Ctrl+Alt+Shift+C │les open.
+12  ◉ │    │ Show History                           Alt+H │he Project view;
+13  ⋔ │    │ Local History                    Alt+Shift+H │N finds a file.
+14  ✎ │    │ Local History: Put Label…                    │
+15  ✓ │    │ [x] Show Hidden Files                        │
+16  ⟲ │    │ [ ] Show Ignored Files                       │
+17  ⚑ │    │ Refresh                                   F5 │
+18  ⎇ │    ╰──────────────────────────────────────────────╯
 19  ❯ │                              ││
 20  ⚠ │                              ││
 21  ► │                              ││
@@ -30,10 +30,10 @@ expression: "snapshot(&term, &marks, None)"
 -- marks: L=selected d=dim
 03     LLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
 05          LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
-07                                               dddddddd
-08                                                 dddddd
+08                                               dddddddd
 09                                                 dddddd
-10                                       dddddddddddddddd
-11                                                  ddddd
-12                                            ddddddddddd
-16                                                     dd
+10                                                 dddddd
+11                                       dddddddddddddddd
+12                                                  ddddd
+13                                            ddddddddddd
+17                                                     dd

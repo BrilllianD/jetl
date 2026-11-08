@@ -317,9 +317,21 @@ impl App {
                 }
                 self.do_switch_root(root);
             }
+            (DialogId::TreeNewKind(dir), DialogResult::Choice(2)) => self.new_from_template(dir),
             (DialogId::TreeNewKind(dir), DialogResult::Choice(i)) => {
                 self.dialog = Some(crate::files::tree::new_entry_dialog(&dir, &self.workspace.root, i == 1));
             }
+            (DialogId::TreeTemplate { dir, templates }, DialogResult::Choice(i)) => {
+                if let Some(t) = templates.get(i) {
+                    let rel = dir.strip_prefix(&self.workspace.root).unwrap_or(&dir).display().to_string();
+                    let rel = if rel.is_empty() { "." } else { &rel };
+                    let msg = format!("New file from {} in {rel}/:", t.name);
+                    let initial = if std::path::Path::new(&t.name).extension().is_some() { "" } else { t.name.as_str() };
+                    let id = DialogId::TreeTemplateName { dir: dir.clone(), template: t.clone() };
+                    self.dialog = Some(Dialog::input(id, "New from Template", &msg, initial, "Create"));
+                }
+            }
+            (DialogId::TreeTemplateName { dir, template }, DialogResult::Text(t)) => self.template_named(dir, template, t),
             (DialogId::TreeNew { dir, is_dir }, DialogResult::Text(t)) => match check_name(&t, true) {
                 Ok(()) => self.run_fs_op(FsOp::Create { path: dir.join(t.trim()), is_dir, overwrite: false }),
                 Err(e) => self.notify(Level::Warn, format!("New {}: {e}", if is_dir { "directory" } else { "file" })),

@@ -51,6 +51,16 @@ pub enum DialogId {
         dir: std::path::PathBuf,
         is_dir: bool,
     },
+    /// Tree: New from Template, item `i` is `templates[i]`, created in `dir`.
+    TreeTemplate {
+        dir: std::path::PathBuf,
+        templates: Vec<crate::config::templates::Template>,
+    },
+    /// Tree: the name of the file made from `template` in `dir`.
+    TreeTemplateName {
+        dir: std::path::PathBuf,
+        template: crate::config::templates::Template,
+    },
     TreeRename(std::path::PathBuf),
     TreeDelete(std::path::PathBuf),
     /// Replace every Find window result with its replacement text.

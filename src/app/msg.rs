@@ -512,6 +512,8 @@ impl App {
 
     /// `target` is where the debugger wants the caret, and `None` takes `pending_goto`.
     pub(super) fn file_loaded(&mut self, path: PathBuf, result: std::io::Result<Vec<u8>>, focus: bool, target: Option<GotoTarget>) {
+        let generation = self.workspace.generation;
+        let template = self.pending_template.take_if(|p| p.path == path && p.generation == generation).map(|p| p.body);
         let bytes = match result {
             Ok(b) => b,
             Err(e) => {
@@ -528,6 +530,9 @@ impl App {
             return self.pending_revert_failed(&path);
         };
         self.editor.open_text(path.clone(), &text, lossy, &self.theme);
+        if let Some(body) = template {
+            self.template_apply(&body);
+        }
         if self.is_conflicted(&path) {
             let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             self.notify(Level::Info, format!("{name} has conflicts: Git > Resolve Conflicts"));

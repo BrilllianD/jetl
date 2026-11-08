@@ -293,6 +293,8 @@ pub struct App {
     /// A snapshot, or changes of one, to put into a file once its tab opens
     /// (a revert of a file that was not open), as `pending_goto`.
     pub(crate) pending_revert: std::collections::HashMap<PathBuf, history::PendingRevert>,
+    /// A New from Template body waiting for its file to open (app/files.rs).
+    pub(crate) pending_template: Option<files::PendingTemplate>,
     pub editor: Editor,
     /// Watches the root for outside changes; `None` when off or failed.
     watcher: Option<crate::files::watch::Watcher>,
@@ -476,6 +478,7 @@ impl App {
             yman,
             history,
             pending_revert: std::collections::HashMap::new(),
+            pending_template: None,
             editor: Editor::new(&config),
             watcher: None,
             clipboard: Default::default(),
@@ -1199,6 +1202,12 @@ impl App {
                 self.select_in_project();
                 return;
             }
+            Action::Tree(crate::actions::TreeAction::NewFromTemplate) => {
+                drop(cx);
+                let dir = self.project.target_dir();
+                self.new_from_template(dir);
+                return;
+            }
             Action::Tree(a) => self.project.handle_action(a, &mut cx),
             Action::Git(crate::actions::GitAction::FileHistory) => {
                 drop(cx);
@@ -1788,6 +1797,7 @@ impl App {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::actions::TreeAction;
     use crate::git::GitMsg;
     use crate::ui::dialog::{DialogId, DialogResult};
 
@@ -2757,6 +2767,102 @@ pub(crate) mod tests {
         assert!(app.notifications.last().is_some_and(|n| n.level == Level::Error && n.text.starts_with("Cannot create src/new.rs")));
         app.finish_dialog(DialogId::TreeNew { dir: root, is_dir: true }, DialogResult::Text("../out".into()));
         assert!(app.notifications.last().is_some_and(|n| n.level == Level::Warn), "checked before running");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn write_template(dir: &std::path::Path, name: &str, body: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join(name), body).unwrap();
+    }
+
+    #[tokio::test]
+    async fn tree_new_from_template_expands_with_tabstops() {
+        use crate::config::templates;
+        let (mut app, dir) = test_app("tree-template");
+        let root = app.workspace.root.clone();
+        let (global, project) = (app.paths.templates_dir(), templates::project_dir(&root));
+        write_template(&global, "test.rs", "// global\n");
+        write_template(&project, "test.rs", "// ${TM_FILENAME_BASE} in $WORKSPACE_NAME\nfn ${1:name}() {\n    $0\n}\n");
+        write_template(&global, "notes.md", "# $TM_FILENAME_BASE\n");
+        app.perform(Action::Tree(TreeAction::NewFromTemplate));
+        let Some(DialogId::TreeTemplate { dir: target, templates }) = app.dialog.as_ref().map(|d| d.id.clone()) else {
+            panic!("no template chooser: {:?}", app.dialog.as_ref().map(|d| d.id.clone()));
+        };
+        assert_eq!(target, root);
+        let names: Vec<&str> = templates.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["notes.md", "test.rs"]);
+        assert!(templates[1].project);
+        app.finish_dialog(DialogId::TreeTemplate { dir: target, templates }, DialogResult::Choice(1));
+        let d = app.dialog.as_ref().expect("name prompt");
+        let DialogId::TreeTemplateName { dir: target, template } = d.id.clone() else { panic!("{:?}", d.id) };
+        assert_eq!(template.path, project.join("test.rs"));
+        assert!(
+            matches!(&d.kind, crate::ui::dialog::DialogKind::Input { input, .. } if input.text.is_empty()),
+            "the template name has an extension"
+        );
+        app.finish_dialog(DialogId::TreeTemplateName { dir: target, template }, DialogResult::Text("src/foo".into()));
+        handle_next(&mut app, fs_op_done).await;
+        let path = root.join("src/foo.rs");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "", "created empty");
+        handle_next(&mut app, |m| matches!(m, AppMsg::FileLoaded { .. })).await;
+        assert_eq!(app.editor.active_path(), Some(path.as_path()));
+        let b = app.editor.active_buffer().unwrap();
+        assert_eq!(b.text(), "// foo in root\nfn name() {\n    \n}\n");
+        let (line, a, h) = (b.rope.char_to_line(b.view.sel().head), b.view.sel().anchor, b.view.sel().head);
+        let l1 = b.rope.line_to_char(1);
+        assert_eq!((line, a - l1, h - l1), (1, 3, 7), "`name` is selected");
+        assert!(app.editor.snippet_active());
+        assert!(app.editor.active_buffer().unwrap().dirty());
+        assert!(app.pending_template.is_none());
+        app.perform(Action::Editor(EditorAction::Undo));
+        assert_eq!(app.editor.active_buffer().unwrap().text(), "");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn tree_new_from_template_without_templates_says_where() {
+        let (mut app, dir) = test_app("tree-template-none");
+        app.perform(Action::Tree(TreeAction::NewFromTemplate));
+        assert!(app.dialog.is_none());
+        let n = app.notifications.last().expect("a notice");
+        assert_eq!(n.level, Level::Info);
+        assert!(n.text.contains("templates") && n.text.contains(".jetl/templates/"), "{}", n.text);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn tree_new_from_template_taken_name_keeps_the_file() {
+        use crate::config::templates::{self, Template};
+        let (mut app, dir) = test_app("tree-template-taken");
+        let root = app.workspace.root.clone();
+        let global = app.paths.templates_dir();
+        write_template(&global, "t.rs", "fn f() {}\n");
+        let t = Template { name: "t.rs".into(), path: global.join("t.rs"), project: false };
+        std::fs::write(root.join("a.rs"), "keep").unwrap();
+        app.template_named(root.clone(), t.clone(), "a".into());
+        assert!(app.pending_template.is_some());
+        handle_next(&mut app, fs_op_done).await;
+        assert_eq!(std::fs::read_to_string(root.join("a.rs")).unwrap(), "keep");
+        assert!(app.notifications.last().is_some_and(|n| n.level == Level::Error && n.text.starts_with("Cannot create a.rs")));
+        assert!(app.pending_template.is_none(), "the failed create dropped the body");
+        app.template_named(root.clone(), t, "../x".into());
+        assert!(app.notifications.last().is_some_and(|n| n.level == Level::Warn && n.text.starts_with("New from template:")));
+        assert!(app.pending_template.is_none());
+        std::fs::write(global.join("big.rs"), vec![b'a'; templates::MAX_BYTES as usize + 1]).unwrap();
+        let big = Template { name: "big.rs".into(), path: global.join("big.rs"), project: false };
+        app.template_named(root, big, "b".into());
+        assert!(app.notifications.last().is_some_and(|n| n.level == Level::Warn && n.text == "Template big.rs: the file is over 1 MiB"));
+        assert!(app.pending_template.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn tree_new_kind_row_two_lists_templates() {
+        let (mut app, dir) = test_app("tree-template-kind");
+        let root = app.workspace.root.clone();
+        write_template(&app.paths.templates_dir(), "t.rs", "");
+        app.finish_dialog(DialogId::TreeNewKind(root), DialogResult::Choice(2));
+        assert!(matches!(app.dialog.as_ref().map(|d| &d.id), Some(DialogId::TreeTemplate { .. })));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

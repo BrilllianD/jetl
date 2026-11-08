@@ -3807,3 +3807,13 @@ pyright and basedpyright (`[lsp.servers.pyright] command = ["basedpyright-langse
   `args = ["--norc", "--noprofile"]` in the scratch
   `$XDG_CONFIG_HOME/jetl/config.toml`. Check that quitting left no shell by
   writing `echo $$` to a file first and looking for that pid afterwards.
+
+### Scenario: new file from a template
+
+At 80x24 and 120x40 (yman 462), `/tmp/tm12.sh` = `exec /usr/bin/tmux -L jetl-s12 "$@"`, `XDG_*` under `/tmp/jt12-home`, project `/tmp/jt12` with `src/main.rs`, a global `templates/function.rs` (`// ${TM_FILENAME_BASE}, ${CURRENT_YEAR}\nfn ${1:name}(${2}) {\n    $0\n}\n`) and a project `.jetl/templates/doc.md` (`# ${1:Title}\n\nIn $WORKSPACE_NAME.\n`). `[lsp] enabled = false`.
+
+1. `M-1` then `M-Insert`: the New dialog lists File, Directory, From Template…. Down Down Enter: the chooser lists `doc.md  (project)` and `function.rs`.
+2. Down Enter: the name prompt, empty. Type `greet`, Enter: tab `*greet.rs`, `name` selected. Type `hello`, Tab, `who: &str`, Tab, `C-s`: `greet.rs` reads `// greet, <year>\nfn hello(who: &str) {\n    \n}\n`.
+3. `M-1 S-F10`: the third row is `New from Template…`.
+4. With `src` selected before `M-Insert`, the file lands in `src/`.
+5. With both template folders empty or missing, row 3 shows the toast `No file templates: add files to ... or .jetl/templates/`.

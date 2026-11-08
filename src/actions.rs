@@ -353,6 +353,8 @@ pub enum TreeAction {
     New,
     NewFile,
     NewDir,
+    /// New file from a template (asks which, then the name).
+    NewFromTemplate,
     Rename,
     Delete,
     CopyPath,
@@ -1069,6 +1071,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "tree.new" => "Tree: new file or directory", Tree(TreeAction::New);
         "tree.new_file" => "Tree: new file", Tree(TreeAction::NewFile);
         "tree.new_dir" => "Tree: new directory", Tree(TreeAction::NewDir);
+        "tree.new_from_template" => "Tree: new file from a template", Tree(TreeAction::NewFromTemplate);
         "tree.rename" => "Tree: rename", Tree(TreeAction::Rename);
         "tree.delete" => "Tree: delete", Tree(TreeAction::Delete);
         "tree.copy_path" => "Tree: copy absolute path", Tree(TreeAction::CopyPath);

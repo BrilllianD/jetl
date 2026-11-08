@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- New file from a template: Project tree > New > From Template… (or the context menu, or Find Action) lists the files of ~/.config/jetl/templates/ and .jetl/templates/ (a project one wins by name), asks for a name, and opens the new file with the template expanded: variables like $TM_FILENAME_BASE and tabstops as in live templates, one undo step (yman 462).
 - Bracket pair colours: `[editor] bracket_pair_colours = true` colours (), [] and {} by nesting depth in three theme styles (bracket_1 to bracket_3), skipping strings and comments, in every file with a tree-sitter grammar (fenced code in Markdown too); off by default, applies without a restart.
 - Preserve case on replace: the AB toggle (Alt+P) on the Replace row of the editor find bar and of Replace in Files keeps each match's case pattern (foo to bar, Foo to Bar, FOO to BAR, snake_case and kebab-case part by part); it is off while a regex replacement uses groups ($1) (yman 460).
 - Hot exit: quitting with unsaved changes no longer asks; the changes are kept and come back, still unsaved and not autosaved, the next time the project opens. `[files] hot_exit = false` brings back the Save all / Discard question. The conflict resolver still asks first.
