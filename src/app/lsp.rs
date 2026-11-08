@@ -992,10 +992,14 @@ impl App {
         })
     }
 
-    /// The first extra server of buffer `b`'s language (never for scratch files).
+    /// The first extra server of buffer `b`'s language (never for scratch files
+    /// or files over `max_highlight_bytes`, which `lsp_sync` does not open).
     fn buffer_extra(&self, b: &Buffer) -> Option<String> {
         let language = b.language()?.name;
         if b.path.as_ref().is_some_and(|p| p.starts_with(self.paths.scratches_dir())) {
+            return None;
+        }
+        if b.rope.len_bytes() > self.config.editor.max_highlight_bytes {
             return None;
         }
         let owned;
@@ -2035,6 +2039,11 @@ pub(crate) mod tests {
             assert_eq!(change["params"]["contentChanges"], json!([{"range": range(0, col, 0, col), "text": c.to_string()}]));
         }
         assert_eq!(app.problem_counts(), Some(Counts::default()));
+        let path = app.editor.active_path().unwrap().to_path_buf();
+        publish_v(server, &path, None, json!([diag_json(0, 3, 0, 7, 2, "teh")]));
+        handle_next(&mut app, is_lsp).await;
+        let counts = app.problem_counts().unwrap();
+        assert_eq!((counts.errors, counts.warnings), (0, 1));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2087,6 +2096,40 @@ pub(crate) mod tests {
         act(&mut app, EditorAction::InsertChar('x'));
         let change = servers.get_mut("rust-analyzer").unwrap().recv("textDocument/didChange").await;
         assert_eq!(change["params"]["contentChanges"], json!([{"range": range(0, 0, 0, 0), "text": "x"}]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn scratch_files_get_no_extra_server() {
+        let (mut app, dir) = test_app("lsp-extra-scratch");
+        let mut rx = with_named_fake_servers(&mut app, incremental(), &[]);
+        typos(&mut app);
+        let rust = crate::editor::syntax::LANGUAGES.iter().position(|l| l.name == "rust").unwrap();
+        app.create_scratch(rust + 1);
+        act(&mut app, EditorAction::InsertChar('x'));
+        app.lsp_sync();
+        assert!(rx.try_recv().is_err(), "no server started for a scratch");
+        assert!(app.lsp.extra_docs.is_empty() && app.lsp.clients.is_empty());
+        assert_eq!(app.lsp_status(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_file_over_the_size_limit_is_not_opened_on_an_extra_server() {
+        let (mut app, dir) = test_app("lsp-extra-big");
+        let mut rx = with_named_fake_servers(&mut app, incremental(), &[]);
+        typos(&mut app);
+        let off = crate::lsp::ServerOverride { command: Some(vec![]), ..Default::default() };
+        app.config.lsp.servers.insert("rust-analyzer".into(), off);
+        app.config.editor.max_highlight_bytes = 8;
+        load(&mut app, "a.rs", "fn main() {}\n");
+        app.lsp_sync();
+        let mut servers = started(&mut app, &mut rx, &["typos"]).await;
+        app.lsp_sync();
+        let sent = servers.get_mut("typos").unwrap().sent_so_far(&app.lsp.clients["typos"]).await;
+        assert!(sent.iter().all(|m| m["method"] != "textDocument/didOpen"), "{sent:?}");
+        assert!(app.lsp.extra_docs.is_empty());
+        assert_eq!(app.lsp_status(), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
