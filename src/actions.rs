@@ -150,6 +150,8 @@ pub enum PaletteKind {
     CompareWith,
     /// View Breakpoints: every file's breakpoints (debug.view_breakpoints).
     Breakpoints,
+    /// Attach to Process: running processes (`App::debug_pick_process`), not opened by an action.
+    Processes,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -561,6 +563,8 @@ pub enum DebugAction {
     Start,
     /// Stop the session; pressed again, skip ahead a stage.
     Stop,
+    /// Attach gdb to a running process chosen from a list.
+    Attach,
     /// Let the paused program run on.
     Resume,
     /// Run the paused program to the next line of the same frame.
@@ -1210,6 +1214,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "debug.view_breakpoints" => "Debug: View Breakpoints (every breakpoint with its condition, log message and verdict; jump, remove, edit)", App(AppAction::OpenPalette(PaletteKind::Breakpoints));
         "debug.start" => "Debug: start the selected run configuration under its debug adapter", Debug(DebugAction::Start);
         "debug.stop" => "Debug: stop the debug session", Debug(DebugAction::Stop);
+        "debug.attach" => "Debug: attach to a running process (gdb)", Debug(DebugAction::Attach);
         "debug.resume" => "Debug: Resume", Debug(DebugAction::Resume);
         "debug.step_over" => "Debug: Step Over", Debug(DebugAction::StepOver);
         "debug.step_into" => "Debug: Step Into", Debug(DebugAction::StepInto);

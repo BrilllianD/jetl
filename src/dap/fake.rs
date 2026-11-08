@@ -1,4 +1,4 @@
-//! An in-process debug adapter for tests, over `tokio::io::duplex`. It answers `initialize`, `launch` and
+//! An in-process debug adapter for tests, over `tokio::io::duplex`. It answers `initialize`, `launch` (or `attach`) and
 //! `configurationDone` by itself, in the order real adapters use (`Order`), and hands every message it receives
 //! to the test, which answers the rest and can send events and reverse requests of its own.
 
@@ -107,7 +107,7 @@ pub fn connect(capabilities: Value, order: Order) -> (Conn, FakeAdapter) {
                             release(&answers, &initialized, None);
                         }
                     }
-                    Some("launch") => {
+                    Some("launch" | "attach") => {
                         let early = order == Order::LaunchEarly;
                         if !early {
                             if capable {

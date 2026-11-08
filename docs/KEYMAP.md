@@ -719,6 +719,7 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `run.edit_configs` | Run: edit run configurations |
 | `run.rerun_failed` | Run: rerun the failed tests |
 | `run.build_scip_index` | Run: build the SCIP index with [index] scip_command, then load it |
+| `debug.attach` | Debug: attach to a running process (gdb) |
 | `debug.pause` | Debug: Pause |
 | `lsp.restart` | Restart language servers |
 | `lsp.goto_declaration` | Go to the declaration (not the definition) of the symbol at the caret |

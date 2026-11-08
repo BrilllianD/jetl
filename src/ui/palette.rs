@@ -112,6 +112,8 @@ pub enum Source {
     Scratches,
     /// View Breakpoints (`PaletteKind::Breakpoints`).
     Breakpoints,
+    /// Attach to Process (`PaletteKind::Processes`).
+    Processes,
 }
 
 impl Source {
@@ -127,8 +129,17 @@ impl Source {
             Source::Locations => "Locations",
             Source::Scratches => "Scratch Files",
             Source::Breakpoints => "Breakpoints",
+            Source::Processes => "Processes",
         }
     }
+}
+
+/// An Attach to Process row. The texts are made by the app; `/proc` text has been through `one_line` or `var_text`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessItem {
+    pub pid: u32,
+    pub user: String,
+    pub command: String,
 }
 
 /// A View Breakpoints row. The texts are made by the app; adapter text has been through `one_line`.
@@ -188,6 +199,10 @@ pub enum Accept {
         pos: lsp_types::Position,
     },
     RunTask(Box<crate::run::RunTask>),
+    /// Enter on an Attach to Process row.
+    AttachProcess {
+        pid: u32,
+    },
     /// Shift+Delete on a scratch file: the app asks first.
     DeleteScratch(PathBuf),
     /// Shift+Delete on a recent project: the palette has dropped the row
@@ -258,6 +273,10 @@ pub struct Palette {
     breakpoints: Vec<BreakpointItem>,
     /// View Breakpoints rows above the breakpoints: adapter name, then declared order.
     exception_filters: Vec<ExceptionFilterItem>,
+    /// Attach to Process rows, highest pid first, and the text each is matched on (pid, then command).
+    processes: Vec<ProcessItem>,
+    process_labels: Vec<String>,
+    processes_loading: bool,
     matcher: Matcher,
     /// Where large sources are filtered (set by `App::open_palette`); none
     /// filters everything at once.
@@ -286,6 +305,7 @@ impl Palette {
             PaletteKind::Locations => vec![Source::Locations],
             PaletteKind::Scratches => vec![Source::Scratches],
             PaletteKind::Breakpoints => vec![Source::Breakpoints],
+            PaletteKind::Processes => vec![Source::Processes],
             PaletteKind::CompareWith => vec![Source::Files],
             // Go to Line stays a dialog and never opens a palette.
             PaletteKind::Branches | PaletteKind::GotoLine => vec![Source::Branches],
@@ -320,6 +340,9 @@ impl Palette {
             scratch_dates: Vec::new(),
             breakpoints: Vec::new(),
             exception_filters: Vec::new(),
+            processes: Vec::new(),
+            process_labels: Vec::new(),
+            processes_loading: false,
             matcher: Matcher::default(),
             bus: None,
             filter_seq: Arc::new(AtomicU64::new(0)),
@@ -477,6 +500,22 @@ impl Palette {
         if self.source() == Source::Breakpoints {
             self.refilter(false);
         }
+    }
+
+    /// The Attach to Process rows, in the order given; `loading` until the first read arrives.
+    pub fn set_processes(&mut self, items: Vec<ProcessItem>, loading: bool) {
+        self.process_labels = items.iter().map(|i| format!("{:>7}  {}", i.pid, i.command)).collect();
+        self.processes = items;
+        self.processes_loading = loading;
+        if self.source() == Source::Processes {
+            self.refilter(false);
+        }
+    }
+
+    /// The process rows as set (tests outside this module).
+    #[cfg(test)]
+    pub(crate) fn process_items(&self) -> &[ProcessItem] {
+        &self.processes
     }
 
     /// The filter rows as set (tests outside this module).
@@ -668,6 +707,14 @@ impl Palette {
                     rows
                 }
             }
+            Source::Processes => {
+                if q.is_empty() {
+                    (0..self.processes.len()).collect()
+                } else {
+                    let texts = self.processes.iter().zip(&self.process_labels).map(|(p, l)| [l.as_str(), p.user.as_str()]);
+                    rank_texts(q, texts, &mut self.matcher)
+                }
+            }
             Source::Actions => {
                 if q.is_empty() {
                     (0..self.actions.len()).collect()
@@ -811,6 +858,7 @@ impl Palette {
             Source::Actions => Accept::Action(self.actions.get(i)?.action.clone()),
             Source::Tasks => Accept::RunTask(Box::new(self.tasks.get(i)?.clone())),
             Source::Scratches => Accept::OpenFile(self.scratches.get(i)?.path.clone()),
+            Source::Processes => Accept::AttachProcess { pid: self.processes.get(i)?.pid },
             Source::Breakpoints if i < self.exception_filters.len() => {
                 let f = &self.exception_filters[i];
                 Accept::ToggleExceptionFilter { adapter: f.adapter.clone(), filter: f.filter.clone() }
@@ -995,6 +1043,7 @@ impl Palette {
             PaletteKind::SelectRunConfig => "Select Run Configuration",
             PaletteKind::Scratches => "Scratch Files",
             PaletteKind::Breakpoints => "Breakpoints",
+            PaletteKind::Processes => "Attach to Process",
             PaletteKind::CompareWith => "Compare With",
             PaletteKind::Branches | PaletteKind::GotoLine => "Git Branches",
         }
@@ -1074,6 +1123,7 @@ impl Palette {
             Source::Locations => "type to filter",
             Source::Scratches => "type a scratch name · Shift+Del deletes",
             Source::Breakpoints => "filter · Space toggles · Shift+Del removes · Alt+Shift+F8 edits",
+            Source::Processes => "type a pid, a command or a user",
         };
         self.input.render(frame, qrect, Style::default().bg(theme.bg).fg(theme.fg), placeholder, theme.dim.bg(theme.bg), true);
         frame.buffer_mut().set_stringn(inner.right().saturating_sub(cw + 1), y, &count, cw as usize, theme.dim.bg(theme.popup_bg));
@@ -1093,6 +1143,8 @@ impl Palette {
                 }
                 Source::Scratches if self.input.text.trim().is_empty() => "No scratch files: File > New Scratch File…",
                 Source::Breakpoints if self.input.text.trim().is_empty() => "No breakpoints: Ctrl+F8 sets one on the caret's line",
+                Source::Processes if self.processes_loading => "Reading processes…",
+                Source::Processes if self.input.text.trim().is_empty() => "No process to attach to",
                 _ => "Nothing found",
             };
             frame.buffer_mut().set_stringn(lrect.x + 2, lrect.y, msg, lrect.width.saturating_sub(2) as usize, theme.dim.bg(theme.popup_bg));
@@ -1182,6 +1234,24 @@ impl Palette {
                     if used + info.width() + 2 <= width {
                         v.push((" ".repeat(width - used - info.width()), base));
                         v.push((info, dim));
+                    }
+                    v
+                }
+                Source::Processes => {
+                    // The pid and command, then the user on the right; a long command is cut to leave room for it.
+                    let (label, user) = (&self.process_labels[i], &self.processes[i].user);
+                    let marks = match_indices(&pattern, label, &mut self.matcher);
+                    let room = width.saturating_sub(user.width() + 2);
+                    let (shown, with_user) = if label.width() <= room || room > 8 {
+                        (crate::util::text::fit(label, room), true)
+                    } else {
+                        (crate::util::text::fit(label, width), false)
+                    };
+                    let mut v = highlight(&shown, |ci| marks.contains(&(ci as u32)), base, hl);
+                    if with_user {
+                        let used = shown.width();
+                        v.push((" ".repeat(width.saturating_sub(used + user.width())), base));
+                        v.push((user.clone(), dim));
                     }
                     v
                 }
@@ -1653,6 +1723,41 @@ mod tests {
         assert_eq!(p.handle_action(&PaletteAction::DeleteItem), None);
         assert_eq!(p.handle_action(&PaletteAction::EditItem), None);
         assert_eq!(p.breakpoint_items().len(), 2);
+    }
+
+    fn process(pid: u32, user: &str, command: &str) -> ProcessItem {
+        ProcessItem { pid, user: user.into(), command: command.into() }
+    }
+
+    fn processes_palette() -> Palette {
+        let mut p = Palette::new(PaletteKind::Processes, PathBuf::from("/w"));
+        p.set_processes(
+            vec![process(4242, "me", "/tmp/target 1"), process(812, "root", "/usr/bin/sshd -D"), process(77, "me", "sleep 300")],
+            false,
+        );
+        p
+    }
+
+    #[test]
+    fn processes_rank_by_pid_command_and_user() {
+        let mut p = processes_palette();
+        assert_eq!(p.rows, vec![0, 1, 2], "every row, in the order given");
+        for (query, first) in [("4242", 0), ("sleep", 2), ("root", 1)] {
+            p.set_query(query);
+            assert_eq!(p.rows.first(), Some(&first), "{query}");
+        }
+        p.set_query("zzzz");
+        assert!(p.rows.is_empty());
+    }
+
+    #[test]
+    fn enter_on_a_process_accepts_its_pid() {
+        let mut p = processes_palette();
+        p.set_query("sshd");
+        assert_eq!(p.handle_action(&PaletteAction::Accept), Some(PaletteResult::Accept(Accept::AttachProcess { pid: 812 })));
+        let mut empty = Palette::new(PaletteKind::Processes, PathBuf::from("/w"));
+        empty.set_processes(Vec::new(), true);
+        assert_eq!(empty.handle_action(&PaletteAction::Accept), None);
     }
 
     fn filter_item(filter: &str, label: &str, on: bool) -> ExceptionFilterItem {

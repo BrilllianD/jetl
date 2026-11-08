@@ -14,15 +14,16 @@ use tokio::task::JoinHandle;
 
 use super::App;
 use super::msg::GotoTarget;
-use crate::actions::{Action, DebugAction};
+use crate::actions::{Action, DebugAction, PaletteKind};
 use crate::dap::build::{Artifact, BuildTags, drive_build};
 use crate::dap::client::{DapClient, SHUTDOWN_LIMIT};
 use crate::dap::config::{
-    AdapterConfig, DebugBlock, DebugConfig, LaunchVars, choose_adapter, default_block, fill_artifact, load_debug_blocks, needs_artifact,
-    process_env, resolve_build, resolve_launch, test_block,
+    AdapterConfig, DebugBlock, DebugConfig, LaunchVars, StartRequest, choose_adapter, default_block, fill_artifact, load_debug_blocks,
+    needs_artifact, process_env, resolve_build, resolve_launch, test_block,
 };
 use crate::dap::console::{ConsoleGate, MAX_QUEUED, forward_output, spawn_console};
 use crate::dap::panel::{BuildStage, DebugTab, FrameRow, MAX_WATCHES};
+use crate::dap::procs;
 use crate::dap::protocol::{
     Breakpoint, BreakpointEvent, Capabilities, EvaluateBody, ExceptionFilter, OutputEvent, Scope, ScopesBody, StackFrame, StackTraceBody,
     StoppedEvent, Thread, ThreadsBody, Variable, VariablesBody, body_of,
@@ -45,7 +46,7 @@ use crate::run::{RunTask, load_tasks, quote_word};
 use crate::ui::dialog::{Dialog, DialogId};
 use crate::ui::focus::{PanelId, ToolWindowId};
 use crate::ui::menu::{ContextMenu, MenuItem};
-use crate::ui::palette::{BreakpointItem, ExceptionFilterItem, Source, display_path};
+use crate::ui::palette::{BreakpointItem, ExceptionFilterItem, ProcessItem, Source, display_path};
 use crate::workspace::SavedFilter;
 
 /// How adapters are reached: processes, or in-process fakes in tests.
@@ -62,6 +63,10 @@ pub(super) struct Live {
     pub(super) id: SessionId,
     /// The `AdapterConfig` name: the key of the saved exception filters.
     pub(super) adapter: String,
+    /// `launch` or `attach`: an attach is detached, not killed, and ends with its own text.
+    pub(super) request: StartRequest,
+    /// What the start check says when the program shows no sign.
+    pub(super) not_started: String,
     pub(super) client: DapClient,
     pub(super) phase: Phase,
     pub(super) exit_code: Option<i64>,
@@ -246,6 +251,20 @@ pub struct DebugState {
     add_watch: bool,
     /// Each adapter's exception filters as it last declared them, with the user's choices; per root, saved with the session.
     pub(crate) exception_filters: BTreeMap<String, Vec<SavedFilter>>,
+    /// The open Attach to Process picker's callback.
+    pick: Option<Pick>,
+    /// `debug_pick_process` calls so far; only the newest one's list is shown.
+    pick_seq: u64,
+    /// `ptrace_scope` as the newest process list read it.
+    ptrace_scope: Option<u8>,
+}
+
+/// What runs with the pid chosen in Attach to Process.
+pub(crate) type PidCallback = Box<dyn FnOnce(&mut App, u32) + Send>;
+
+struct Pick {
+    seq: u64,
+    then: PidCallback,
 }
 
 impl DebugState {
@@ -310,6 +329,10 @@ pub struct Prepared {
     pub build: Option<Spec>,
     /// Debug Test at Caret's test; the build's executables are narrowed to the ones holding it.
     pub test: Option<RustTest>,
+    /// `launch` or `attach`: which request `launch` is the arguments of.
+    pub request: StartRequest,
+    /// The warning the gdb start check gives when the program shows no sign.
+    pub not_started: String,
 }
 
 /// A Debug Test at Caret start: what `prepare` debugs instead of choosing a configuration. `block` is
@@ -649,7 +672,39 @@ fn prepare(job: Job) -> Result<Prepared, String> {
         return Err(format!("Cannot debug '{}': ${{artifact}} needs a build step: add build = [...] to its debug table", task.name));
     }
     check_line_breaks(&task.name, &launch)?;
-    Ok(Prepared { name: task.name.clone(), adapter, launch, build, test })
+    let request = block.request;
+    let not_started = match request {
+        StartRequest::Launch => NOT_STARTED.to_string(),
+        StartRequest::Attach => procs::attach_failed_text(launch["pid"].as_i64(), procs::ptrace_scope(Path::new(procs::PTRACE_SCOPE))),
+    };
+    Ok(Prepared { name: task.name.clone(), adapter, launch, build, test, request, not_started })
+}
+
+/// The adapter Attach to Process uses.
+const ATTACH_ADAPTER: &str = "gdb";
+
+struct AttachJob {
+    root: PathBuf,
+    debug: DebugConfig,
+    pid: u32,
+}
+
+/// Attach to Process's start: gdb, `{"pid": N}`, no configuration read.
+fn prepare_attach(job: AttachJob) -> Result<Prepared, String> {
+    let pid = job.pid;
+    let comm = procs::comm(Path::new(procs::PROC), pid).ok_or_else(|| format!("Process {pid} has exited"))?;
+    let block = DebugBlock { adapter: Some(ATTACH_ADAPTER.into()), request: StartRequest::Attach, ..DebugBlock::default() };
+    let root = job.root.as_path();
+    let adapter = choose_adapter(&job.debug, &block, None, &|cmd| crate::doctor::resolve(cmd, root, &crate::util::fs::which))?;
+    Ok(Prepared {
+        name: format!("process {pid} ({})", one_line(&comm)),
+        adapter,
+        launch: json!({"pid": pid}),
+        build: None,
+        test: None,
+        request: StartRequest::Attach,
+        not_started: procs::attach_failed_text(Some(i64::from(pid)), procs::ptrace_scope(Path::new(procs::PTRACE_SCOPE))),
+    })
 }
 
 /// The refusal of Debug Test at Caret for any file but Rust.
@@ -667,7 +722,7 @@ fn gdb_cd_fails(cwd: &str, root: &Path) -> bool {
 
 /// gdb runs `cd <cwd>` and `file <program>`, and `gdb.execute` runs each line of a string as a command.
 fn check_line_breaks(name: &str, launch: &Value) -> Result<(), String> {
-    for (key, what) in [("cwd", "its working directory"), ("program", "its program")] {
+    for (key, what) in [("cwd", "its working directory"), ("program", "its program"), ("target", "its target")] {
         if launch[key].as_str().is_some_and(|v| v.contains(['\n', '\r'])) {
             return Err(format!("Cannot debug '{name}': line break in {what}"));
         }
@@ -686,6 +741,7 @@ impl App {
         match a {
             DebugAction::Start => self.debug_start(),
             DebugAction::Stop => self.debug_stop(),
+            DebugAction::Attach => self.debug_pick_process(Box::new(|app, pid| app.debug_attach(pid))),
             DebugAction::Resume => self.debug_resume(ResumeKind::Continue),
             DebugAction::StepOver => self.debug_resume(ResumeKind::Next),
             DebugAction::StepInto => self.debug_resume(ResumeKind::StepIn),
@@ -719,7 +775,9 @@ impl App {
         self.debug_start_with(None);
     }
 
-    fn debug_start_with(&mut self, test: Option<TestStart>) {
+    /// The head of every start: the build and the live session the press replaces are gone, `starting` is set.
+    /// Returns what to wait for before the new adapter runs.
+    fn debug_begin_start(&mut self) -> Option<JoinHandle<()>> {
         // The build the press replaces is gone below; a start that is refused must not leave `building` on screen.
         if self.debug.pending_build() {
             self.debug_panel.set_stage(Some(BuildStage::NotStarted));
@@ -733,6 +791,11 @@ impl App {
         self.editor.set_selected_frame(None);
         self.debug.seq += 1;
         self.debug.starting = true;
+        before
+    }
+
+    fn debug_start_with(&mut self, test: Option<TestStart>) {
+        let before = self.debug_begin_start();
         let (seq, generation, tx) = (self.debug.seq, self.workspace.generation, self.bus_tx.clone());
         let job = Job {
             root: self.workspace.root.clone(),
@@ -751,6 +814,76 @@ impl App {
             let result = tokio::task::spawn_blocking(move || prepare(job)).await.unwrap_or_else(|e| Err(format!("Debug: {e}")));
             let _ = tx.send(AppMsg::DebugReady { generation, seq, result: Box::new(result) });
         }));
+    }
+
+    /// Attaches gdb to `pid`, replacing a live session: the same retire-and-prepare path as `debug_start`.
+    fn debug_attach(&mut self, pid: u32) {
+        let before = self.debug_begin_start();
+        let (seq, generation, tx) = (self.debug.seq, self.workspace.generation, self.bus_tx.clone());
+        let job = AttachJob { root: self.workspace.root.clone(), debug: self.config.debug.clone(), pid };
+        self.debug.retiring = Some(tokio::spawn(async move {
+            if let Some(b) = before {
+                let _ = b.await;
+            }
+            let result = tokio::task::spawn_blocking(move || prepare_attach(job)).await.unwrap_or_else(|e| Err(format!("Debug: {e}")));
+            let _ = tx.send(AppMsg::DebugReady { generation, seq, result: Box::new(result) });
+        }));
+    }
+
+    /// Opens Attach to Process; `then` runs once, with the chosen pid, only on Enter. It is dropped on Escape, on a
+    /// newer pick, on a root switch and when another palette replaces the picker.
+    pub(crate) fn debug_pick_process(&mut self, then: PidCallback) {
+        self.debug.pick_seq += 1;
+        let seq = self.debug.pick_seq;
+        self.debug.pick = Some(Pick { seq, then });
+        self.open_palette(PaletteKind::Processes);
+        let (generation, tx) = (self.workspace.generation, self.bus_tx.clone());
+        tokio::task::spawn_blocking(move || {
+            let items = procs::list(Path::new(procs::PROC), Path::new(procs::PASSWD), std::process::id());
+            let ptrace_scope = procs::ptrace_scope(Path::new(procs::PTRACE_SCOPE));
+            let _ = tx.send(AppMsg::DebugProcesses { generation, seq, items, ptrace_scope });
+        });
+        self.dirty_frame = true;
+    }
+
+    pub(super) fn debug_cancel_pick(&mut self) {
+        self.debug.pick = None;
+    }
+
+    pub(super) fn debug_processes(&mut self, generation: u64, seq: u64, items: Vec<procs::ProcInfo>, ptrace_scope: Option<u8>) {
+        if generation != self.workspace.generation || !self.debug.pick.as_ref().is_some_and(|p| p.seq == seq) {
+            tracing::debug!("dropping the process list of an older pick");
+            return;
+        }
+        self.debug.ptrace_scope = ptrace_scope;
+        let rows: Vec<ProcessItem> =
+            items.into_iter().map(|i| ProcessItem { pid: i.pid, user: one_line(&i.user), command: var_text(&i.cmdline) }).collect();
+        if let Some(p) = self.palette.as_mut().filter(|p| p.kind == PaletteKind::Processes) {
+            p.set_processes(rows, false);
+        }
+        self.dirty_frame = true;
+    }
+
+    pub(super) fn debug_process_chosen(&mut self, pid: u32) {
+        if let Some(p) = self.debug.pick.take() {
+            (p.then)(self, pid);
+        }
+    }
+
+    /// Attaches with an already prepared start: sets `launch["pid"]`, the request and the failure text, then launches.
+    #[allow(dead_code)] // Called by the launch.json import (yman 476); tests call it here.
+    pub(crate) fn debug_launch_attach(&mut self, mut p: Prepared, pid: u32) {
+        if self.debug.active() || self.debug.starting() {
+            return self.notify(Level::Info, "Attach cancelled: another debug session started");
+        }
+        if let Some(o) = p.launch.as_object_mut() {
+            o.insert("pid".into(), json!(pid));
+        } else {
+            p.launch = json!({"pid": pid});
+        }
+        p.request = StartRequest::Attach;
+        p.not_started = procs::attach_failed_text(Some(i64::from(pid)), self.debug.ptrace_scope);
+        self.debug_launch(p, None);
     }
 
     /// `run.debug_test_at_caret`: debug the Rust test (or module of tests) around the caret.
@@ -977,7 +1110,15 @@ impl App {
         let cwd = p.launch["cwd"].as_str().map_or_else(|| root.clone(), PathBuf::from);
         let lost_cwd = p.launch["cwd"].as_str().filter(|c| gdb && gdb_cd_fails(c, &root)).map(one_line);
         let exception_filters = self.debug.exception_filters.get(&p.adapter.name).map(|v| filter_choices(v)).unwrap_or_default();
-        let spec = SessionSpec { id, generation, adapter_id: p.adapter.name.clone(), launch: p.launch, breakpoints, exception_filters };
+        let spec = SessionSpec {
+            id,
+            generation,
+            adapter_id: p.adapter.name.clone(),
+            request: p.request,
+            launch: p.launch,
+            breakpoints,
+            exception_filters,
+        };
         let output_tx = self.bus_tx.clone();
         let gate = Arc::new(ConsoleGate::new(MAX_QUEUED));
         let console = spawn_console(cwd, root.clone(), gate.clone(), move |lines| {
@@ -998,6 +1139,8 @@ impl App {
         self.debug.session = Some(Live {
             id,
             adapter: p.adapter.name.clone(),
+            request: p.request,
+            not_started: p.not_started,
             client,
             phase: Phase::Initializing,
             exit_code: None,
@@ -1460,7 +1603,8 @@ impl App {
         }
         live.start_unproven = false;
         tracing::debug!("dap: the program did not start");
-        self.notify(Level::Warn, NOT_STARTED);
+        let text = live.not_started.clone();
+        self.notify(Level::Warn, text);
     }
 
     fn debug_ask_stack(&mut self, epoch: u64, thread: i64) {
@@ -2051,6 +2195,9 @@ impl App {
         let (level, text) = match (live.stop_requested, reason.is_empty(), live.exit_code) {
             (_, false, Some(c)) => (Level::Warn, format!("Debug session ended: {reason} (exit code {c})")),
             (_, false, None) => (Level::Warn, format!("Debug session ended: {reason}")),
+            (true, true, _) if live.request == StartRequest::Attach => {
+                (Level::Info, "Debug session stopped; the process was detached".to_string())
+            }
             (true, true, _) => (Level::Info, "Debug session stopped".to_string()),
             (false, true, Some(0)) => (Level::Info, "Debug session ended, exit code 0".to_string()),
             (false, true, Some(c)) => (Level::Warn, format!("Debug session ended, exit code {c}")),
@@ -2073,6 +2220,7 @@ impl App {
         self.editor.set_selected_frame(None);
         self.debug.starting = false;
         self.debug.seq += 1;
+        self.debug.pick = None;
     }
 
     /// For `App::shutdown`: ends the session and whatever is still stopping, within a bound.
@@ -2336,6 +2484,13 @@ pub(crate) mod tests {
             load(app, "a\nshell touch x.c", "int main;\n");
         };
         assert_eq!(refused("debug-program-file", &toml("${file}"), open).await, (Level::Warn, exact.to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_target_with_a_line_break_is_refused() {
+        let exact = "Cannot debug 'demo': line break in its target";
+        let toml = "[[configs]]\nname = \"demo\"\ncommand = [\"./demo\"]\n\n[debug.demo]\nadapter = \"fake\"\nrequest = \"attach\"\nlaunch = { target = \"host:1\\nshell touch x\" }\n";
+        assert_eq!(refused("debug-target-lf", toml, |_| {}).await, (Level::Warn, exact.to_string()));
     }
 
     #[tokio::test]
@@ -5389,8 +5544,13 @@ pub(crate) mod tests {
         let run = prepare(job(Some("cargo run"), BTreeMap::new(), Vec::new())).unwrap();
         assert_eq!(argv(&run).as_deref(), Some("cargo build --message-format=json"));
         // A written block wins, whatever the order of the tasks.
-        let written =
-            DebugBlock { adapter: Some("fake".into()), language: Some("rust".into()), build: None, launch: json!({"program": "/p/mine"}) };
+        let written = DebugBlock {
+            adapter: Some("fake".into()),
+            language: Some("rust".into()),
+            build: None,
+            launch: json!({"program": "/p/mine"}),
+            ..DebugBlock::default()
+        };
         let blocks = BTreeMap::from([("cargo run".to_string(), written)]);
         let wins = prepare(job(None, blocks.clone(), Vec::new())).unwrap();
         assert_eq!((wins.name.as_str(), wins.launch["program"].as_str(), argv(&wins)), ("cargo run", Some("/p/mine"), None));
@@ -9175,5 +9335,183 @@ pub(crate) mod tests {
         app.debug_adapter_memory(Instant::now());
         assert!(!app.debug.session.as_ref().unwrap().mem.asking, "a read was asked for");
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    // ---- Attach to Process (yman 475) ----
+
+    fn proc_info(pid: u32, user: &str, cmdline: &str) -> procs::ProcInfo {
+        procs::ProcInfo { pid, ppid: 1, uid: 1000, user: user.into(), comm: "x".into(), cmdline: cmdline.into() }
+    }
+
+    /// The newest pick's list, as the background read would send it.
+    fn deliver(app: &mut App, items: Vec<procs::ProcInfo>, scope: Option<u8>) {
+        let (generation, seq) = (app.workspace.generation, app.debug.pick_seq);
+        app.debug_processes(generation, seq, items, scope);
+    }
+
+    fn proc_rows(app: &App) -> Vec<ProcessItem> {
+        app.palette.as_ref().unwrap().process_items().to_vec()
+    }
+
+    /// The picker over `pid` (this process, so `comm` exists), chosen with Enter; gdb is the fake.
+    async fn attach_chosen(name: &str, scope: Option<u8>) -> (App, PathBuf, UnboundedReceiver<FakeAdapter>, FakeAdapter, u32) {
+        let (mut app, dir) = test_app(name);
+        let mut fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        app.config.debug.adapters.insert("gdb".into(), AdapterOverride { command: Some(vec!["sh".into()]), ..Default::default() });
+        let pid = std::process::id();
+        app.perform(Action::Debug(DebugAction::Attach));
+        deliver(&mut app, vec![proc_info(pid, "me", "jetl-test")], scope);
+        press(&mut app, KeyCode::Enter);
+        dap_until(&mut app, |a| a.debug.session.is_some()).await;
+        let fake = fakes.try_recv().expect("an adapter was connected");
+        (app, dir, fakes, fake, pid)
+    }
+
+    #[tokio::test]
+    async fn attach_opens_the_picker_and_drops_a_stale_list() {
+        let (mut app, dir) = test_app("attach-picker");
+        app.perform(Action::Debug(DebugAction::Attach));
+        let p = app.palette.as_ref().unwrap();
+        assert_eq!(p.kind, PaletteKind::Processes);
+        assert!(p.process_items().is_empty());
+        let (generation, seq) = (app.workspace.generation, app.debug.pick_seq);
+        let item = proc_info(4242, "me", "sleep\u{1b}[31m 300");
+        app.debug_processes(generation, seq - 1, vec![item.clone()], Some(1));
+        assert!(proc_rows(&app).is_empty(), "an older pick's list was shown");
+        assert_eq!(app.debug.ptrace_scope, None);
+        app.debug_processes(generation + 1, seq, vec![item.clone()], Some(1));
+        assert!(proc_rows(&app).is_empty(), "an older generation's list was shown");
+        app.debug_processes(generation, seq, vec![item], Some(1));
+        assert_eq!(proc_rows(&app), [ProcessItem { pid: 4242, user: "me".into(), command: "sleep 300".into() }]);
+        assert_eq!(app.debug.ptrace_scope, Some(1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn choosing_a_process_attaches_and_stop_detaches() {
+        let (mut app, dir, _fakes, mut fake, pid) = attach_chosen("attach-choose", Some(1)).await;
+        assert_eq!(app.debug.session.as_ref().unwrap().request, StartRequest::Attach);
+        let attach = fake.recv("attach").await;
+        assert_eq!(attach["arguments"], json!({"pid": pid}));
+        let comm = procs::comm(Path::new(procs::PROC), pid).unwrap();
+        assert!(texts(&app).contains(&format!("Debugging process {pid} ({comm}) with gdb")), "{:?}", texts(&app));
+        loop {
+            if fake.next().await["command"] == "configurationDone" {
+                break;
+            }
+        }
+        dap_until(&mut app, |a| a.debug.phase() == Some(Phase::Running)).await;
+        ctrl_f2(&mut app);
+        let disconnect = fake.recv("disconnect").await;
+        assert_eq!(disconnect["arguments"], json!({"terminateDebuggee": false}));
+        fake.respond(&disconnect, Value::Null);
+        dap_until(&mut app, gone).await;
+        assert_eq!(last(&app), (Level::Info, "Debug session stopped; the process was detached".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_refused_attach_names_ptrace_scope() {
+        let (mut app, dir, _fakes, mut fake, pid) = attach_chosen("attach-refused", Some(1)).await;
+        loop {
+            if fake.next().await["command"] == "configurationDone" {
+                break;
+            }
+        }
+        dap_until(&mut app, |a| a.debug.phase() == Some(Phase::Running)).await;
+        let first = fake.recv("threads").await;
+        fake.respond(&first, empty());
+        handle_next(&mut app, |m| matches!(m, AppMsg::Dap(_))).await;
+        let second = fake.recv("threads").await;
+        fake.respond(&second, empty());
+        dap_until(&mut app, proven).await;
+        assert_eq!(last(&app), (Level::Warn, procs::attach_failed_text(Some(i64::from(pid)), Some(1))));
+        assert_eq!(not_started(&app), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn escape_drops_the_pick() {
+        let (mut app, dir) = test_app("attach-escape");
+        app.perform(Action::Debug(DebugAction::Attach));
+        let seq = app.debug.pick_seq;
+        press(&mut app, KeyCode::Esc);
+        assert!(app.debug.pick.is_none());
+        assert!(app.palette.is_none());
+        app.debug_processes(app.workspace.generation, seq, vec![proc_info(1, "me", "x")], Some(1));
+        assert_eq!(app.debug.ptrace_scope, None, "a dropped pick's list was used");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn another_palette_or_a_newer_pick_drops_the_callback() {
+        let (mut app, dir) = test_app("attach-replaced");
+        app.perform(Action::Debug(DebugAction::Attach));
+        app.open_palette(PaletteKind::Actions);
+        assert!(app.debug.pick.is_none());
+        app.perform(Action::Debug(DebugAction::Attach));
+        let first = app.debug.pick.as_ref().unwrap().seq;
+        app.debug_pick_process(Box::new(|_, _| {}));
+        assert!(app.debug.pick.as_ref().unwrap().seq > first);
+        app.debug_root_changed();
+        assert!(app.debug.pick.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_custom_callback_gets_the_pid() {
+        let (mut app, dir) = test_app("attach-callback");
+        app.debug_pick_process(Box::new(|app, pid| app.notify(Level::Info, format!("got {pid}"))));
+        deliver(&mut app, vec![proc_info(4242, "me", "sleep 300")], None);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(last(&app), (Level::Info, "got 4242".to_string()));
+        assert!(app.debug.session.is_none() && !app.debug.starting());
+        assert!(app.debug.pick.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn launch_attach_refuses_while_a_session_runs() {
+        let (mut app, dir, _fakes, _fake) = gdb_running("attach-refuse-live").await;
+        let id = app.debug.session.as_ref().unwrap().id;
+        let p = Prepared {
+            name: "x".into(),
+            adapter: AdapterConfig {
+                name: "gdb".into(),
+                command: vec!["sh".into()],
+                languages: vec![],
+                launch: json!({}),
+                exact_env: false,
+                install_hint: "",
+            },
+            launch: json!({}),
+            build: None,
+            test: None,
+            request: StartRequest::Launch,
+            not_started: String::new(),
+        };
+        app.debug_launch_attach(p, 1);
+        assert_eq!(last(&app), (Level::Info, "Attach cancelled: another debug session started".to_string()));
+        assert_eq!(app.debug.session.as_ref().unwrap().id, id);
+        assert_eq!(app.debug.session.as_ref().unwrap().request, StartRequest::Launch);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_run_toml_attach_block_sends_attach() {
+        let (mut app, dir) = test_app("attach-block");
+        let mut fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        let toml = "[[configs]]\nname = \"demo\"\ncommand = [\"./demo\"]\n\n[debug.demo]\nadapter = \"fake\"\nrequest = \"attach\"\nlaunch = { pid = 77 }\n";
+        write_run_toml(&app, toml);
+        let mut fake = start(&mut app, &mut fakes).await;
+        let attach = fake.recv("attach").await;
+        assert_eq!(attach["arguments"], json!({"pid": 77}));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_gone_process_is_not_attached() {
+        let job = AttachJob { root: PathBuf::from("/"), debug: DebugConfig::default(), pid: u32::MAX };
+        assert_eq!(prepare_attach(job).unwrap_err(), format!("Process {} has exited", u32::MAX));
     }
 }

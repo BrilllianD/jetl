@@ -1158,6 +1158,41 @@ socket, so the pane's pid is jetl's (check `/proc/<pid>/comm`). Start only when 
 What gdb cannot show, and the unit tests prove instead: the tie itself is a kernel rule about the forking thread.
 lldb-dap, codelldb and debugpy were not tried.
 
+### Scenario: Attach to Process
+
+Needs the setup of `### Scenario: Debug and Stop` (gdb 17.2, `cc`, `XDG_*` under `/tmp`, `[lsp] enabled = false`), at 80x24
+and at 120x40, jetl on a private tmux socket. `kernel.yama.ptrace_scope` is 1 on the machine this was written on, so the
+fixture is `target.c` (`backlog-run-26-S8-evidence/design/target.c`: `tick()` on line 10 runs every 100 ms; `target 1`
+calls `prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY)` first, `target 0` does not), built with `cc -g -O0 -o jetl-s8-target
+target.c`. Start each fixture from the test shell with `setsid -f ./jetl-s8-target <1|0> </dev/null >/dev/null 2>&1`, so
+it is not jetl's descendant, and record its pid (A is `1`, B is `0`). Open `target.c` in jetl and set a breakpoint on
+line 10 (Ctrl+G, `10`, Ctrl+F8). Start only when `pgrep -x jetl-s8-target` and `pgrep -f '[g]db -q -i=dap'` print nothing.
+Use pids in every `kill`. The picker is F10, `r`, Down ten times, Enter (the row after `Debug Test at Caret`).
+
+1. The list: `Attach to Process`, the placeholder `type a pid, a command or a user`, rows of pid and command with the user
+   on the right, highest pid first. jetl's own pid, its descendants and gdb are absent; A and B are there. Typing
+   `s8-target` puts them on top; a pid filters by pid.
+2. Enter on A: toast `Debugging process <A> (jetl-s8-target) with gdb`, the Debug window reads `paused (attach)`, and
+   `/proc/<A>/status` reads `State: t (tracing stop)` and `TracerPid` = the gdb's pid.
+3. F9: `paused (breakpoint)` with the execution line on line 10.
+4. F9, Ctrl+F2: `Debug session stopped; the process was detached`; no gdb is left; A reads `State: S (sleeping)`,
+   `TracerPid: 0` and its `voluntary_ctxt_switches` rise a second later (it runs untraced). The breakpoint is hit every
+   100 ms, so the stop lands at the breakpoint or between two hits; both detach.
+5. Attach to A again, wait for `paused (attach)`, Ctrl+F2: the same readings as step 4.
+6. Attach to B: the Warn toast is the `ptrace_scope is 1` text for B's pid (it is cut at 80x24; Event Log, Alt+5, End,
+   Enter shows all of it) and B is unchanged (`S`, `TracerPid: 0`). Ctrl+F2 ends the session.
+7. Attach to A, F9, Ctrl+Q: jetl exits 0 with an empty stderr, no gdb is left, A runs untraced.
+8. Descendants: a `.jetl/run.toml` task `sleep 317` run from jetl (F10, `r`, Enter, Enter), and a control
+   `setsid -f sleep 318`. In the picker, `sleep 31`: the `sleep 318` row is there, no row of the `sleep 317` pid. (The
+   filter is fuzzy, so other rows match too.) Escape, Ctrl+F2, Ctrl+Q.
+9. Nothing is left: kill A and B by pid; `pgrep -x jetl-s8-target`, `pgrep -f '[g]db -q -i=dap'`, `pgrep -f '^sleep 31[78]$'`
+   print nothing, and the tmux socket has no server.
+
+What gdb cannot show, and the unit tests prove instead: the `terminateDebuggee: false` argument for an adapter that lacks
+`supportTerminateDebuggee`, and the `request = "attach"` block path (fake adapter). Killing gdb while the attached
+program runs with a breakpoint inserted leaves the program to die with SIGTRAP (see ARCHITECTURE, Pitfalls); the
+second Stop press and the 2 s disconnect deadline were not tried live. lldb-dap, codelldb and debugpy were not tried.
+
 ### Scenario: breakpoints sent to a debug session
 
 Needs `gdb` 14 or newer and `gcc`. At 80x24 and at 120x40, with `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and

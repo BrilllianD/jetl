@@ -294,6 +294,7 @@ mod tests {
             id: SESSION,
             generation: GEN,
             adapter_id: "fake".into(),
+            request: crate::dap::config::StartRequest::Launch,
             launch: json!({"program": "/p"}),
             exception_filters: std::collections::BTreeMap::new(),
             breakpoints: breakpoints

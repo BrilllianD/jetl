@@ -112,6 +112,7 @@ impl App {
             AppMsg::DebugOutput { generation, session, lines } => self.debug_output(generation, session, lines),
             AppMsg::DebugAdapterMemory { generation, session, kb } => self.debug_adapter_memory_read(generation, session, kb),
             AppMsg::DebugReady { generation, seq, result } => self.debug_ready(generation, seq, *result),
+            AppMsg::DebugProcesses { generation, seq, items, ptrace_scope } => self.debug_processes(generation, seq, items, ptrace_scope),
             AppMsg::DebugBuilt { generation, seq, end, artifacts } => self.debug_built(generation, seq, end, artifacts),
             AppMsg::Locations { generation, seq, title, items } => self.locations_loaded(generation, seq, title, items),
             AppMsg::QuickDefinition { generation, tag, heading, code, lang } => {

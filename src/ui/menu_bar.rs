@@ -261,6 +261,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Stop", "run.stop"),
             Item("Debug", "debug.start"),
             Item("Debug Test at Caret", "run.debug_test_at_caret"),
+            Item("Attach to Process…", "debug.attach"),
             Item("Stop Debugging", "debug.stop"),
             Item("Resume", "debug.resume"),
             Item("Pause", "debug.pause"),
@@ -621,11 +622,14 @@ mod tests {
         let (_, _, rows) = MAIN_MENU.iter().find(|m| m.0 == "Run").unwrap();
         let items: Vec<(&str, &str)> = rows.iter().filter_map(|r| if let Item(l, id) = r { Some((*l, *id)) } else { None }).collect();
         let at = items.iter().position(|i| *i == ("Stop", "run.stop")).unwrap();
+        let stop = items.iter().position(|i| *i == ("Stop Debugging", "debug.stop")).unwrap();
+        assert_eq!(items[stop - 1], ("Attach to Process…", "debug.attach"));
         assert_eq!(
-            items[at + 1..at + 10],
+            items[at + 1..at + 11],
             [
                 ("Debug", "debug.start"),
                 ("Debug Test at Caret", "run.debug_test_at_caret"),
+                ("Attach to Process…", "debug.attach"),
                 ("Stop Debugging", "debug.stop"),
                 ("Resume", "debug.resume"),
                 ("Pause", "debug.pause"),

@@ -263,6 +263,13 @@ pub enum AppMsg {
         seq: u64,
         result: Box<Result<crate::app::Prepared, String>>,
     },
+    /// Attach to Process's list, read off the main thread; dropped on an older generation or pick.
+    DebugProcesses {
+        generation: u64,
+        seq: u64,
+        items: Vec<crate::dap::procs::ProcInfo>,
+        ptrace_scope: Option<u8>,
+    },
     /// A Debug build step ended. Stale when `generation` or `seq` is not the current one, as `DebugReady`.
     DebugBuilt {
         generation: u64,

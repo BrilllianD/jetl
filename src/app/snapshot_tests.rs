@@ -1457,6 +1457,31 @@ async fn palette_breakpoints_empty() {
 }
 
 #[tokio::test]
+async fn palette_processes() {
+    use crate::ui::palette::ProcessItem;
+    let mut fx = stable_app("palette-processes");
+    let app = &mut fx.app;
+    app.open_palette(PaletteKind::Processes);
+    let long = format!("/usr/lib/some/long/path/server --config /etc/server.conf {}", "--option=value ".repeat(8));
+    let item = |pid, user: &str, command: &str| ProcessItem { pid, user: user.into(), command: command.into() };
+    let items = vec![item(4242, "me", "/opt/jetl-s8-target 1"), item(812, "root", "/usr/bin/sshd -D"), item(77, "me", &long)];
+    app.palette.as_mut().unwrap().set_processes(items, false);
+    let term = draw_app(app, 80, 24);
+    let marks = palette_marks(&app.theme);
+    assert_snapshot!("palette_processes", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn palette_processes_loading() {
+    let mut fx = stable_app("palette-processes-loading");
+    let app = &mut fx.app;
+    app.open_palette(PaletteKind::Processes);
+    let term = draw_app(app, 80, 24);
+    let marks = palette_marks(&app.theme);
+    assert_snapshot!("palette_processes_loading", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn palette_select_run_config() {
     let mut fx = stable_app("palette-select-run-config");
     let app = &mut fx.app;

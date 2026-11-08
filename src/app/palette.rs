@@ -25,6 +25,10 @@ impl App {
         if self.palette.as_ref().is_some_and(|p| p.kind == kind) {
             return;
         }
+        // Another palette replaces the process picker: its callback is dropped.
+        if kind != PaletteKind::Processes {
+            self.debug_cancel_pick();
+        }
         // Switching kinds keeps the typed query.
         let query = self.palette.take().map(|mut p| std::mem::take(&mut p.input.text)).unwrap_or_default();
         self.reset_workspace_symbols();
@@ -63,6 +67,9 @@ impl App {
         if p.wants(Source::Breakpoints) {
             p.set_exception_filters(self.exception_filter_items());
             p.set_breakpoints(self.breakpoint_items());
+        }
+        if p.wants(Source::Processes) {
+            p.set_processes(Vec::new(), true);
         }
         if p.wants(Source::Branches) {
             p.set_branches(self.git_panel.branches.clone());
@@ -245,6 +252,7 @@ impl App {
     pub(super) fn finish_palette(&mut self, res: PaletteResult) {
         let compare = self.palette.as_ref().is_some_and(|p| p.kind == PaletteKind::CompareWith);
         let select = self.palette.as_ref().is_some_and(|p| p.kind == PaletteKind::SelectRunConfig);
+        let processes = self.palette.as_ref().is_some_and(|p| p.kind == PaletteKind::Processes);
         // Forgetting a recent project, removing a breakpoint or toggling an exception filter keeps the palette open.
         if !matches!(
             res,
@@ -254,7 +262,12 @@ impl App {
         }
         self.dirty_frame = true;
         match res {
-            PaletteResult::Cancel => {}
+            PaletteResult::Cancel => {
+                if processes {
+                    self.debug_cancel_pick();
+                }
+            }
+            PaletteResult::Accept(Accept::AttachProcess { pid }) => self.debug_process_chosen(pid),
             PaletteResult::Accept(Accept::OpenFile(p)) if compare => self.compare_with_file(p),
             PaletteResult::Accept(Accept::OpenFile(p)) => self.open_file(p, true),
             PaletteResult::Accept(Accept::Action(a)) => self.perform(a),

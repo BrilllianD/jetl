@@ -61,6 +61,25 @@ pub struct AdapterConfig {
     pub install_hint: &'static str,
 }
 
+/// Which request starts the session; `launch` in a block holds that request's arguments.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StartRequest {
+    #[default]
+    Launch,
+    Attach,
+}
+
+impl StartRequest {
+    /// The DAP command.
+    pub fn command(self) -> &'static str {
+        match self {
+            StartRequest::Launch => "launch",
+            StartRequest::Attach => "attach",
+        }
+    }
+}
+
 /// How one run configuration is debugged.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
@@ -74,6 +93,8 @@ pub struct DebugBlock {
     /// The adapter's `launch` arguments, passed on as they stand (after variables); `Null` when omitted.
     #[serde(deserialize_with = "table")]
     pub launch: Value,
+    /// `launch` or `attach`: which request `launch` is the arguments of.
+    pub request: StartRequest,
 }
 
 /// Values for `${workspaceFolder}`, `${file}` and `${artifact}`.
@@ -299,7 +320,13 @@ pub fn default_block(task: &RunTask) -> Option<DebugBlock> {
         "cargo test" => &["cargo", "test", "--no-run", "--message-format=json"],
         _ => return None,
     };
-    Some(DebugBlock { adapter: None, language: Some("rust".into()), build: Some(strings(build)), launch: json!({"program": ARTIFACT_VAR}) })
+    Some(DebugBlock {
+        adapter: None,
+        language: Some("rust".into()),
+        build: Some(strings(build)),
+        launch: json!({"program": ARTIFACT_VAR}),
+        request: StartRequest::Launch,
+    })
 }
 
 /// The block Debug Test at Caret debugs with. It is not a configuration: nothing names it, writes it or
@@ -313,14 +340,21 @@ pub fn test_block(t: &RustTest) -> DebugBlock {
         args.push("--exact".into());
     }
     args.push("--nocapture".into());
-    DebugBlock { adapter: None, language: Some("rust".into()), build: Some(build), launch: json!({"program": ARTIFACT_VAR, "args": args}) }
+    DebugBlock {
+        adapter: None,
+        language: Some("rust".into()),
+        build: Some(build),
+        launch: json!({"program": ARTIFACT_VAR, "args": args}),
+        request: StartRequest::Launch,
+    }
 }
 
 /// The `launch` arguments for a session. Later wins, by top-level key: the adapter's `launch`; `cwd`
 /// (the task's, with the variables replaced, joined to the root, so an absolute result replaces the root; else the root); `env` (the task's, with jetl's beneath it when the adapter
 /// takes the exact environment; left out when empty); the block's `launch`. Then `${workspaceFolder}`,
 /// `${file}` and `${artifact}` are replaced in every string; an unset one stays as written. The task's
-/// `command` and `args` are not used.
+/// `command` and `args` are not used. For `StartRequest::Attach` the result is the block's `launch` alone
+/// (variables replaced): the adapter's base, `cwd` and `env` describe a process jetl starts.
 pub fn resolve_launch(
     adapter: &AdapterConfig,
     block: &DebugBlock,
@@ -328,9 +362,14 @@ pub fn resolve_launch(
     vars: &LaunchVars,
     env: &dyn Fn() -> BTreeMap<String, String>,
 ) -> Value {
+    let pairs = var_pairs(vars);
+    if block.request == StartRequest::Attach {
+        let mut v = if block.launch.is_object() { block.launch.clone() } else { json!({}) };
+        substitute(&mut v, &pairs);
+        return v;
+    }
     let mut out = Map::new();
     extend(&mut out, &adapter.launch);
-    let pairs = var_pairs(vars);
     out.insert("cwd".into(), task_cwd(task, vars, &pairs).into());
     let mut merged = if adapter.exact_env { env() } else { BTreeMap::new() };
     merged.extend(task.env.iter().map(|(k, v)| (k.clone(), v.clone())));
@@ -408,7 +447,13 @@ mod tests {
     }
 
     fn block(adapter: Option<&str>, language: Option<&str>, launch: Value) -> DebugBlock {
-        DebugBlock { adapter: adapter.map(String::from), language: language.map(String::from), build: None, launch }
+        DebugBlock {
+            adapter: adapter.map(String::from),
+            language: language.map(String::from),
+            build: None,
+            launch,
+            request: StartRequest::Launch,
+        }
     }
 
     fn names(cfg: &DebugConfig) -> Vec<String> {
@@ -596,6 +641,33 @@ mod tests {
     }
 
     #[test]
+    fn start_request_parses_lowercase_and_defaults_to_launch() {
+        let b: DebugBlock = toml::from_str("request = \"attach\"\nlaunch = { pid = 7 }\n").unwrap();
+        assert_eq!(b.request, StartRequest::Attach);
+        assert_eq!(toml::from_str::<DebugBlock>("").unwrap().request, StartRequest::Launch);
+        assert!(toml::from_str::<DebugBlock>("request = \"Attach\"").is_err());
+        assert!(toml::from_str::<DebugBlock>("request = \"run\"").is_err());
+        assert_eq!(StartRequest::Attach.command(), "attach");
+        assert_eq!(StartRequest::Launch.command(), "launch");
+    }
+
+    #[test]
+    fn attach_sends_the_block_launch_alone() {
+        let mut a = adapter(json!({"console": "internalConsole"}), true);
+        a.exact_env = true;
+        let t = task(Some("sub"), &[("E", "task")]);
+        let mut b = block(None, None, json!({"pid": 42, "program": "${workspaceFolder}/a"}));
+        b.request = StartRequest::Attach;
+        let no_read = || -> BTreeMap<String, String> { panic!("the environment is not read for an attach") };
+        let v = resolve_launch(&a, &b, &t, &vars(), &no_read);
+        assert_eq!(v, json!({"pid": 42, "program": "/w/a"}));
+        b.request = StartRequest::Launch;
+        let v = resolve_launch(&a, &b, &t, &vars(), &BTreeMap::new);
+        assert_eq!(v["console"], "internalConsole");
+        assert_eq!(v["cwd"], "/w/sub");
+    }
+
+    #[test]
     fn resolve_launch_replaces_variables_in_every_nested_string() {
         let a = adapter(json!({}), false);
         let launch = json!({
@@ -755,6 +827,7 @@ mod tests {
             language: Some("rust".into()),
             build: Some(strings(build)),
             launch: json!({"program": "${artifact}"}),
+            request: StartRequest::Launch,
         };
         let json_build = &["cargo", "build", "--message-format=json"];
         assert_eq!(get(&["cargo", "build"], Origin::Detected), Some(cargo(json_build)));

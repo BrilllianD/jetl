@@ -210,6 +210,7 @@ timeout_ms = 5000              # a formatter still running after this is killed
 # language = "c"                 # unset: the active buffer's language
 # build = ["make", "demo"]        # run first, as words; ${artifact} comes from cargo's JSON
 # launch = { program = "${workspaceFolder}/demo", args = ["x"] }  # passed to the adapter's launch request
+# request = "launch"            # or "attach": launch then holds the attach arguments, e.g. { pid = 1234 }
 
 # Built-in debug adapters take changes here; a table with a new name adds
 # one. Omitted keys keep the built-in values.
@@ -442,6 +443,15 @@ block. `adapter` names an adapter; unset, it is the first found for
 table passed to the adapter's `launch` request as it stands, so what it can
 hold depends on the adapter (`program` and `args` for all four built-in
 ones).
+
+`request = "attach"` makes the block start the session with the adapter's
+`attach` request instead of `launch`: the block's `launch` table is then sent
+alone as the `attach` arguments (the adapter's defaults, `cwd` and `env` are
+left out, since they describe a process jetl starts), and Stop detaches from
+the process and leaves it running. A value other than `launch` or `attach` is an error in the file.
+Run > Attach to Process… needs no block: it lists the running processes and
+attaches gdb to the one chosen. Verified under gdb 17.2 only; other adapters
+name the pid argument differently and were not tried.
 
 The launch arguments are built in this order, each replacing the same
 top-level key of the one before: the adapter's `launch`; `cwd` (the

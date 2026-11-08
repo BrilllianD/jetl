@@ -2,7 +2,7 @@
 //! no IO, no async, no clock of its own. Every timer is a deadline compared with the `now` of `on_input`.
 //!
 //! Adapters disagree about when `initialized` and the launch response arrive. The one order that works
-//! everywhere: `launch` goes out right after the initialize response without waiting for its reply, and the
+//! everywhere: `launch` (or `attach`) goes out right after the initialize response without waiting for its reply, and the
 //! configuration requests run whenever `initialized` arrives.
 
 use std::collections::BTreeMap;
@@ -13,6 +13,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::DapBody;
+use super::config::StartRequest;
 use super::protocol::{
     Breakpoint, BreakpointEvent, Capabilities, Event, ExceptionFilter, ExitedEvent, Incoming, Outgoing, OutputEvent, Response,
     ReverseRequest, StoppedEvent, body_of,
@@ -34,7 +35,9 @@ pub struct SessionSpec {
     pub generation: u64,
     /// `initialize`'s `adapterID`.
     pub adapter_id: String,
-    /// `launch`'s arguments, passed through.
+    /// Which request starts the session.
+    pub request: StartRequest,
+    /// The `launch` or `attach` arguments, passed through.
     pub launch: Value,
     /// Absolute paths.
     pub breakpoints: BTreeMap<PathBuf, SourceBreakpoints>,
@@ -187,6 +190,7 @@ pub enum TagKind {
 #[derive(Debug, Clone, PartialEq)]
 enum PendingKind {
     Initialize,
+    /// The `launch` or `attach` request.
     Launch,
     SetBreakpoints {
         source: PathBuf,
@@ -455,7 +459,8 @@ impl Session {
     }
 
     fn begin_stop(&mut self, now: Instant, out: &mut Vec<Action>) {
-        if self.caps.supports_terminate_request {
+        // `terminate` makes gdb kill what it is attached to, so an attach goes straight to `disconnect`.
+        if self.caps.supports_terminate_request && self.spec.request == StartRequest::Launch {
             self.send("terminate", Value::Null, PendingKind::Terminate, now, out);
             self.stop = Some(StopStage::Terminate { deadline: now + STOP_STAGE });
             self.set_phase(Phase::Stopping, out);
@@ -466,7 +471,11 @@ impl Session {
 
     /// The only place `disconnect` is built.
     fn disconnect(&mut self, now: Instant, out: &mut Vec<Action>) {
-        let args = if self.caps.support_terminate_debuggee { json!({ "terminateDebuggee": true }) } else { json!({}) };
+        let args = match self.spec.request {
+            StartRequest::Attach => json!({ "terminateDebuggee": false }),
+            StartRequest::Launch if self.caps.support_terminate_debuggee => json!({ "terminateDebuggee": true }),
+            StartRequest::Launch => json!({}),
+        };
         self.send("disconnect", args, PendingKind::Disconnect, now, out);
         self.stop = Some(StopStage::Disconnect { deadline: now + STOP_STAGE });
         self.set_phase(Phase::Stopping, out);
@@ -517,7 +526,7 @@ impl Session {
                 out.push(Action::Emit(DapBody::Started { capabilities: Box::new(self.caps.clone()) }));
                 self.set_phase(Phase::Starting, out);
                 let launch = std::mem::take(&mut self.spec.launch);
-                self.send("launch", launch, PendingKind::Launch, now, out);
+                self.send(self.spec.request.command(), launch, PendingKind::Launch, now, out);
                 if self.initialized {
                     self.configure(now, out);
                 }
@@ -853,11 +862,20 @@ mod tests {
 
     impl H {
         fn new(breakpoints: &[(&str, &[usize])]) -> Self {
+            Self::with(breakpoints, StartRequest::Launch)
+        }
+
+        fn attach(breakpoints: &[(&str, &[usize])]) -> Self {
+            Self::with(breakpoints, StartRequest::Attach)
+        }
+
+        fn with(breakpoints: &[(&str, &[usize])], request: StartRequest) -> Self {
             let now = Instant::now();
             let spec = SessionSpec {
                 id: SessionId(1),
                 generation: 1,
                 adapter_id: "dbg".into(),
+                request,
                 launch: json!({"program": "/p"}),
                 breakpoints: breakpoints
                     .iter()
@@ -1998,6 +2016,71 @@ mod tests {
         assert_eq!(o.to_json()["arguments"], json!({"terminateDebuggee": true}));
         h.answer("disconnect", Value::Null);
         assert_eq!(h.last, end_actions(""));
+    }
+
+    /// An attach session that is running: initialize answered with `c`, configured, `attach` answered.
+    fn attached_with(c: Value) -> H {
+        let mut h = H::attach(&[]);
+        h.answer("initialize", c);
+        h.initialized();
+        sets_ok(&mut h);
+        h.answer("configurationDone", Value::Null);
+        h.answer("attach", Value::Null);
+        assert_eq!(h.phase(), Phase::Running);
+        h.take_emitted();
+        h
+    }
+
+    fn detach_args(h: &H) -> Value {
+        h.requests("disconnect")[0]["arguments"].clone()
+    }
+
+    #[test]
+    fn attach_is_sent_in_place_of_launch() {
+        let mut h = H::attach(&[]);
+        h.answer("initialize", caps());
+        assert_eq!(h.commands(), ["initialize", "attach"]);
+        assert_eq!(h.requests("attach")[0]["arguments"], json!({"program": "/p"}));
+    }
+
+    #[test]
+    fn stopping_an_attach_detaches_without_terminate() {
+        let mut h = attached_with(caps());
+        h.cmd(Command::Stop);
+        assert_eq!(h.commands().last().unwrap(), "disconnect");
+        assert_eq!(detach_args(&h), json!({"terminateDebuggee": false}));
+        assert_eq!(h.count("terminate"), 0);
+        assert_eq!(h.phase(), Phase::Stopping);
+        h.answer("disconnect", Value::Null);
+        assert_eq!(h.last, end_actions(""));
+        assert_eq!(h.count("terminate"), 0);
+    }
+
+    #[test]
+    fn an_attach_without_terminate_debuggee_still_says_false() {
+        let mut h = attached_with(json!({"supportsConfigurationDoneRequest": true, "supportsTerminateRequest": true}));
+        h.cmd(Command::Stop);
+        assert_eq!(detach_args(&h), json!({"terminateDebuggee": false}));
+    }
+
+    #[test]
+    fn a_failed_attach_detaches() {
+        let mut h = H::attach(&[]);
+        h.answer("initialize", caps());
+        h.fail("attach", "no");
+        assert_eq!(h.errors().len(), 1);
+        assert_eq!(h.commands().last().unwrap(), "disconnect");
+        assert_eq!(detach_args(&h), json!({"terminateDebuggee": false}));
+        assert_eq!(h.count("terminate"), 0);
+    }
+
+    #[test]
+    fn the_attached_program_ending_detaches() {
+        let mut h = attached_with(caps());
+        h.event("terminated", json!({}));
+        assert_eq!(h.commands().last().unwrap(), "disconnect");
+        assert_eq!(detach_args(&h), json!({"terminateDebuggee": false}));
+        assert_eq!(h.count("terminate"), 0);
     }
 
     #[test]
