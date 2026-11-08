@@ -1692,6 +1692,10 @@ impl App {
 
     /// A stop: asks for the stack of the stopped thread, or for the threads when the event names none.
     fn debug_stopped(&mut self, epoch: u64, event: StoppedEvent) {
+        // The asked instruction step is over; a later `continued` (say, from the console) is not one.
+        if let Some(live) = self.debug.session.as_mut() {
+            live.instruction_wanted = false;
+        }
         self.debug_program_seen();
         self.debug_run_to_done();
         // The earlier stop's or choice's read is over, even if this stop has no file to show.
@@ -3133,7 +3137,8 @@ pub(crate) mod tests {
         toggle(app, &p, 0);
         app.on_tick();
         let m = fake.next().await;
-        assert_eq!((m["command"].as_str(), source(&m)), (Some("setBreakpoints"), p.to_string_lossy().into_owned()));
+        assert_eq!(m["command"], "setBreakpoints", "an unexpected request went out: {m}");
+        assert_eq!(source(&m), p.to_string_lossy().into_owned());
     }
 
     fn answer(fake: &FakeAdapter, set: &Value, bps: Value) {
@@ -10602,6 +10607,7 @@ pub(crate) mod tests {
         let req = step_sent(&mut app, &mut fake, DebugAction::StepIntoInstruction, "stepIn").await;
         assert_eq!(req["arguments"], json!({"threadId": 7, "granularity": "instruction"}));
         stop_at(&mut app, &mut fake, 7, &a, 3).await;
+        assert!(!app.debug.session.as_ref().unwrap().instruction_wanted, "a stop ends the asked instruction step");
         let req = step_sent(&mut app, &mut fake, DebugAction::StepOver, "next").await;
         assert_eq!(req["arguments"], json!({"threadId": 7}));
         let _ = std::fs::remove_dir_all(&dir);
