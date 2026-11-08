@@ -150,9 +150,9 @@ impl App {
             if let Some(path) = &e.path
                 && let Some(i) = self.editor.index_of(path)
                 && let Some(m) = crate::editor::buffer::file_mtime(path)
-                && m.duration_since(std::time::UNIX_EPOCH).is_ok_and(|d| d.as_secs() > found.time)
+                && m.duration_since(std::time::UNIX_EPOCH).is_ok_and(|d| d.as_secs() >= found.time)
             {
-                // Changed since the dump: an explicit save asks first.
+                // Changed since the dump (or in its second: mtimes compare in whole seconds): an explicit save asks first.
                 self.editor.buffers[i].disk_mtime = Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(found.time));
                 moved.push(e.label(&self.workspace.root));
             }
