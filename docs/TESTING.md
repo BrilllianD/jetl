@@ -1332,7 +1332,7 @@ configuration picked with Alt+Shift+F9 (`Down`, `Enter`). Start `jetl loop.c` on
 warns that the terminal lacks the kitty keyboard protocol, and `M-S-F8` is Alt+Shift+F8. The Debug window shows on Alt+F5.
 
 1. Negative control: with no breakpoint anywhere, Ctrl+Shift+F8 shows `Breakpoints`, the placeholder `filter ·
-   Shift+Del removes · Alt+Shift+F8 edits`, the message `No breakpoints: Ctrl+F8 sets one on the caret's line` and the
+   Space toggles · Shift+Del removes · Alt+Shift+F8 edits`, the message `No breakpoints: Ctrl+F8 sets one on the caret's line` and the
    count `0`. Esc.
 2. With no session, in `loop.c` set line 5 with the condition `i == 3` and line 7 with the log message `sum={sum}`
    (Ctrl+F8, Alt+Shift+F8). Ctrl+N `demo.c`, Ctrl+G `3`, Ctrl+F8, Ctrl+W. Ctrl+Shift+F8 shows three rows in this order:
@@ -1360,6 +1360,76 @@ warns that the terminal lacks the kitty keyboard protocol, and `M-S-F8` is Alt+S
 What only the unit tests and the fake adapter show: a verdict that moves (`verified, moved to line 7`; gdb answered
 every line it was given as the line itself), the list following an answer, a `breakpoint` event or the session's end
 while it is open, an Enter on a closed file's row, and the edit of a closed file's breakpoint. Only gdb was tried.
+
+### Scenario: exception breakpoint filters
+
+Needs `gdb` 14 or newer (written against 17.2), `g++`, and the setup of `### Scenario: View Breakpoints` (private tmux
+socket, `XDG_*` under `/tmp` with an empty `XDG_STATE_HOME`, `[lsp] enabled = false`, `[ui] toolbar = false`, `-iex "set
+debug dap-log-file <path>"`; copy only the `setExceptionBreakpoints`, `configurationDone` and `stopped` lines of
+`dap.log`, since the `launch` request holds jetl's whole environment). Fixture `/tmp/jetl-dap-demo`: `thrower.cpp`
+
+    #include <cstdio>
+    #include <stdexcept>
+
+    static int depth(int n) {
+        if (n == 0) throw std::runtime_error("boom");   // line 5: throw
+        return depth(n - 1) + 1;
+    }
+
+    int main() {
+        int caught = 0;
+        try {
+            depth(2);
+        } catch (const std::runtime_error &e) {          // line 13: handler
+            caught = 1;
+            std::printf("caught %s\n", e.what());
+        }
+        try {
+            try { depth(0); } catch (...) { throw; }     // line 18: rethrow
+        } catch (...) { caught += 1; }
+        std::printf("done %d\n", caught);
+        return 0;
+    }
+
+built with `g++ -g -O0 -o thrower thrower.cpp`, and in `.jetl/run.toml` a `thrower` configuration with `command =
+["./thrower"]` and `[debug.thrower]` with `adapter = "gdb"` and `launch = { program = "${workspaceFolder}/thrower" }`.
+Start `jetl thrower.cpp` only when `pgrep -x thrower` and `pgrep -f '[g]db -q -i=dap'` print nothing. Alt+Shift+F9 then
+Enter picks the one configuration. At 80x24 and at 120x40, every step at both sizes. A step that reads the Frames rows
+presses Alt+F5 and then Alt+Right first (the Debug window opens on its Console tab).
+
+1. Negative control: with no session so far, Ctrl+Shift+F8 shows `No breakpoints: Ctrl+F8 sets one on the caret's line`
+   and the count `0`: no filter is known before an adapter declared them. Esc.
+2. Shift+F9: `Debug session ended, exit code 0`, and `dap.log` has `setExceptionBreakpoints` with `"filters": []`.
+   Ctrl+Shift+F8: five rows, all `[ ]`, in this order, each with `gdb` on the right: `Ada assertions`, `Ada exceptions`,
+   `C++ exceptions, when thrown`, `C++ exceptions, when re-thrown`, `C++ exceptions, when caught`; the count `5` and
+   the whole placeholder `filter · Space toggles · Shift+Del removes · Alt+Shift+F8 edits` (it fits at 80x24).
+3. Down twice to `when thrown`, Space: `[x]`, the list stays open. Esc, Shift+F9: the Debug window reads `paused
+   (breakpoint)`, the toast `Paused in __cxa_throw, no source`, and `dap.log` has `"filters": ["throw"]` before
+   `configurationDone`, then a `stopped` with `"reason": "breakpoint"`. Frames: `__cxa_throw  no source`, `depth
+   thrower.cpp:5`, `depth thrower.cpp:6` twice, `main thrower.cpp:12`; Down once puts the caret on `Ln 5`. F9: the
+   second stop has `main  thrower.cpp:18` in the rows. F9: `exit code 0`.
+4. Mid-session: Shift+F9 stops at the throw. Ctrl+Shift+F8, Down twice, Space: `[x]` becomes `[ ]`; Down twice, Space on
+   `when caught`: `[x]`. `dap.log` has two more `setExceptionBreakpoints`, `"filters": []` and `"filters": ["catch"]`,
+   sent as the keys were pressed. Esc, F9: it stops in `__cxa_begin_catch` with `main  thrower.cpp:13`; F9: `:18`; F9:
+   `:19`; F9: `exit code 0`.
+5. In the list type `thrown`: two rows are left (`when thrown` and `when re-thrown`, since the query is a substring),
+   count `2`. Space makes the query `thrown ` (the cursor moves one column right) and toggles nothing. Backspace, then
+   Enter: `when thrown` reads `[x]` and the list stays open. Enter again: `[ ]`. Esc.
+6. Ctrl+Q: exit 0, empty stderr. The session JSON under `XDG_STATE_HOME/jetl/sessions` has `exception_filters.gdb` with
+   five entries, only `catch` with `"on": true`. Start jetl again with the same `XDG_STATE_HOME`: Ctrl+Shift+F8 with
+   no session shows the five rows with `[x] C++ exceptions, when caught`. Esc, Shift+F9: `"filters": ["catch"]` is the
+   first `setExceptionBreakpoints`, and it stops in `__cxa_begin_catch`. Ctrl+F2: `Debug session stopped`.
+7. An Ada filter on a C++ program: Ctrl+Shift+F8, Down, Space (`Ada exceptions` `[x]`), Down three times, Space (`when
+   caught` `[ ]`), Esc, Shift+F9. `dap.log` has `"filters": ["exception"]`, answered `{"breakpoints": [{"id": 1,
+   "verified": false, "reason": "pending"}]}`. The program runs to `Debug session ended, exit code 0`: no stop, no
+   error toast. Ctrl+Q: the JSON now has `exception` `true` and `catch` `false`.
+8. Every session: exit 0, empty stderr; no `gdb`, `thrower` or tmux server is left.
+
+What only the unit tests and the fake adapter show: the `default` handling (an adapter with no saved entry sends its
+`default: true` filters; gdb declares none), a second adapter's rows (the toggle of one that is not the live adapter
+sends nothing), a filter the adapter stopped declaring (it leaves the saved list at the next start), and a raw
+control character in a label. gdb's per-filter answer (`pending`, or `failed` for an unknown id) is not shown, and
+Ada filters under C++ stay silent. Filter conditions are not offered. Other adapters are unverified.
 
 ### Scenario: stepping and the execution point
 

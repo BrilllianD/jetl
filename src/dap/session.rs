@@ -14,8 +14,8 @@ use serde_json::{Value, json};
 
 use super::DapBody;
 use super::protocol::{
-    Breakpoint, BreakpointEvent, Capabilities, Event, ExitedEvent, Incoming, Outgoing, OutputEvent, Response, ReverseRequest, StoppedEvent,
-    body_of,
+    Breakpoint, BreakpointEvent, Capabilities, Event, ExceptionFilter, ExitedEvent, Incoming, Outgoing, OutputEvent, Response,
+    ReverseRequest, StoppedEvent, body_of,
 };
 
 /// Applies to `initialize` alone; the session ends when it passes.
@@ -38,6 +38,25 @@ pub struct SessionSpec {
     pub launch: Value,
     /// Absolute paths.
     pub breakpoints: BTreeMap<PathBuf, SourceBreakpoints>,
+    /// The user's saved exception filter choices for this adapter, by filter id; a declared id with none takes its default.
+    pub exception_filters: BTreeMap<String, bool>,
+}
+
+/// The filter ids to send: each declared filter (in declared order, first of a repeated id, none empty) that `choices` turns on,
+/// or with no choice its `default`. Never an id the adapter did not declare.
+pub fn chosen_filters(declared: &[ExceptionFilter], choices: &BTreeMap<String, bool>) -> Vec<String> {
+    let mut seen: Vec<&str> = Vec::new();
+    let mut out = Vec::new();
+    for f in declared {
+        if f.filter.is_empty() || seen.contains(&f.filter.as_str()) {
+            continue;
+        }
+        seen.push(&f.filter);
+        if choices.get(&f.filter).copied().unwrap_or(f.default) {
+            out.push(f.filter.clone());
+        }
+    }
+    out
 }
 
 /// One `setBreakpoints` entry: the 0-based line as jetl holds it, and what is sent with it. No field is `Some("")`.
@@ -91,10 +110,27 @@ pub enum Action {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
-    SetBreakpoints { source: PathBuf, breakpoints: Vec<SourceBreakpoint>, modified: bool },
-    Request { command: String, arguments: Value, tag: DapTag },
-    Resume { kind: ResumeKind, thread: i64 },
-    Pause { thread: i64 },
+    SetBreakpoints {
+        source: PathBuf,
+        breakpoints: Vec<SourceBreakpoint>,
+        modified: bool,
+    },
+    Request {
+        command: String,
+        arguments: Value,
+        tag: DapTag,
+    },
+    Resume {
+        kind: ResumeKind,
+        thread: i64,
+    },
+    Pause {
+        thread: i64,
+    },
+    /// The user's exception filter choices changed: replaces the stored ones, and tells the adapter once configured.
+    SetExceptionFilters {
+        choices: BTreeMap<String, bool>,
+    },
     Stop,
 }
 
@@ -347,8 +383,7 @@ impl Session {
         }
         let capable = self.caps.supports_configuration_done_request;
         if !self.caps.exception_breakpoint_filters.is_empty() || !capable {
-            let filters: Vec<&str> =
-                self.caps.exception_breakpoint_filters.iter().filter(|f| f.default).map(|f| f.filter.as_str()).collect();
+            let filters = chosen_filters(&self.caps.exception_breakpoint_filters, &self.spec.exception_filters);
             self.send("setExceptionBreakpoints", json!({ "filters": filters }), PendingKind::SetExceptionBreakpoints, now, out);
         }
         if capable {
@@ -638,6 +673,16 @@ impl Session {
                 let kind = PendingKind::Step { epoch: self.epoch, resumed: None };
                 self.send("pause", json!({ "threadId": thread }), kind, now, out);
             }
+            Command::SetExceptionFilters { choices } => {
+                if self.phase == Phase::Stopping {
+                    return;
+                }
+                self.spec.exception_filters = choices;
+                if self.configured && !self.caps.exception_breakpoint_filters.is_empty() {
+                    let filters = chosen_filters(&self.caps.exception_breakpoint_filters, &self.spec.exception_filters);
+                    self.send("setExceptionBreakpoints", json!({ "filters": filters }), PendingKind::SetExceptionBreakpoints, now, out);
+                }
+            }
             Command::Stop => {
                 self.stop_silent = true;
                 match (self.phase, self.stop) {
@@ -808,6 +853,7 @@ mod tests {
                     .iter()
                     .map(|(p, l)| (PathBuf::from(p), SourceBreakpoints { breakpoints: at(l), modified: false }))
                     .collect(),
+                exception_filters: BTreeMap::new(),
             };
             let mut h = H { s: Session::new(spec, now), now, sent: vec![], emitted: vec![], last: vec![], answered: BTreeSet::new() };
             let out = h.s.start();
@@ -1162,6 +1208,82 @@ mod tests {
         let h = run(json!({}));
         assert_eq!(h.requests("setExceptionBreakpoints")[0]["arguments"], json!({"filters": []}));
         assert_eq!(h.count("configurationDone"), 0);
+    }
+
+    fn choices(pairs: &[(&str, bool)]) -> BTreeMap<String, bool> {
+        pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+    }
+
+    #[test]
+    fn saved_choices_pick_the_filters_sent() {
+        let mut h = H::new(&[]);
+        h.s.spec.exception_filters = choices(&[("on", false), ("off", true), ("gone", true)]);
+        h.answer("initialize", caps());
+        h.event("initialized", json!({}));
+        assert_eq!(h.requests("setExceptionBreakpoints")[0]["arguments"], json!({"filters": ["off"]}));
+    }
+
+    #[test]
+    fn chosen_filters_keeps_declared_order_and_drops_repeats() {
+        let f = |name: &str, default: bool| ExceptionFilter { filter: name.into(), label: String::new(), default };
+        let declared = [f("b", false), f("a", true), f("b", true), f("", true)];
+        assert_eq!(chosen_filters(&declared, &BTreeMap::new()), vec!["a".to_string()]);
+        assert_eq!(chosen_filters(&declared, &choices(&[("b", true)])), vec!["b".to_string(), "a".to_string()]);
+    }
+
+    #[test]
+    fn a_filter_change_sends_the_full_set_once() {
+        let mut h = H::new(&[]);
+        h.answer("initialize", caps());
+        h.event("initialized", json!({}));
+        h.answer("setExceptionBreakpoints", Value::Null);
+        h.cmd(Command::SetExceptionFilters { choices: choices(&[("on", true), ("off", true)]) });
+        assert_eq!(h.requests("setExceptionBreakpoints").len(), 2);
+        assert_eq!(h.requests("setExceptionBreakpoints")[1]["arguments"], json!({"filters": ["on", "off"]}));
+        h.answer("setExceptionBreakpoints", Value::Null);
+        h.cmd(Command::SetExceptionFilters { choices: choices(&[("off", false), ("x", true)]) });
+        assert_eq!(h.requests("setExceptionBreakpoints").len(), 3);
+        assert_eq!(h.requests("setExceptionBreakpoints")[2]["arguments"], json!({"filters": ["on"]}));
+    }
+
+    #[test]
+    fn a_filter_change_before_configuration_is_used_by_it() {
+        let mut h = H::new(&[]);
+        h.answer("initialize", caps());
+        h.cmd(Command::SetExceptionFilters { choices: choices(&[("on", false), ("off", true)]) });
+        assert!(h.requests("setExceptionBreakpoints").is_empty());
+        h.event("initialized", json!({}));
+        assert_eq!(h.requests("setExceptionBreakpoints").len(), 1);
+        assert_eq!(h.requests("setExceptionBreakpoints")[0]["arguments"], json!({"filters": ["off"]}));
+    }
+
+    #[test]
+    fn a_filter_change_while_stopping_or_with_no_filters_sends_nothing() {
+        let mut h = H::new(&[]);
+        h.answer("initialize", caps());
+        h.event("initialized", json!({}));
+        h.answer("setExceptionBreakpoints", Value::Null);
+        h.cmd(Command::Stop);
+        assert_eq!(h.phase(), Phase::Stopping);
+        h.cmd(Command::SetExceptionFilters { choices: choices(&[("off", true)]) });
+        assert_eq!(h.requests("setExceptionBreakpoints").len(), 1);
+
+        let mut h = H::new(&[]);
+        h.answer("initialize", json!({"supportsConfigurationDoneRequest": true}));
+        h.event("initialized", json!({}));
+        h.cmd(Command::SetExceptionFilters { choices: choices(&[("off", true)]) });
+        assert!(h.requests("setExceptionBreakpoints").is_empty());
+    }
+
+    #[test]
+    fn a_failed_filter_change_is_reported() {
+        let mut h = H::new(&[]);
+        h.answer("initialize", caps());
+        h.event("initialized", json!({}));
+        h.answer("setExceptionBreakpoints", Value::Null);
+        h.cmd(Command::SetExceptionFilters { choices: choices(&[("off", true)]) });
+        h.fail("setExceptionBreakpoints", "nope");
+        assert!(h.errors().contains(&"setExceptionBreakpoints: nope".to_string()), "{:?}", h.errors());
     }
 
     #[test]

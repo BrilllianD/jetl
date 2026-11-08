@@ -713,6 +713,8 @@
 "shift-delete" = "palette.delete_item"
 # Edits the selected breakpoint's condition or log message (View Breakpoints).
 "alt-shift-f8" = "palette.edit_item"
+# Toggles the selected exception filter (View Breakpoints, empty query); elsewhere it types a space.
+"space" = "palette.toggle_item"
 
 # Reserved for the future vim mode (inert unless [keymap] mode = "vim").
 [mode.normal]

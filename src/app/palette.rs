@@ -61,6 +61,7 @@ impl App {
             p.set_scratches(crate::scratch::list(&self.paths.scratches_dir()));
         }
         if p.wants(Source::Breakpoints) {
+            p.set_exception_filters(self.exception_filter_items());
             p.set_breakpoints(self.breakpoint_items());
         }
         if p.wants(Source::Branches) {
@@ -244,8 +245,11 @@ impl App {
     pub(super) fn finish_palette(&mut self, res: PaletteResult) {
         let compare = self.palette.as_ref().is_some_and(|p| p.kind == PaletteKind::CompareWith);
         let select = self.palette.as_ref().is_some_and(|p| p.kind == PaletteKind::SelectRunConfig);
-        // Forgetting a recent project or removing a breakpoint keeps the palette open, without the row.
-        if !matches!(res, PaletteResult::Accept(Accept::ForgetProject(_) | Accept::RemoveBreakpoint { .. })) {
+        // Forgetting a recent project, removing a breakpoint or toggling an exception filter keeps the palette open.
+        if !matches!(
+            res,
+            PaletteResult::Accept(Accept::ForgetProject(_) | Accept::RemoveBreakpoint { .. } | Accept::ToggleExceptionFilter { .. })
+        ) {
             self.close_palette();
         }
         self.dirty_frame = true;
@@ -268,6 +272,7 @@ impl App {
             PaletteResult::Accept(Accept::DeleteScratch(path)) => self.ask_delete_scratch(path),
             PaletteResult::Accept(Accept::ForgetProject(root)) => self.forget_recent_project(root),
             PaletteResult::Accept(Accept::RemoveBreakpoint { path, line }) => self.debug_remove_breakpoint(path, line),
+            PaletteResult::Accept(Accept::ToggleExceptionFilter { adapter, filter }) => self.debug_toggle_exception_filter(adapter, filter),
             // The palette is closed above: `debug_edit_breakpoint` opens nothing while a dialog is up, and the palette
             // must not stay over the dialog.
             PaletteResult::Accept(Accept::EditBreakpoint { path, line }) => self.debug_edit_breakpoint(path, line),

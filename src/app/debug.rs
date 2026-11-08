@@ -24,10 +24,12 @@ use crate::dap::config::{
 use crate::dap::console::{ConsoleGate, MAX_QUEUED, forward_output, spawn_console};
 use crate::dap::panel::{BuildStage, DebugTab, FrameRow, MAX_WATCHES};
 use crate::dap::protocol::{
-    Breakpoint, BreakpointEvent, EvaluateBody, OutputEvent, Scope, ScopesBody, StackFrame, StackTraceBody, StoppedEvent, Thread,
-    ThreadsBody, Variable, VariablesBody, body_of,
+    Breakpoint, BreakpointEvent, Capabilities, EvaluateBody, ExceptionFilter, OutputEvent, Scope, ScopesBody, StackFrame, StackTraceBody,
+    StoppedEvent, Thread, ThreadsBody, Variable, VariablesBody, body_of,
 };
-use crate::dap::session::{Command, DapTag, Phase, ResumeKind, SessionId, SessionSpec, SourceBreakpoint, SourceBreakpoints, TagKind};
+use crate::dap::session::{
+    Command, DapTag, Phase, ResumeKind, SessionId, SessionSpec, SourceBreakpoint, SourceBreakpoints, TagKind, chosen_filters,
+};
 use crate::dap::vars::{MAX_CHILDREN, UNPAGED_LIMIT, VarItem, scopes_to_open};
 use crate::dap::{DapBody, DapMsg};
 use crate::editor::buffer::{BpState, BreakpointMark, BreakpointSpec};
@@ -42,7 +44,8 @@ use crate::run::{RunTask, load_tasks, quote_word};
 use crate::ui::dialog::{Dialog, DialogId};
 use crate::ui::focus::{PanelId, ToolWindowId};
 use crate::ui::menu::{ContextMenu, MenuItem};
-use crate::ui::palette::{BreakpointItem, Source, display_path};
+use crate::ui::palette::{BreakpointItem, ExceptionFilterItem, Source, display_path};
+use crate::workspace::SavedFilter;
 
 /// How adapters are reached: processes, or in-process fakes in tests.
 #[derive(Default)]
@@ -56,6 +59,8 @@ enum Connector {
 /// The live session. Gone from `DebugState` as soon as it ends or is replaced, so its later messages are dropped.
 pub(super) struct Live {
     pub(super) id: SessionId,
+    /// The `AdapterConfig` name: the key of the saved exception filters.
+    pub(super) adapter: String,
     pub(super) client: DapClient,
     pub(super) phase: Phase,
     pub(super) exit_code: Option<i64>,
@@ -238,6 +243,8 @@ pub struct DebugState {
     next_view: u64,
     /// The Evaluate dialog's check `Add to watches`, as the user left it.
     add_watch: bool,
+    /// Each adapter's exception filters as it last declared them, with the user's choices; per root, saved with the session.
+    pub(crate) exception_filters: BTreeMap<String, Vec<SavedFilter>>,
 }
 
 impl DebugState {
@@ -388,6 +395,27 @@ fn apply_breakpoint(line: usize, mark: &mut BreakpointMark, bp: &Breakpoint) {
 fn one_line(message: &str) -> String {
     let lines: Vec<String> = message.split(['\n', '\r']).map(|l| clean(l.as_bytes())).filter(|l| !l.is_empty()).collect();
     lines.join(" ")
+}
+
+/// The saved list after an adapter declared `declared`: declared order, first of a repeated id, no empty id, the
+/// adapter's label, `on` by the rule of `chosen_filters` (a saved choice, else `default`). Saved ids it no longer declares go.
+fn merge_filters(saved: &[SavedFilter], declared: &[ExceptionFilter]) -> Vec<SavedFilter> {
+    let on = chosen_filters(declared, &filter_choices(saved));
+    let mut seen: Vec<&str> = Vec::new();
+    let mut out = Vec::new();
+    for f in declared {
+        if f.filter.is_empty() || seen.contains(&f.filter.as_str()) {
+            continue;
+        }
+        seen.push(&f.filter);
+        out.push(SavedFilter { filter: f.filter.clone(), label: f.label.clone(), on: on.contains(&f.filter) });
+    }
+    out
+}
+
+/// A saved list as `SessionSpec::exception_filters` and `Command::SetExceptionFilters` take it.
+fn filter_choices(saved: &[SavedFilter]) -> BTreeMap<String, bool> {
+    saved.iter().map(|f| (f.filter.clone(), f.on)).collect()
 }
 
 /// `name:line` (1-based) of a breakpoint, for its dialogs and toasts.
@@ -887,7 +915,8 @@ impl App {
         let early = sent.iter().map(|(p, v)| (p.clone(), v.iter().map(|b| b.line).collect())).collect();
         let cwd = p.launch["cwd"].as_str().map_or_else(|| root.clone(), PathBuf::from);
         let lost_cwd = p.launch["cwd"].as_str().filter(|c| gdb && gdb_cd_fails(c, &root)).map(one_line);
-        let spec = SessionSpec { id, generation, adapter_id: p.adapter.name.clone(), launch: p.launch, breakpoints };
+        let exception_filters = self.debug.exception_filters.get(&p.adapter.name).map(|v| filter_choices(v)).unwrap_or_default();
+        let spec = SessionSpec { id, generation, adapter_id: p.adapter.name.clone(), launch: p.launch, breakpoints, exception_filters };
         let output_tx = self.bus_tx.clone();
         let gate = Arc::new(ConsoleGate::new(MAX_QUEUED));
         let console = spawn_console(cwd, root.clone(), gate.clone(), move |lines| {
@@ -907,6 +936,7 @@ impl App {
         });
         self.debug.session = Some(Live {
             id,
+            adapter: p.adapter.name.clone(),
             client,
             phase: Phase::Initializing,
             exit_code: None,
@@ -1028,13 +1058,60 @@ impl App {
         self.dirty_frame = true;
     }
 
+    /// The rows of View Breakpoints above the breakpoints: every saved exception filter, by adapter name then declared order.
+    pub(super) fn exception_filter_items(&self) -> Vec<ExceptionFilterItem> {
+        self.debug
+            .exception_filters
+            .iter()
+            .flat_map(|(adapter, list)| {
+                list.iter().map(move |f| ExceptionFilterItem {
+                    adapter: adapter.clone(),
+                    filter: f.filter.clone(),
+                    label: if f.label.is_empty() { one_line(&f.filter) } else { one_line(&f.label) },
+                    on: f.on,
+                })
+            })
+            .collect()
+    }
+
+    /// The adapter declared its capabilities: its saved exception filters follow the declaration, keeping the user's choices.
+    fn debug_started(&mut self, capabilities: &Capabilities) {
+        let Some(adapter) = self.debug.session.as_ref().map(|l| l.adapter.clone()) else { return };
+        let saved = self.debug.exception_filters.get(&adapter).map(Vec::as_slice).unwrap_or_default();
+        let merged = merge_filters(saved, &capabilities.exception_breakpoint_filters);
+        if merged.is_empty() {
+            self.debug.exception_filters.remove(&adapter);
+        } else {
+            self.debug.exception_filters.insert(adapter, merged);
+        }
+        self.debug_refresh_breakpoint_list();
+    }
+
+    /// Space or Enter on an exception filter row of View Breakpoints: the choice flips and a live session of that adapter
+    /// is told the full set at once.
+    pub(super) fn debug_toggle_exception_filter(&mut self, adapter: String, filter: String) {
+        if let Some(list) = self.debug.exception_filters.get_mut(&adapter)
+            && let Some(f) = list.iter_mut().find(|f| f.filter == filter)
+        {
+            f.on = !f.on;
+            let choices = filter_choices(list);
+            if self.debug.active() && self.debug.session.as_ref().is_some_and(|l| l.adapter == adapter) {
+                self.debug.send(Command::SetExceptionFilters { choices });
+            }
+        }
+        self.debug_refresh_breakpoint_list();
+        self.dirty_frame = true;
+    }
+
     /// Rebuilds the rows of an open View Breakpoints palette; nothing when none is open.
     pub(super) fn debug_refresh_breakpoint_list(&mut self) {
         if !self.palette.as_ref().is_some_and(|p| p.wants(Source::Breakpoints)) {
             return;
         }
         let items = self.breakpoint_items();
+        let filters = self.exception_filter_items();
         if let Some(p) = self.palette.as_mut() {
+            p.set_exception_filters(filters);
             p.set_breakpoints(items);
         }
         self.dirty_frame = true;
@@ -1183,7 +1260,7 @@ impl App {
                     }
                 }
             }
-            DapBody::Started { .. } => {}
+            DapBody::Started { capabilities } => self.debug_started(&capabilities),
         }
     }
 
@@ -8423,6 +8500,240 @@ pub(crate) mod tests {
         assert_eq!(last(&app), (Level::Info, "The breakpoint on a.log:4 is gone".to_string()));
         app.on_tick();
         assert_quiet(&mut app, &mut fake, "q2.log").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `caps()` and the five filters gdb 17.2 declares, none by default, and one more that is.
+    fn filters() -> Value {
+        let mut c = caps();
+        c["exceptionBreakpointFilters"] = json!([
+            {"filter": "assert", "label": "Ada assertions", "supportsCondition": true},
+            {"filter": "exception", "label": "Ada exceptions", "supportsCondition": true},
+            {"filter": "throw", "label": "C++ exceptions, when thrown", "supportsCondition": true},
+            {"filter": "rethrow", "label": "C++ exceptions, when re-thrown", "supportsCondition": true},
+            {"filter": "catch", "label": "C++ exceptions, when caught", "supportsCondition": true},
+            {"filter": "dflt", "label": "D", "default": true},
+        ]);
+        c
+    }
+
+    fn saved(filter: &str, on: bool) -> SavedFilter {
+        SavedFilter { filter: filter.into(), label: format!("old {filter}"), on }
+    }
+
+    fn declared(filter: &str, label: &str, default: bool) -> ExceptionFilter {
+        ExceptionFilter { filter: filter.into(), label: label.into(), default }
+    }
+
+    /// Like `running`, and the `setExceptionBreakpoints` seen before `configurationDone` is returned (and answered).
+    async fn running_with_filters(app: &mut App, fakes: &mut UnboundedReceiver<FakeAdapter>) -> (FakeAdapter, Value) {
+        app.perform(Action::Debug(DebugAction::Start));
+        dap_until(app, |a| a.debug.active()).await;
+        let mut fake = fakes.try_recv().expect("connected");
+        let mut set = Value::Null;
+        loop {
+            let m = fake.next().await;
+            if m["command"] == "setExceptionBreakpoints" {
+                fake.respond(&m, Value::Null);
+                set = m;
+            } else if m["command"] == "configurationDone" {
+                break;
+            }
+        }
+        dap_until(app, |a| a.debug.phase() == Some(Phase::Running)).await;
+        (fake, set)
+    }
+
+    fn filter_state(app: &App, adapter: &str) -> Vec<(String, bool)> {
+        app.debug.exception_filters.get(adapter).map(|v| v.iter().map(|f| (f.filter.clone(), f.on)).collect()).unwrap_or_default()
+    }
+
+    fn sent_filters(m: &Value) -> Value {
+        m["arguments"]["filters"].clone()
+    }
+
+    fn space() -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn merge_filters_keeps_choices_and_follows_the_adapter() {
+        let old = [saved("throw", true), saved("old", true), saved("catch", false)];
+        let new = [
+            declared("throw", "T", false),
+            declared("catch", "C", true),
+            declared("rethrow", "R", false),
+            declared("rethrow", "again", true),
+            declared("", "none", true),
+        ];
+        let want = vec![
+            SavedFilter { filter: "throw".into(), label: "T".into(), on: true },
+            SavedFilter { filter: "catch".into(), label: "C".into(), on: false },
+            SavedFilter { filter: "rethrow".into(), label: "R".into(), on: false },
+        ];
+        assert_eq!(merge_filters(&old, &new), want);
+        assert_eq!(filter_choices(&want), BTreeMap::from([("throw".into(), true), ("catch".into(), false), ("rethrow".into(), false)]));
+    }
+
+    #[tokio::test]
+    async fn a_start_sends_the_saved_choices_and_rewrites_them() {
+        let (mut app, dir, _fakes) = setup("ef-start", Order::LaunchEarly);
+        let mut fakes = with_fake_adapters(&mut app, filters(), Order::LaunchEarly);
+        app.debug.exception_filters.insert("fake".into(), vec![saved("throw", true), saved("catch", true), saved("gone", true)]);
+        let (_fake, set) = running_with_filters(&mut app, &mut fakes).await;
+        assert_eq!(sent_filters(&set), json!(["throw", "catch", "dflt"]));
+        let want: Vec<(String, bool)> =
+            [("assert", false), ("exception", false), ("throw", true), ("rethrow", false), ("catch", true), ("dflt", true)]
+                .iter()
+                .map(|(f, on)| (f.to_string(), *on))
+                .collect();
+        assert_eq!(filter_state(&app, "fake"), want);
+        assert_eq!(app.debug.exception_filters["fake"][2].label, "C++ exceptions, when thrown", "the adapter's label");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn no_saved_entry_sends_the_defaults() {
+        let (mut app, dir, _fakes) = setup("ef-default", Order::LaunchEarly);
+        let mut fakes = with_fake_adapters(&mut app, filters(), Order::LaunchEarly);
+        assert!(app.debug.exception_filters.is_empty());
+        let (_fake, set) = running_with_filters(&mut app, &mut fakes).await;
+        assert_eq!(sent_filters(&set), json!(["dflt"]));
+        assert_eq!(filter_state(&app, "fake").len(), 6, "written afterwards");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_adapter_with_no_filters_leaves_no_entry() {
+        let (mut app, dir, mut fakes) = setup("ef-none", Order::LaunchEarly);
+        app.debug.exception_filters.insert("fake".into(), vec![saved("throw", true)]);
+        let _ = running(&mut app, &mut fakes).await;
+        assert!(app.debug.exception_filters.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn space_toggles_a_filter_and_tells_the_adapter_at_once() {
+        use crate::actions::PaletteKind;
+        let (mut app, dir, _fakes) = setup("ef-space", Order::LaunchEarly);
+        let mut fakes = with_fake_adapters(&mut app, filters(), Order::LaunchEarly);
+        let a = six(&mut app);
+        let mut fake = paused(&mut app, &mut fakes, &a, 5).await;
+        app.open_palette(PaletteKind::Breakpoints);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        app.handle_key(space());
+        assert_eq!(app.palette.as_ref().map(|p| p.kind), Some(PaletteKind::Breakpoints), "still open");
+        let item = app.palette.as_ref().unwrap().exception_filter_items()[2].clone();
+        assert_eq!((item.filter.as_str(), item.on), ("throw", true));
+        assert!(filter_state(&app, "fake").contains(&("throw".to_string(), true)));
+        // No tick in between.
+        let set = fake.recv("setExceptionBreakpoints").await;
+        assert_eq!(sent_filters(&set), json!(["throw", "dflt"]));
+        // A letter and a space: the query takes both.
+        press(&mut app, KeyCode::Char('t'));
+        app.handle_key(space());
+        assert_eq!(app.palette.as_ref().unwrap().input.text, "t ");
+        app.on_tick();
+        assert_quiet(&mut app, &mut fake, "q1.log").await;
+        // Cleared, Enter on the same row turns it off.
+        press(&mut app, KeyCode::Backspace);
+        press(&mut app, KeyCode::Backspace);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.palette.as_ref().map(|p| p.kind), Some(PaletteKind::Breakpoints), "still open");
+        let set = fake.recv("setExceptionBreakpoints").await;
+        assert_eq!(sent_filters(&set), json!(["dflt"]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_toggle_with_no_session_only_saves() {
+        use crate::actions::PaletteKind;
+        let (mut app, dir, _fakes) = setup("ef-nosession", Order::LaunchEarly);
+        let mut fakes = with_fake_adapters(&mut app, filters(), Order::LaunchEarly);
+        app.debug.exception_filters.insert("fake".into(), vec![saved("throw", false), saved("dflt", true)]);
+        app.open_palette(PaletteKind::Breakpoints);
+        app.handle_key(space());
+        assert_eq!(filter_state(&app, "fake"), [("throw".to_string(), true), ("dflt".to_string(), true)]);
+        assert!(fakes.try_recv().is_err(), "no adapter was started");
+        let (_fake, set) = running_with_filters(&mut app, &mut fakes).await;
+        assert_eq!(sent_filters(&set), json!(["throw", "dflt"]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_toggle_of_another_adapter_is_not_sent() {
+        use crate::actions::PaletteKind;
+        let (mut app, dir, _fakes) = setup("ef-other", Order::LaunchEarly);
+        let mut fakes = with_fake_adapters(&mut app, filters(), Order::LaunchEarly);
+        app.debug.exception_filters.insert("other".into(), vec![saved("x", false)]);
+        let a = six(&mut app);
+        let mut fake = paused(&mut app, &mut fakes, &a, 5).await;
+        app.open_palette(PaletteKind::Breakpoints);
+        let items: Vec<(String, String)> =
+            app.palette.as_ref().unwrap().exception_filter_items().iter().map(|i| (i.adapter.clone(), i.filter.clone())).collect();
+        assert_eq!(items.first().map(|i| i.0.as_str()), Some("fake"));
+        assert_eq!(items.last(), Some(&("other".to_string(), "x".to_string())));
+        for _ in 0..6 {
+            press(&mut app, KeyCode::Down);
+        }
+        app.handle_key(space());
+        assert_eq!(filter_state(&app, "other"), [("x".to_string(), true)]);
+        app.on_tick();
+        assert_quiet(&mut app, &mut fake, "q1.log").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn delete_and_edit_do_nothing_on_a_filter_row() {
+        use crate::actions::PaletteKind;
+        let (mut app, dir, _fakes) = setup("ef-delete", Order::LaunchEarly);
+        let a = six(&mut app);
+        toggle(&mut app, &a, 1);
+        app.debug.exception_filters.insert("fake".into(), vec![saved("throw", false)]);
+        app.open_palette(PaletteKind::Breakpoints);
+        app.handle_key(shift_delete());
+        app.handle_key(alt_shift_f8());
+        assert_eq!(app.palette.as_ref().map(|p| p.kind), Some(PaletteKind::Breakpoints), "still open");
+        assert!(app.dialog.is_none());
+        assert_eq!(app.palette.as_ref().unwrap().exception_filter_items().len(), 1);
+        assert_eq!(open_rows(&app), [row("a.log:2", "", "")]);
+        assert_eq!(keys(&app, &a), [1]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn filter_labels_reach_the_list_through_one_line() {
+        use crate::actions::PaletteKind;
+        let (mut app, dir, _fakes) = setup("ef-label", Order::LaunchEarly);
+        let mut c = caps();
+        c["exceptionBreakpointFilters"] = json!([{"filter": "bad", "label": "bad\u{1b}[31m\nlabel"}, {"filter": "bare"}]);
+        let mut fakes = with_fake_adapters(&mut app, c, Order::LaunchEarly);
+        let _ = running_with_filters(&mut app, &mut fakes).await;
+        assert_eq!(app.debug.exception_filters["fake"][0].label, "bad\u{1b}[31m\nlabel", "kept raw");
+        app.open_palette(PaletteKind::Breakpoints);
+        let labels: Vec<String> = app.palette.as_ref().unwrap().exception_filter_items().iter().map(|i| i.label.clone()).collect();
+        assert_eq!(labels, [one_line("bad\u{1b}[31m\nlabel"), "bare".to_string()]);
+        assert!(!labels[0].contains(['\u{1b}', '\n']), "{labels:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_root_switch_drops_the_old_roots_filters() {
+        let (mut app, dir, _fakes) = setup("ef-root", Order::LaunchEarly);
+        std::fs::create_dir_all(dir.join("other")).unwrap();
+        let other = std::fs::canonicalize(dir.join("other")).unwrap();
+        let generation = app.workspace.generation;
+        let root = app.workspace.root.clone();
+        app.session_loaded(generation, crate::workspace::Session { root, ..Default::default() }, vec![]);
+        app.debug.exception_filters.insert("fake".into(), vec![saved("throw", true)]);
+        assert_eq!(app.exception_filter_items().len(), 1);
+        app.do_switch_root(other.clone());
+        let generation = app.workspace.generation;
+        app.session_loaded(generation, crate::workspace::Session { root: other, ..Default::default() }, vec![]);
+        assert!(app.exception_filter_items().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

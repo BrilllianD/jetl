@@ -801,6 +801,8 @@ pub enum PaletteAction {
     DeleteItem,
     /// Edit the selected item where a list allows it (View Breakpoints).
     EditItem,
+    /// Toggle the selected item where a list allows it (an exception filter in View Breakpoints); elsewhere types a space.
+    ToggleItem,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1351,6 +1353,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "palette.prev_tab" => "Palette: previous tab", Palette(PaletteAction::PrevTab);
         "palette.delete_item" => "Palette: delete the selected item (Scratch Files, Recent Projects, View Breakpoints)", Palette(PaletteAction::DeleteItem);
         "palette.edit_item" => "Palette: edit the selected item (View Breakpoints)", Palette(PaletteAction::EditItem);
+        "palette.toggle_item" => "Palette: toggle the selected item (exception filters in View Breakpoints); elsewhere types a space", Palette(PaletteAction::ToggleItem);
 
         "mode.normal" => "Vim: normal mode", Mode(ModeAction::Normal);
         "mode.insert" => "Vim: insert mode", Mode(ModeAction::Insert);

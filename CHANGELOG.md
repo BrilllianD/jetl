@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- View Breakpoints (Ctrl+Shift+F8) lists the debug adapter's exception breakpoint filters at the top (under gdb: C++ throw, re-throw and catch, and Ada exceptions and assertions); Space toggles one, a live session is told at once, and the choice is kept per project.
 - A warning when the debug adapter's own memory passes 1 GiB, as gdb's does while a program floods its output; jetl keeps reading, and stopping the session frees it.
 
 ### Fixed

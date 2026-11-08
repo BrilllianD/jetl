@@ -1421,6 +1421,31 @@ async fn palette_breakpoints() {
 }
 
 #[tokio::test]
+async fn palette_breakpoints_filters() {
+    use crate::workspace::SavedFilter;
+    let mut fx = stable_app("palette-breakpoints-filters");
+    let app = &mut fx.app;
+    load(app, "loop.log", "a\nb\nc\nd\ne\nf\ng\n");
+    app.editor.active_buffer_mut().unwrap().breakpoints.insert(4, BreakpointMark { state: BpState::Verified, ..Default::default() });
+    let filter = |filter: &str, label: &str, on| SavedFilter { filter: filter.into(), label: label.into(), on };
+    app.debug.exception_filters.insert(
+        "gdb".into(),
+        vec![
+            filter("assert", "Ada assertions", false),
+            filter("exception", "Ada exceptions", false),
+            filter("throw", "C++ exceptions, when thrown", true),
+            filter("rethrow", "C++ exceptions, when re-thrown", false),
+            filter("catch", "C++ exceptions, when caught", true),
+        ],
+    );
+    app.open_palette(PaletteKind::Breakpoints);
+    let term = draw_app(app, 80, 24);
+    let mut marks = palette_marks(&app.theme);
+    marks.push(Mark::style('B', "breakpoint", app.theme.breakpoint));
+    assert_snapshot!("palette_breakpoints_filters", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn palette_breakpoints_empty() {
     let mut fx = stable_app("palette-breakpoints-empty");
     let app = &mut fx.app;

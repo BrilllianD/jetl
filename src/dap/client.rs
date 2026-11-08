@@ -295,6 +295,7 @@ mod tests {
             generation: GEN,
             adapter_id: "fake".into(),
             launch: json!({"program": "/p"}),
+            exception_filters: std::collections::BTreeMap::new(),
             breakpoints: breakpoints
                 .iter()
                 .map(|(p, l)| {

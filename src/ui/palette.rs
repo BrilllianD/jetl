@@ -144,6 +144,15 @@ pub struct BreakpointItem {
     pub verdict: String,
 }
 
+/// An exception filter row of View Breakpoints. `label` has been through `one_line` (the id when the adapter gave none).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExceptionFilterItem {
+    pub adapter: String,
+    pub filter: String,
+    pub label: String,
+    pub on: bool,
+}
+
 /// One Find Action row.
 #[derive(Debug, Clone)]
 pub struct ActionEntry {
@@ -158,6 +167,11 @@ pub struct ActionEntry {
 pub enum Accept {
     OpenFile(PathBuf),
     Action(Action),
+    /// Space or Enter on an exception filter row: the palette stays open; the app flips it.
+    ToggleExceptionFilter {
+        adapter: String,
+        filter: String,
+    },
     /// The branches popup's operations for a branch.
     Branch(crate::git::BranchInfo),
     NewBranch,
@@ -242,6 +256,8 @@ pub struct Palette {
     scratch_dates: Vec<String>,
     /// View Breakpoints rows, paths then lines ascending.
     breakpoints: Vec<BreakpointItem>,
+    /// View Breakpoints rows above the breakpoints: adapter name, then declared order.
+    exception_filters: Vec<ExceptionFilterItem>,
     matcher: Matcher,
     /// Where large sources are filtered (set by `App::open_palette`); none
     /// filters everything at once.
@@ -303,6 +319,7 @@ impl Palette {
             scratch_names: Vec::new(),
             scratch_dates: Vec::new(),
             breakpoints: Vec::new(),
+            exception_filters: Vec::new(),
             matcher: Matcher::default(),
             bus: None,
             filter_seq: Arc::new(AtomicU64::new(0)),
@@ -452,6 +469,20 @@ impl Palette {
         if self.source() == Source::Breakpoints {
             self.refilter(false);
         }
+    }
+
+    /// The exception filter rows of View Breakpoints; the selected index is kept.
+    pub fn set_exception_filters(&mut self, items: Vec<ExceptionFilterItem>) {
+        self.exception_filters = items;
+        if self.source() == Source::Breakpoints {
+            self.refilter(false);
+        }
+    }
+
+    /// The filter rows as set (tests outside this module).
+    #[cfg(test)]
+    pub(crate) fn exception_filter_items(&self) -> &[ExceptionFilterItem] {
+        &self.exception_filters
     }
 
     /// The rows as set (tests outside this module).
@@ -625,8 +656,17 @@ impl Palette {
                 if q.is_empty() { (0..names.len()).collect() } else { rank_paths(q, names, &mut self.matcher) }
             }
             Source::Breakpoints => {
-                let texts = self.breakpoints.iter().map(|b| [b.place.as_str(), b.detail.as_str()]);
-                if q.is_empty() { (0..self.breakpoints.len()).collect() } else { rank_texts(q, texts, &mut self.matcher) }
+                let nf = self.exception_filters.len();
+                if q.is_empty() {
+                    (0..nf + self.breakpoints.len()).collect()
+                } else {
+                    // Filter rows stay above the breakpoint rows.
+                    let filters = self.exception_filters.iter().map(|f| [f.label.as_str(), f.adapter.as_str()]);
+                    let mut rows = rank_texts(q, filters, &mut self.matcher);
+                    let texts = self.breakpoints.iter().map(|b| [b.place.as_str(), b.detail.as_str()]);
+                    rows.extend(rank_texts(q, texts, &mut self.matcher).into_iter().map(|i| i + nf));
+                    rows
+                }
             }
             Source::Actions => {
                 if q.is_empty() {
@@ -771,8 +811,12 @@ impl Palette {
             Source::Actions => Accept::Action(self.actions.get(i)?.action.clone()),
             Source::Tasks => Accept::RunTask(Box::new(self.tasks.get(i)?.clone())),
             Source::Scratches => Accept::OpenFile(self.scratches.get(i)?.path.clone()),
+            Source::Breakpoints if i < self.exception_filters.len() => {
+                let f = &self.exception_filters[i];
+                Accept::ToggleExceptionFilter { adapter: f.adapter.clone(), filter: f.filter.clone() }
+            }
             Source::Breakpoints => {
-                let b = self.breakpoints.get(i)?;
+                let b = self.breakpoints.get(i - self.exception_filters.len())?;
                 Accept::OpenFileAt { path: b.path.clone(), line: b.line, col: 0 }
             }
             Source::Locations => {
@@ -840,16 +884,28 @@ impl Palette {
             }
             // Dropped at once, like a project; the app removes the breakpoint.
             PaletteAction::DeleteItem if self.source() == Source::Breakpoints => {
-                let i = *self.rows.get(self.list.selected)?;
+                let i = self.rows.get(self.list.selected)?.checked_sub(self.exception_filters.len())?;
                 let b = self.breakpoints.remove(i);
                 self.refilter(false);
                 return Some(PaletteResult::Accept(Accept::RemoveBreakpoint { path: b.path, line: b.line }));
             }
             PaletteAction::EditItem if self.source() == Source::Breakpoints => {
-                let b = self.rows.get(self.list.selected).and_then(|&i| self.breakpoints.get(i))?;
+                let nf = self.exception_filters.len();
+                let b = self.rows.get(self.list.selected).and_then(|&i| i.checked_sub(nf)).and_then(|i| self.breakpoints.get(i))?;
                 return Some(PaletteResult::Accept(Accept::EditBreakpoint { path: b.path.clone(), line: b.line }));
             }
             PaletteAction::EditItem => {}
+            // A filter row toggles with an empty query; every other case types the space the key stands for.
+            PaletteAction::ToggleItem => {
+                let on_filter = self.source() == Source::Breakpoints
+                    && self.input.text.is_empty()
+                    && self.rows.get(self.list.selected).is_some_and(|&i| i < self.exception_filters.len());
+                if on_filter {
+                    return self.accept(self.list.selected);
+                }
+                self.input.insert(' ');
+                self.refilter(true);
+            }
             // Nothing to delete: Shift+Delete deletes in the query, as before.
             PaletteAction::DeleteItem => {
                 self.input.delete();
@@ -1017,7 +1073,7 @@ impl Palette {
             Source::Tasks => "type a task name",
             Source::Locations => "type to filter",
             Source::Scratches => "type a scratch name · Shift+Del deletes",
-            Source::Breakpoints => "filter · Shift+Del removes · Alt+Shift+F8 edits",
+            Source::Breakpoints => "filter · Space toggles · Shift+Del removes · Alt+Shift+F8 edits",
         };
         self.input.render(frame, qrect, Style::default().bg(theme.bg).fg(theme.fg), placeholder, theme.dim.bg(theme.bg), true);
         frame.buffer_mut().set_stringn(inner.right().saturating_sub(cw + 1), y, &count, cw as usize, theme.dim.bg(theme.popup_bg));
@@ -1129,8 +1185,30 @@ impl Palette {
                     }
                     v
                 }
+                Source::Breakpoints if i < self.exception_filters.len() => {
+                    let f = &self.exception_filters[i];
+                    let marks = match_indices(&pattern, &f.label, &mut self.matcher);
+                    let box_ = if f.on { "[x] " } else { "[ ] " };
+                    // The adapter on the right when it fits with two spaces before it; else the label gets the whole row.
+                    let tag = f.adapter.width() + 2;
+                    let (label, tag) = if f.label.width() + box_.width() + tag <= width {
+                        (f.label.clone(), true)
+                    } else if width > box_.width() + tag + 4 {
+                        (crate::util::text::fit(&f.label, width - box_.width() - tag), true)
+                    } else {
+                        (crate::util::text::fit(&f.label, width.saturating_sub(box_.width())), false)
+                    };
+                    let mut v = vec![(box_.to_string(), base)];
+                    v.extend(highlight(&label, |ci| marks.contains(&(ci as u32)), base, hl));
+                    let used: usize = v.iter().map(|(t, _)| t.width()).sum();
+                    if tag {
+                        v.push((" ".repeat(width - used - f.adapter.width()), base));
+                        v.push((f.adapter.clone(), dim));
+                    }
+                    v
+                }
                 Source::Breakpoints => {
-                    let b = &self.breakpoints[i];
+                    let b = &self.breakpoints[i - self.exception_filters.len()];
                     // Glyph, place, detail; the verdict right-aligned, at most half the row.
                     let (glyph, gstyle) = breakpoint_glyph(b.state, &b.spec, theme);
                     let gstyle = if selected { base } else { bg.patch(gstyle) };
@@ -1575,6 +1653,63 @@ mod tests {
         assert_eq!(p.handle_action(&PaletteAction::DeleteItem), None);
         assert_eq!(p.handle_action(&PaletteAction::EditItem), None);
         assert_eq!(p.breakpoint_items().len(), 2);
+    }
+
+    fn filter_item(filter: &str, label: &str, on: bool) -> ExceptionFilterItem {
+        ExceptionFilterItem { adapter: "gdb".into(), filter: filter.into(), label: label.into(), on }
+    }
+
+    fn toggle_of(filter: &str) -> Option<PaletteResult> {
+        Some(PaletteResult::Accept(Accept::ToggleExceptionFilter { adapter: "gdb".into(), filter: filter.into() }))
+    }
+
+    #[test]
+    fn filter_rows_sit_on_top_and_toggle() {
+        let mut p = Palette::new(PaletteKind::Breakpoints, PathBuf::from("/w"));
+        p.set_exception_filters(vec![
+            filter_item("throw", "C++ exceptions, when thrown", true),
+            filter_item("catch", "C++ exceptions, when caught", false),
+        ]);
+        p.set_breakpoints(vec![item("throw.c", 4, ""), item("loop.c", 6, "")]);
+        assert_eq!(p.rows, vec![0, 1, 2, 3], "filter, filter, breakpoint, breakpoint");
+        assert_eq!(p.handle_action(&PaletteAction::ToggleItem), toggle_of("throw"));
+        assert_eq!(p.input.text, "");
+        p.handle_action(&PaletteAction::Down);
+        assert_eq!(p.handle_action(&PaletteAction::ToggleItem), toggle_of("catch"));
+        // On a breakpoint row the key types a space.
+        p.handle_action(&PaletteAction::Down);
+        assert_eq!(p.handle_action(&PaletteAction::ToggleItem), None);
+        assert_eq!(p.input.text, " ");
+        // With a query it types too, and Enter toggles.
+        p.set_query("caught");
+        assert_eq!(p.rows.first(), Some(&1), "the catch row first");
+        assert_eq!(p.handle_action(&PaletteAction::ToggleItem), None);
+        assert_eq!(p.input.text, "caught ");
+        p.set_query("caught");
+        assert_eq!(p.handle_action(&PaletteAction::Accept), toggle_of("catch"));
+        // A label and a place both match: the filter row stays first.
+        p.set_query("throw");
+        assert_eq!(p.rows, vec![0, 2], "the throw filter, then throw.c");
+        // Shift+Delete and Alt+Shift+F8 leave a filter row alone.
+        p.set_query("");
+        let before = p.rows.clone();
+        assert_eq!(p.handle_action(&PaletteAction::DeleteItem), None);
+        assert_eq!(p.handle_action(&PaletteAction::EditItem), None);
+        assert_eq!((p.rows.clone(), p.input.text.as_str(), p.breakpoint_items().len()), (before, "", 2));
+        // A breakpoint row below the filters is still the right breakpoint.
+        p.handle_action(&PaletteAction::Down);
+        p.handle_action(&PaletteAction::Down);
+        p.handle_action(&PaletteAction::Down);
+        let removed = Some(PaletteResult::Accept(Accept::RemoveBreakpoint { path: PathBuf::from("/w/loop.c"), line: 6 }));
+        assert_eq!(p.handle_action(&PaletteAction::DeleteItem), removed);
+    }
+
+    #[test]
+    fn toggle_item_types_a_space_elsewhere() {
+        let mut p = Palette::new(PaletteKind::Actions, PathBuf::from("/w"));
+        p.set_query("ab");
+        assert_eq!(p.handle_action(&PaletteAction::ToggleItem), None);
+        assert_eq!(p.input.text, "ab ");
     }
 
     #[test]

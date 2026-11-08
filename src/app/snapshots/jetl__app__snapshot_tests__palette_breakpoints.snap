@@ -8,7 +8,7 @@ expression: "snapshot(&term, &marks, None)"
 02  ⌂ │                              ││  2    b
 03  ◫ │                              ││  3    c
 04  ⊢┌ Breakpoints ─────────────────────────────────────────────────────────────┐
-05   │ › filter · Shift+Del removes · Alt+Shift+F8 edits                      4 │
+05   │ › filter · Space toggles · Shift+Del removes · Alt+Shift+F8 edits      4 │
 06   │ ◉ demo.log:3  if count > 100 && total < 5000 && flag == 1 …  file closed │
 07   │ ○ loop.log:1                                                     pending │
 08   │ ◉ loop.log:5  if i == 3                                         verified │

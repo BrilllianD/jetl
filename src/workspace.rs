@@ -88,6 +88,9 @@ pub struct Session {
     /// The debugger's watch expressions, in the order they were added; per root, never per branch set.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub watches: Vec<String>,
+    /// Each debug adapter's exception filters as it last declared them, by adapter name, with the user's choices; per root.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub exception_filters: BTreeMap<String, Vec<SavedFilter>>,
     /// The Run window's selected configuration, by name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_config: Option<String>,
@@ -98,6 +101,14 @@ pub struct Session {
     /// The editor sets of the other branches, by short branch name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub branches: BTreeMap<String, BranchSet>,
+}
+
+/// One of a debug adapter's exception breakpoint filters as it last declared them, with the user's choice.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedFilter {
+    pub filter: String,
+    pub label: String,
+    pub on: bool,
 }
 
 /// One branch's editor set: the tabs with their state, the active and
@@ -800,6 +811,7 @@ impl App {
                 })
                 .collect(),
             watches: self.debug_panel.watches().to_vec(),
+            exception_filters: self.debug.exception_filters.clone(),
             run_config: self.run.selected.clone(),
             branch: self.session_branch.clone(),
             branches: self
@@ -1042,6 +1054,12 @@ impl App {
             .collect();
         self.editor.restore_closed_breakpoint_marks(&breakpoints);
         self.debug_panel.set_watches(&session.watches);
+        self.debug.exception_filters = session
+            .exception_filters
+            .iter()
+            .map(|(adapter, list)| (adapter.clone(), list.iter().filter(|f| !f.filter.is_empty()).cloned().collect::<Vec<_>>()))
+            .filter(|(_, list)| !list.is_empty())
+            .collect();
         if let Some(l) = &session.layout {
             let tasks = l.tasks.clone().unwrap_or_default();
             let dock = Dock { side: tasks.side.unwrap_or(ToolWindowId::Tasks.default_side()), split: tasks.split };
@@ -1187,6 +1205,7 @@ mod tests {
             closed_plain_bookmarks: vec![SessionClosedFile { path: root.join("src/lib.rs"), lines: vec![3, 40], specs: vec![] }],
             closed_breakpoints: vec![SessionClosedFile { path: root.join("src/lib.rs"), lines: vec![5], specs: vec![] }],
             watches: vec!["a".into(), "b.c".into()],
+            exception_filters: BTreeMap::new(),
             run_config: Some("cargo test".into()),
             branch: Some("main".into()),
             branches: BTreeMap::from([(
@@ -1565,6 +1584,7 @@ mod tests {
         assert!(json.get("breakpoint_specs").is_none());
         let json = serde_json::to_value(Session { root: PathBuf::from("/tmp/p"), ..Default::default() }).unwrap();
         assert!(json.get("watches").is_none());
+        assert!(json.get("exception_filters").is_none());
         let json = serde_json::to_value(SessionClosedFile::default()).unwrap();
         assert!(json.get("specs").is_none());
         let json = serde_json::to_value(SessionBreakpointSpec { line: 2, condition: Some("c".into()), log_message: None }).unwrap();
@@ -1592,10 +1612,44 @@ mod tests {
         assert!(app.editor.buffers[0].breakpoints[&1].spec.is_plain());
         assert_eq!(app.editor.closed_breakpoints(), vec![(gone, vec![2])]);
         assert!(app.debug_panel.watches().is_empty());
+        assert!(app.debug.exception_filters.is_empty());
         let written = serde_json::to_value(app.session()).unwrap();
         assert!(written["closed_plain_bookmarks"][0].get("specs").is_none(), "bookmarks carry no specs");
         assert!(written.get("watches").is_none());
+        assert!(written.get("exception_filters").is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn saved(filter: &str, on: bool) -> SavedFilter {
+        SavedFilter { filter: filter.into(), label: format!("label {filter}"), on }
+    }
+
+    #[tokio::test]
+    async fn exception_filters_survive_a_session_round_trip() {
+        let (mut app, dir) = crate::app::tests::test_app("session-exception-filters");
+        app.debug.exception_filters.insert("gdb".into(), vec![saved("throw", true), saved("catch", false)]);
+        let session = app.session();
+        assert_eq!(session.exception_filters["gdb"], vec![saved("throw", true), saved("catch", false)]);
+        session.save(&app.paths.sessions_dir()).unwrap();
+        let loaded = Session::load(&app.paths.sessions_dir(), &app.workspace.root).unwrap();
+        assert_eq!(loaded, session);
+        let (mut fresh, fresh_dir) = crate::app::tests::test_app("session-exception-filters-2");
+        let generation = fresh.workspace.generation;
+        fresh.session_loaded(generation, loaded, vec![]);
+        assert_eq!(fresh.debug.exception_filters, app.debug.exception_filters);
+        // Empty ids from a hand-edited file are dropped, and an adapter left with none goes.
+        let edited = Session {
+            root: fresh.workspace.root.clone(),
+            exception_filters: BTreeMap::from([
+                ("gdb".to_string(), vec![saved("", true), saved("throw", true)]),
+                ("other".to_string(), vec![saved("", true)]),
+            ]),
+            ..Default::default()
+        };
+        fresh.session_loaded(generation, edited, vec![]);
+        assert_eq!(fresh.debug.exception_filters, BTreeMap::from([("gdb".to_string(), vec![saved("throw", true)])]));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&fresh_dir);
     }
 
     #[tokio::test]
@@ -1658,6 +1712,7 @@ mod tests {
         let spec = BreakpointSpec { condition: Some("i == 1".into()), log_message: None };
         app.editor.restore_closed_breakpoint_marks(&[(gone.clone(), vec![(2, spec.clone())])]);
         app.debug_panel.set_watches(&["sum".to_string()]);
+        app.debug.exception_filters.insert("gdb".into(), vec![saved("throw", true)]);
         app.do_switch_root(other.clone());
         // The other root has its own: none.
         let generation = app.workspace.generation;
@@ -1665,13 +1720,16 @@ mod tests {
         app.session_loaded(generation, b, vec![]);
         assert!(app.editor.closed_breakpoint_marks().is_empty());
         assert!(app.debug_panel.watches().is_empty());
+        assert!(app.debug.exception_filters.is_empty(), "filters are per root");
         app.do_switch_root(root.clone());
         let a = Session::load(&app.paths.sessions_dir(), &root).expect("saved at the switch");
         assert_eq!(a.watches, ["sum"]);
+        assert_eq!(a.exception_filters["gdb"], vec![saved("throw", true)]);
         let generation = app.workspace.generation;
         app.session_loaded(generation, a, vec![]);
         assert_eq!(app.editor.closed_breakpoint_marks(), vec![(gone, vec![(2, spec)])]);
         assert_eq!(app.debug_panel.watches(), ["sum"]);
+        assert_eq!(app.debug.exception_filters["gdb"], vec![saved("throw", true)]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

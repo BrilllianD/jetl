@@ -394,6 +394,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Shift+Tab` | `palette.prev_tab` | Palette: previous tab |
 | `Shift+Delete` | `palette.delete_item` | Palette: delete the selected item (Scratch Files, Recent Projects, View Breakpoints) |
 | `Alt+Shift+F8` | `palette.edit_item` | Palette: edit the selected item (View Breakpoints) |
+| `Space` | `palette.toggle_item` | Palette: toggle the selected item (exception filters in View Breakpoints); elsewhere types a space |
 
 ## mode.normal
 
