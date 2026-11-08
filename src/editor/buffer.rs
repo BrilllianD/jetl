@@ -293,6 +293,9 @@ pub struct Buffer {
     /// LSP inlay hints, in this buffer's current coordinates (shifted by every
     /// change until the next answer).
     pub inlays: super::inlay::InlayHints,
+    /// The debugger's inline values (line-end labels while paused), a layer
+    /// apart from `inlays`; cleared by every change.
+    pub inline_values: super::inlay::InlineValues,
     /// LSP semantic tokens, in this buffer's current coordinates (shifted by
     /// every change until the next answer).
     pub semantic: super::semantic::SemanticTokens,
@@ -303,7 +306,36 @@ pub struct Buffer {
 impl Buffer {
     /// The live view's rows: its folds and its wrap.
     pub fn rows(&self) -> super::rows::Rows<'_> {
-        super::rows::Rows::view(&self.view.folds, &self.view.wrap, &self.view.fillers, &self.rope, self.version).with_inlays(&self.inlays)
+        super::rows::Rows::view(&self.view.folds, &self.view.wrap, &self.view.fillers, &self.rope, self.version)
+            .with_inlays(&self.inlays, &self.inline_values)
+    }
+
+    /// Show `values` (name, shown value, shadowed) at the ends of the lines
+    /// of the function holding `frame_line`, up to that line. A frame line
+    /// past the text clears them.
+    pub fn set_frame_values(&mut self, frame_line: usize, values: &[(&str, &str, bool)]) {
+        use super::inlay::{MAX_VALUE_LINES, value_labels};
+        if frame_line >= self.rope.len_lines() {
+            self.inline_values.clear();
+            return;
+        }
+        let syms = self.scopes.symbols(self.syntax.as_mut(), &self.rope, self.version);
+        let callable = |s: &&crate::symbols::Symbol| crate::symbols::graph::CALLABLE.contains(&s.kind);
+        // The C and C++ tags query ranges a function over its declarator line only, so no symbol encloses a line of
+        // its body: the nearest callable above the frame line stands in.
+        let start = crate::symbols::enclosing(syms, frame_line)
+            .into_iter()
+            .rev()
+            .find(callable)
+            .map(|s| s.start_line)
+            .or_else(|| syms.iter().filter(callable).map(|s| s.start_line).filter(|&l| l <= frame_line).max())
+            .unwrap_or(frame_line);
+        let start = start.max(frame_line + 1 - MAX_VALUE_LINES.min(frame_line + 1));
+        if let Some(s) = &mut self.syntax {
+            s.reparse(&self.rope);
+        }
+        let tree = self.syntax.as_ref().and_then(|s| s.tree());
+        self.inline_values.set(value_labels(&self.rope, tree, start..frame_line + 1, frame_line, values));
     }
 
     pub fn from_text(id: BufferId, path: Option<PathBuf>, text: &str, lossy: bool) -> Self {
@@ -355,6 +387,7 @@ impl Buffer {
             recovered: false,
             base_path: None,
             inlays: Default::default(),
+            inline_values: Default::default(),
             semantic: Default::default(),
             scopes: Default::default(),
         }
@@ -482,6 +515,8 @@ impl Buffer {
         if let Some(s) = &mut self.syntax {
             s.note_change(&self.rope, at, old_len, new_len, &c.old, &c.new);
         }
+        // The debugger's inline values are not mapped: an edit drops them and the next sync rebuilds them.
+        self.inline_values.clear();
         // The live view's folds, the hints and semantic tokens follow like its carets; a reload drops them.
         if whole {
             self.view.folds.clear();
@@ -1971,6 +2006,45 @@ mod tests {
         let text = buf.text();
         buf.apply(vec![Change::replace(0, text, "new text")], Selection::point(8), TxKind::Other);
         assert!(buf.inlays.is_empty(), "a whole-text replacement drops the hints");
+    }
+
+    #[cfg(feature = "lang-c")]
+    #[test]
+    fn frame_values_reach_the_function_start_in_c() {
+        let src = "struct point { int x; };\nint add(int a, int b) {\n    int sum = a + b;\n    return sum;\n}\nint main(void) {\n    int t = add(1, 2);\n    return t;\n}\n";
+        let mut buf = b(src);
+        let def = super::super::syntax::language_for_name("c").unwrap();
+        buf.syntax = super::super::syntax::Syntax::new(def, &crate::config::theme::Theme::default());
+        buf.set_frame_values(3, &[("a", "1", false), ("b", "2", false), ("sum", "3", false), ("t", "9", false)]);
+        let got: Vec<(usize, String)> = buf.inline_values.iter().map(|(l, i)| (l, i.label.clone())).collect();
+        assert_eq!(
+            got,
+            [(1, "a = 1, b = 2".to_string()), (2, "sum = 3, a = 1, b = 2".to_string()), (3, "sum = 3".to_string())],
+            "from `add`'s line, not from the struct above or the frame line alone"
+        );
+        buf.set_frame_values(6, &[("t", "9", false), ("a", "1", false)]);
+        let got: Vec<usize> = buf.inline_values.iter().map(|(l, _)| l).collect();
+        assert_eq!(got, [6], "`main` starts at line 5; `t` is written on line 6 only");
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn edits_clear_inline_values() {
+        let src = "fn add(a: i32, b: i32) -> i32 {\n    let sum = a + b;\n    sum\n}\nfn main() {\n    add(1, 2);\n}\n";
+        let mut buf = b(src);
+        let def = super::super::syntax::language_for_name("rust").unwrap();
+        buf.syntax = super::super::syntax::Syntax::new(def, &crate::config::theme::Theme::default());
+        buf.set_frame_values(2, &[("a", "1", false), ("b", "2", false), ("sum", "3", false)]);
+        let got: Vec<(usize, String)> = buf.inline_values.iter().map(|(l, i)| (l, i.label.clone())).collect();
+        assert_eq!(
+            got,
+            [(0, "a = 1, b = 2".to_string()), (1, "sum = 3, a = 1, b = 2".to_string()), (2, "sum = 3".to_string())],
+            "main's lines get none"
+        );
+        buf.apply(vec![Change::insert(0, "x")], Selection::point(1), TxKind::Other);
+        assert!(buf.inline_values.is_empty());
+        buf.set_frame_values(99, &[("a", "1", false)]);
+        assert!(buf.inline_values.is_empty(), "a frame line past the text gives none");
     }
 
     #[test]

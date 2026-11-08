@@ -17,7 +17,7 @@ use ratatui::style::Color;
 use ropey::Rope;
 
 use super::fold::Folds;
-use super::inlay::{Inlay, InlayHints, NO_INLAYS};
+use super::inlay::{Inlay, InlayHints, InlineValues, NO_INLAYS, NO_VALUES};
 use super::selection::line_len_no_eol;
 use super::wrap::{LineWrap, Wrap};
 
@@ -68,12 +68,14 @@ pub struct Rows<'a> {
     fill: &'a [Filler],
     /// The hints drawn in the lines.
     inlays: &'a InlayHints,
+    /// The debugger's line-end values, a second layer the wrap ignores.
+    values: &'a InlineValues,
 }
 
 impl<'a> Rows<'a> {
     /// One row per visible line, whatever the wrap.
     pub fn new(folds: &'a Folds, len_lines: usize) -> Self {
-        Self { hidden: folds.hidden(), last: len_lines.saturating_sub(1), wrap: None, fill: &[], inlays: &NO_INLAYS }
+        Self { hidden: folds.hidden(), last: len_lines.saturating_sub(1), wrap: None, fill: &[], inlays: &NO_INLAYS, values: &NO_VALUES }
     }
 
     /// The rows of a view: its folds and its wrap over `rope` at buffer
@@ -86,8 +88,13 @@ impl<'a> Rows<'a> {
 
     /// The same rows with `inlays` drawn in the lines (their width breaks
     /// wrapped lines and moves the cells).
-    pub fn with_inlays(self, inlays: &'a InlayHints) -> Self {
-        Self { inlays, ..self }
+    pub fn with_inlays(self, inlays: &'a InlayHints, values: &'a InlineValues) -> Self {
+        Self { inlays, values, ..self }
+    }
+
+    /// The inline value drawn at the end of `line`.
+    pub fn value_on(&self, line: usize) -> Option<&'a Inlay> {
+        self.values.on_line(line)
     }
 
     /// The hints anchored on `line` (its end too).

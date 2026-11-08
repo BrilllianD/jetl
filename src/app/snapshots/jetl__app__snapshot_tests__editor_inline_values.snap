@@ -1,0 +1,18 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+60x8 cursor=(7,1)
+00   m.rs ×
+01   1  ▾ fn add(a: i32, b: i32) -> i32 { a = 1, b = 2
+02   2    │   let sum = a + b; sum = 3, a = 1, b = 2
+03   3    │   sum -> i32 sum = 3
+04   4    }
+05   5  ▾ fn main() {
+06   6    │   add(1, 2);
+07   7    }
+-- marks: H=inlay C=caret S=selection F=fold O=occurrence
+01        OO                              HHHHHHHHHHHH
+02                             HHHHHHHHHHHHHHHHHHHHH
+03                HHHHHH HHHHHHH
+05        OO

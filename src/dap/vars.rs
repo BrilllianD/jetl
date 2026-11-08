@@ -275,6 +275,16 @@ impl VarTree {
         }
     }
 
+    /// Loads a node's children without opening it. Like `expand`, nothing is asked twice.
+    pub fn fetch(&mut self, i: usize) {
+        let Some(n) = self.nodes.get_mut(i) else { return };
+        if n.item.reference <= 0 || n.children.is_some() || n.loading {
+            return;
+        }
+        n.loading = true;
+        self.asks.push(VarAsk { node: i, reference: n.item.reference, children: n.item.children, start: 0 });
+    }
+
     /// Closes a node. An ask in flight stays in flight, and its answer is kept.
     pub fn collapse(&mut self, i: usize) {
         if let Some(n) = self.nodes.get_mut(i) {
@@ -451,9 +461,50 @@ pub struct VarsView {
     pub load: VarsLoad,
     /// What this tree spent on reopening.
     pub spent: usize,
+    /// The root nodes of the scopes that open by themselves, shut ones too.
+    pub auto: Vec<usize>,
+}
+
+/// One top-level variable of an auto scope, as the editor shows it at line ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopValue {
+    pub name: String,
+    pub value: String,
+    /// The name means more than one variable in its scope (gdb's shadowing).
+    pub shadowed: bool,
 }
 
 impl VarsView {
+    /// How many variables the auto scopes hold so far.
+    pub fn auto_loaded(&self) -> usize {
+        self.auto.iter().filter_map(|&i| self.tree.node(i)).map(|n| n.children.as_ref().map_or(0, Vec::len)).sum()
+    }
+
+    /// The variables of the auto scopes, in scope order. A name with gdb's ` #N` is left out, and so is a leaf with
+    /// no value. A container with no value shows `{…}`.
+    pub fn top_values(&self) -> Vec<TopValue> {
+        let mut out = Vec::new();
+        for &root in &self.auto {
+            let Some(children) = self.tree.node(root).and_then(|n| n.children.as_ref()) else { continue };
+            for &c in children {
+                let Some(n) = self.tree.node(c) else { continue };
+                let item = &n.item;
+                if base_name(&item.name) != item.name {
+                    continue;
+                }
+                let value = if !item.value.is_empty() {
+                    item.value.clone()
+                } else if item.reference > 0 {
+                    "{…}".to_string()
+                } else {
+                    continue;
+                };
+                out.push(TopValue { name: item.name.clone(), value, shadowed: self.tree.ambiguous(c) });
+            }
+        }
+        out
+    }
+
     /// The scopes arrived. `open` are the ones that open by themselves, for nothing from the budget, unless the
     /// user closed them; then the saved root paths, and the selection if it is a root.
     pub fn reopen_roots(&mut self, open: &[usize], kept: Option<&KeptFrame>) {
@@ -584,6 +635,23 @@ mod tests {
 
     fn names(t: &VarTree) -> Vec<&str> {
         t.rows().into_iter().map(|i| t.node(i).unwrap().item.name.as_str()).collect()
+    }
+
+    #[test]
+    fn fetch_asks_once_without_opening() {
+        let mut t = tree();
+        t.fetch(1);
+        t.fetch(1);
+        let asks = t.take_asks();
+        assert_eq!(asks.iter().map(|a| (a.node, a.reference)).collect::<Vec<_>>(), [(1, 11)], "one ask");
+        assert!(!t.node(1).unwrap().expanded);
+        t.set_children(1, vec![item("b1", 0)]);
+        assert_eq!(t.node(1).unwrap().children.as_ref().map(Vec::len), Some(1));
+        assert!(!t.node(1).unwrap().expanded, "stored but still shut");
+        t.fetch(1);
+        t.fetch(0);
+        t.fetch(3);
+        assert!(t.take_asks().is_empty(), "known children, a leaf and a missing node ask nothing");
     }
 
     #[test]

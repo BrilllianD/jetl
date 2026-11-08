@@ -1924,6 +1924,8 @@ run is `~/.claude/plans/backlog-run-25-S2a-evidence/scripts/vs16-scenario.sh`.
 
 ### Scenario: Debug window, variables
 
+Since yman 457 `[debug] inline_values` defaults on and asks `scopes` and `variables` at every stop even with the window hidden, so this scenario's `config.toml` adds `[debug]` / `inline_values = false`; the request counts below are for that setting.
+
 Needs `gdb` 14 or newer (the run used 17.2) and `gcc`. At 80x24 and at 120x40, a private tmux socket, `XDG_*`
 directories under `/tmp`, `[lsp] enabled = false` and `[ui] toolbar = false`, `RUST_LOG=jetl=debug`. The fixture is the
 one of the previous scenario plus `vars.c` (a `struct point` holding a `struct inner` and a `const char *`, an `int[3]`,
@@ -1967,6 +1969,8 @@ gdb cannot show, and the unit tests prove: a scope with `expensive: true` (gdb m
 race is too short to place by hand), an answer over `MAX_BODY`, and a scope with no hint. Not run: scopes of a `???` frame.
 
 ### Scenario: Debug window, paged variables
+
+Since yman 457 `[debug] inline_values` defaults on and asks `scopes` and `variables` at every stop even with the window hidden, so this scenario's `config.toml` adds `[debug]` / `inline_values = false`; the request counts below are for that setting.
 
 Needs `gdb` 14 or newer (the run used 17.2), `gcc`, `g++` with libstdc++'s printers
 (`/usr/share/gdb/auto-load/usr/lib/libstdc++.so.*-gdb.py`). At 80x24 and at 120x40, a private tmux socket, `XDG_*`
@@ -2062,6 +2066,8 @@ What gdb cannot show, and the unit tests prove: a refusal above `UNPAGED_LIMIT`,
 
 ### Scenario: Debug window, load more
 
+Since yman 457 `[debug] inline_values` defaults on and asks `scopes` and `variables` at every stop even with the window hidden, so this scenario's `config.toml` adds `[debug]` / `inline_values = false`; the request counts below are for that setting.
+
 Needs what `### Scenario: Debug window, paged variables` needs: `gdb` 14 or newer (the run used 17.2), the same
 `config.toml` with `dap-log-file`, the wire proof, the keys, `paged.c` and `mapped.cc`. One more fixture, `pages.c`,
 built `gcc -g -O0 -o pages pages.c`, line 6 being the `printf`:
@@ -2133,6 +2139,8 @@ short page before the end (gdb's hint is exact), and the empty page past the end
 asks there). Other adapters are unverified.
 
 ### Scenario: Debug window, variables across stops
+
+Since yman 457 `[debug] inline_values` defaults on and asks `scopes` and `variables` at every stop even with the window hidden, so this scenario's `config.toml` adds `[debug]` / `inline_values = false`; the request counts below are for that setting.
 
 Needs what `### Scenario: Debug window, paged variables` needs: `gdb` 14 or newer (the run used 17.2), `g++` with
 libstdc++'s printers, the same `config.toml` with `dap-log-file`, the wire proof, the keys and `mapped.cc`. Start jetl
@@ -2290,7 +2298,41 @@ What gdb cannot show, and the unit tests prove: an `expensive` scope, a literal 
 at a chosen moment, and a budget run out by arrays. Other adapters are unverified: a hint of 0 prices as small, and an
 adapter need not honour that.
 
+### Scenario: Inline values while paused
+
+Needs `gdb` 14 or newer (the run used 17.2) and `gcc`, `g++`, `rustc`. At 80x24 and at 120x40, a private tmux socket,
+`XDG_*` under `/tmp`, `[lsp] enabled = false`, `[ui] toolbar = false`, `RUST_LOG=jetl=debug`; `[debug] inline_values`
+is on by default. Fixtures built with `-g -O0`: `p.c` (line 3 `int add(int a, int b) {`, line 4 `int sum = a + b;`, a block
+on lines 5 to 8 that shadows `sum` with `int sum = 7;` and has `printf("%d\n", sum);` on line 7, `return sum;` on line 9,
+then `main` on lines 11 to 18 with `struct point p`, `int arr[3]`, `char *name = "hello"` and `int total = add(p.x, p.y);`
+on line 15), `q.cpp` (`Acc::add(int n)` on lines 6 to 11, `main` with a `std::vector<int>` and a `std::string`), and
+`r.rs` (`add(a, b)` with `sum`, a `Vec`, a `String` and a `Point`; `rustc -g`). The script of the last run is
+`/tmp/s8-live/scn.sh`; captures are in `~/.claude/plans/backlog-run-27-S8-evidence/457/`.
+
+1. `p`, breakpoint on line 7, Shift+F9, the debug window shown: line 3 ends `a = 1, b = 2`, line 4 `a = 1, b = 2`, line 7
+   (the frame line) `sum = 7`; line 6 and line 5 show nothing (`sum` is shadowed, so it shows on the frame line only).
+   The log since the key holds one `-> scopes`, two `-> variables`, no `-> evaluate`.
+2. Alt+F5 hides the window: the values stay. F8 (step over): line 9 reads `sum = 3` and line 4 `sum = 3, a = 1, b = 2`
+   while the window stays hidden; the log holds one `-> scopes` and two `-> variables`, so the hidden asks happen.
+3. Show the window, Alt+Left to Frames, Down (`main`): line 12 `p = {…}`, line 13 `arr = {…}`, line 14
+   `name = "hello"` (gdb gives no `0x` prefix), line 15 `total = <int>, p = {…}`; no value after the lines of `add`.
+4. Write `[debug]` / `inline_values = false` to `config.toml`: the values go within three seconds, and a step with the
+   window hidden sends no `-> scopes`. Write `true`: the values return. Ctrl+F2 (Stop): every value clears.
+5. Ctrl+Q: exit status 0, empty stderr, no `gdb` or debuggee left.
+6. `q.cpp` with the breakpoint on line 9: line 6 `n = 1`, line 7 `before = 0`, line 8 `n = 1`, line 9 `before = 0`; the field
+   `total` shows nothing. With it on line 18 (`main`): line 14 `acc = {…}`, line 15
+   `xs = std::vector of length 3, capacity 3`, line 16 `label = "sum"`, line 17 `xs = ..., acc = {…}` and line 18
+   `label = "sum", acc = {…}`.
+7. `r.rs`, breakpoint on line 7: line 2 `a = 1, b = 2`, line 3 `sum = 3, a = 1, b = 2`, line 4 `v = {…}`, line 5 `s = {…}`,
+   line 6 `pt = {…}, a = 1, b = 2`, line 7 `sum = 3, v = {…}, s = {…}, pt = {…}`.
+8. At 80x24 the label is cut at the pane's right edge (the editor pane is about 38 columns wide beside the tree).
+
+What gdb cannot show, and the unit and app tests prove with the fake adapter: reopening a scope the user shut, a stale
+answer arriving after a step, a frame without a source file, and the rebuild after an edit.
+
 ### Scenario: Debug window, watches and evaluate
+
+Since yman 457 `[debug] inline_values` defaults on and asks `scopes` and `variables` at every stop even with the window hidden, so this scenario's `config.toml` adds `[debug]` / `inline_values = false`; the request counts below are for that setting.
 
 Needs what `### Scenario: Debug window, variables across stops` needs: `gdb` 14 or newer (the run used 17.2), the
 same `config.toml` with `dap-log-file`, the wire proof and `kept.cc` (built in the project directory, `g++ -g -O0 -o

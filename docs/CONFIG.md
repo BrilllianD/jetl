@@ -213,6 +213,8 @@ timeout_ms = 5000              # a formatter still running after this is killed
 # launch = { program = "${workspaceFolder}/demo", args = ["x"] }  # passed to the adapter's launch request
 # request = "launch"            # or "attach": launch then holds the attach arguments, e.g. { pid = 1234 }
 
+# inline_values = true            # while paused, show name = value after the frame's lines (Live)
+
 # Built-in debug adapters take changes here; a table with a new name adds
 # one. Omitted keys keep the built-in values.
 # [debug.adapters.lldb-dap]
@@ -398,6 +400,16 @@ Only `gdb` has been tried here; the launch arguments of the other three come
 from reading their sources. `jetl --doctor` and Settings > Dependencies show
 which are found; debugpy's row checks `python3` only, since checking the
 module would run a process.
+
+`[debug] inline_values` (default `true`, Live) draws the paused frame's
+variables after the lines of the function that uses them, as `name = value`
+separated by commas, in the `inlay_hint` style. Values come from the Variables
+tab's own tree, so the debug window need not be shown: with the key on jetl
+asks the adapter for the scopes and the auto scopes' variables at every stop
+even with the window hidden (watches are still evaluated only while it is
+shown). A structure the adapter gives no text for reads `{…}`; each value is
+cut to 40 cells and a line's label to 120. A name shadowed in the frame shows
+on the frame's own line only. Turn the key off to stop those extra requests.
 
 gdb detaches a child the program forks, so the child keeps running after Stop, after
 the program's exit and after gdb is killed. To keep it under the debugger and end it with
@@ -1259,7 +1271,7 @@ dim error warn info diag_error diag_warn diag_info diag_hint lightbulb indent_gu
 `indent_guide` colours the indent guides (`editor.indent_guides`); only its
 foreground is used.
 `ruler` colours the column rulers (`editor.rulers`); only its foreground is used.
-`inlay_hint` draws the language server's inlay hints (`[lsp] inlay_hints`); fg and
+`inlay_hint` draws the language server's inlay hints (`[lsp] inlay_hints`) and the debugger's inline values (`[debug] inline_values`); fg and
 bg are used.
 `inline_blame` colours the inline blame after the caret line (`editor.inline_blame`); only its foreground is used.
 `breadcrumbs` is the breadcrumb row under each editor pane (`editor.breadcrumbs`); fg and bg are used,

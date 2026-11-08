@@ -53,7 +53,8 @@ impl Buffer {
     /// keep each caret's column on lines too short for it. Other motions
     /// act as usual.
     pub fn move_virtual(&mut self, m: Motion, page: usize, tab_width: usize) {
-        let rows = Rows::view(&self.view.folds, &self.view.wrap, &self.view.fillers, &self.rope, self.version).with_inlays(&self.inlays);
+        let rows = Rows::view(&self.view.folds, &self.view.wrap, &self.view.fillers, &self.rope, self.version)
+            .with_inlays(&self.inlays, &self.inline_values);
         let rope = &self.rope;
         for (s, d) in self.view.sels.iter_mut_desired() {
             let line = rope.char_to_line(s.head.min(rope.len_chars()));

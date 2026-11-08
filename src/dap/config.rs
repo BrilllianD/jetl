@@ -27,11 +27,19 @@ fn table_opt<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Value>, D::Error>
 }
 
 /// `[debug]` in config.toml.
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct DebugConfig {
     /// `[debug.adapters.<name>]`: changes to a built-in adapter, or a new one.
     pub adapters: BTreeMap<String, AdapterOverride>,
+    /// `[debug] inline_values`: show variable values at line ends while paused.
+    pub inline_values: bool,
+}
+
+impl Default for DebugConfig {
+    fn default() -> Self {
+        Self { adapters: BTreeMap::new(), inline_values: true }
+    }
 }
 
 /// A `[debug.adapters.<name>]` table; omitted keys keep the built-in values.
@@ -423,6 +431,14 @@ mod tests {
 
     fn cfg(text: &str) -> DebugConfig {
         Config::parse(text).unwrap().debug
+    }
+
+    #[test]
+    fn inline_values_default_on() {
+        assert!(cfg("").inline_values);
+        assert!(toml::from_str::<DebugConfig>("").unwrap().inline_values);
+        assert!(!toml::from_str::<DebugConfig>("inline_values = false").unwrap().inline_values);
+        assert!(!cfg("[debug]\ninline_values = false\n").inline_values);
     }
 
     fn finder(known: &'static [&'static str]) -> impl Fn(&str) -> Option<PathBuf> {

@@ -323,6 +323,12 @@ impl App {
         if diff.has("lsp.inlay_hints") {
             self.set_inlays_shown(self.config.lsp.inlay_hints);
         }
+        if diff.has("debug.inline_values") {
+            if self.config.debug.inline_values {
+                self.debug_panel.fetch_auto_scopes();
+            }
+            self.debug_sync_vars();
+        }
         if diff.has("lsp.semantic_tokens") {
             self.set_semantic_tokens(self.config.lsp.semantic_tokens);
         }
@@ -651,6 +657,19 @@ mod tests {
         write(&app, "config.toml", "[lsp]\nenabled = false\ninlay_hints = true\n");
         reload(&mut app, &[ConfigFile::Config]);
         assert!(app.lsp.inlays_shown);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn inline_values_reload_live() {
+        let (mut app, dir) = test_app("reload-inline-values");
+        assert!(app.config.debug.inline_values);
+        write(&app, "config.toml", "[lsp]\nenabled = false\n[debug]\ninline_values = false\n");
+        reload(&mut app, &[ConfigFile::Config]);
+        assert!(!app.config.debug.inline_values);
+        write(&app, "config.toml", "[lsp]\nenabled = false\n[debug]\ninline_values = true\n");
+        reload(&mut app, &[ConfigFile::Config]);
+        assert!(app.config.debug.inline_values);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

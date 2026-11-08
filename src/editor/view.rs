@@ -55,7 +55,7 @@ impl Cell {
 /// without inlay hints. The callback gets the text to draw and the cell
 /// geometry; return `false` to stop early.
 pub fn layout_line(rope: &Rope, line: usize, tab_width: usize, max_chars: usize, f: &mut dyn FnMut(&str, Cell) -> bool) {
-    layout_line_inlays(rope, line, tab_width, max_chars, &[], f);
+    layout_line_inlays(rope, line, tab_width, max_chars, &[], None, f);
 }
 
 /// [`layout_line`] with the hints `inlays` (the line's, sorted) drawn before
@@ -68,6 +68,7 @@ pub fn layout_line_inlays(
     tab_width: usize,
     max_chars: usize,
     inlays: &[Inlay],
+    tail: Option<&Inlay>,
     f: &mut dyn FnMut(&str, Cell) -> bool,
 ) {
     if line >= rope.len_lines() {
@@ -117,6 +118,9 @@ pub fn layout_line_inlays(
             if !emit_inlay(h, idx, &mut col, f) {
                 return;
             }
+        }
+        if let Some(t) = tail {
+            emit_inlay(t, idx, &mut col, f);
         }
     }
 }
@@ -244,7 +248,7 @@ pub fn layout_row(rope: &Rope, rows: &Rows, row: Row, tab_width: usize, cols: us
     let g = row_geom(rope, rows, row);
     let max_chars =
         if rows.wraps() && row.line < rope.len_lines() { g.end - rope.line_to_char(row.line) } else { cols.saturating_add(256) };
-    layout_line_inlays(rope, row.line, tab_width, max_chars, rows.inlays_on(rope, row.line), &mut |s, c| {
+    layout_line_inlays(rope, row.line, tab_width, max_chars, rows.inlays_on(rope, row.line), rows.value_on(row.line), &mut |s, c| {
         if c.char_idx < g.start {
             return true;
         }
@@ -347,7 +351,7 @@ pub fn caret_col(rope: &Rope, rows: &Rows, sel: &Selection, tab_width: usize) ->
 /// columns count the line's hints, text columns (column blocks, virtual
 /// space) do not. Past the line end the extra cells carry over.
 pub fn text_col_at(rope: &Rope, rows: &Rows, line: usize, rx: usize, tab_width: usize) -> usize {
-    if rows.wraps() || line >= rope.len_lines() || rows.inlays_on(rope, line).is_empty() {
+    if rows.wraps() || line >= rope.len_lines() || (rows.inlays_on(rope, line).is_empty() && rows.value_on(line).is_none()) {
         return rx;
     }
     let end = rope.line_to_char(line) + line_len_no_eol(rope, line);
@@ -574,7 +578,7 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     let was_visible = buf.view.follow_key != Some(follow_key) && buf.view.follow_key.is_some_and(|k| caret_on_screen(buf, k.2, k.3, o));
     let v = &mut buf.view;
     v.wrap.set_geometry(text_area.width, o.tab_width, o.wrap_extra_indent);
-    let top = Rows::view(&v.folds, &v.wrap, &v.fillers, &buf.rope, buf.version).with_inlays(&buf.inlays).clamp(v.top());
+    let top = Rows::view(&v.folds, &v.wrap, &v.fillers, &buf.rope, buf.version).with_inlays(&buf.inlays, &buf.inline_values).clamp(v.top());
     v.set_top(top);
     if buf.view.follow_key != Some(follow_key) {
         // A resize alone re-scrolls only a caret that was on screen and is
@@ -594,7 +598,8 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
 
     let theme = o.theme;
     let rope = &buf.rope;
-    let rows = Rows::view(&buf.view.folds, &buf.view.wrap, &buf.view.fillers, rope, buf.version).with_inlays(&buf.inlays);
+    let rows =
+        Rows::view(&buf.view.folds, &buf.view.wrap, &buf.view.fillers, rope, buf.version).with_inlays(&buf.inlays, &buf.inline_values);
     let sels = &buf.view.sels;
     let (cur_line, _) = pos_to_line_col(rope, buf.view.sel().head);
     // The carets drawn as cells: the others, and the primary too in a view
@@ -1714,7 +1719,7 @@ mod tests {
     }
 
     use crate::editor::fold::Folds;
-    use crate::editor::inlay::{Inlay, InlayHints};
+    use crate::editor::inlay::{Inlay, InlayHints, InlineValues, NO_VALUES};
 
     const HINTED: &str = "let x = foo(1, 2);";
 
@@ -1737,7 +1742,7 @@ mod tests {
         let rope = Rope::from_str(HINTED);
         let h = hinted_line();
         let mut cells = Vec::new();
-        layout_line_inlays(&rope, 0, 4, usize::MAX, h.all(), &mut |g, c| {
+        layout_line_inlays(&rope, 0, 4, usize::MAX, h.all(), None, &mut |g, c| {
             cells.push((g.to_string(), c.char_idx, c.col, c.width, c.kind));
             true
         });
@@ -1764,7 +1769,7 @@ mod tests {
         assert!(plain.iter().enumerate().all(|(i, &(idx, col, kind))| (idx, col, kind) == (i, i, CellKind::Text)));
         // A walk cut short never reaches the line-end hint.
         let mut cut = 0;
-        layout_line_inlays(&rope, 0, 4, 10, h.all(), &mut |_, c| {
+        layout_line_inlays(&rope, 0, 4, 10, h.all(), None, &mut |_, c| {
             cut += usize::from(c.char_idx == 18);
             true
         });
@@ -1776,7 +1781,7 @@ mod tests {
         let rope = Rope::from_str(HINTED);
         let h = hinted_line();
         let folds = Folds::default();
-        let rows = Rows::new(&folds, rope.len_lines()).with_inlays(&h);
+        let rows = Rows::new(&folds, rope.len_lines()).with_inlays(&h, &NO_VALUES);
         let row = Row::line(0);
         for x in 5..10 {
             assert_eq!(row_x_to_char(&rope, &rows, row, x, 4), (5, false), "x {x}");
@@ -1804,7 +1809,7 @@ mod tests {
         let rope = Rope::from_str(HINTED);
         let h = hinted_line();
         let folds = Folds::default();
-        let rows = Rows::new(&folds, rope.len_lines()).with_inlays(&h);
+        let rows = Rows::new(&folds, rope.len_lines()).with_inlays(&h, &NO_VALUES);
         assert_eq!(caret_col(&rope, &rows, &Selection::point(18), 4), 26);
         assert_eq!(caret_col(&rope, &rows, &Selection::virtual_point(18, 22), 4), 36);
         assert_eq!(text_col_at(&rope, &rows, 0, 36, 4), 22);
@@ -1849,7 +1854,7 @@ mod tests {
         let mut h = InlayHints::new();
         h.set(vec![Inlay::new(1, "xyz", false, false, false).unwrap()], 0, 0..1);
         let folds = Folds::default();
-        let rows = Rows::new(&folds, rope.len_lines()).with_inlays(&h);
+        let rows = Rows::new(&folds, rope.len_lines()).with_inlays(&h, &NO_VALUES);
         // `a`, 3 hint cells, the tab from column 4 to 8, `b`: the end is at x 9.
         assert_eq!(char_to_row_x(&rope, &rows, 3, false, 4).1, 9);
         for click in 9..14 {
@@ -1859,13 +1864,118 @@ mod tests {
         }
     }
 
+    fn one_value(line: usize, at: usize, label: &str) -> InlineValues {
+        let mut v = InlineValues::new();
+        let i = Inlay { at, label: label.to_string(), width: label.chars().count(), pad_left: true, pad_right: false, param: false };
+        v.set(std::collections::BTreeMap::from([(line, i)]));
+        v
+    }
+
+    #[test]
+    fn the_value_comes_after_the_line_end_hints() {
+        let rope = Rope::from_str("ab\n");
+        let mut h = InlayHints::new();
+        h.set(vec![Inlay::new(2, ": T", false, false, false).unwrap()], 0, 0..1);
+        let v = one_value(0, 2, "x = 1");
+        let tail = v.on_line(0);
+        let mut cells = Vec::new();
+        layout_line_inlays(&rope, 0, 4, usize::MAX, h.all(), tail, &mut |g, c| {
+            cells.push((g.to_string(), c.col, c.kind));
+            true
+        });
+        let want = [
+            ("a", 0, CellKind::Text),
+            ("b", 1, CellKind::Text),
+            (": T", 2, CellKind::InlayLabel),
+            (" ", 5, CellKind::InlayPad),
+            ("x = 1", 6, CellKind::InlayLabel),
+        ];
+        assert_eq!(cells, want.map(|(g, c, k)| (g.to_string(), c, k)));
+    }
+
+    #[test]
+    fn a_cut_line_draws_no_value() {
+        let rope = Rope::from_str("abcd\n");
+        let v = one_value(0, 4, "x = 1");
+        let mut n = 0;
+        layout_line_inlays(&rope, 0, 4, 2, &[], v.on_line(0), &mut |_, c| {
+            n += usize::from(c.is_inlay());
+            true
+        });
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn text_col_at_counts_the_value() {
+        let rope = Rope::from_str("ab\n");
+        let folds = Folds::default();
+        let v = one_value(0, 2, "x = 12");
+        let h = InlayHints::new();
+        let rows = Rows::new(&folds, rope.len_lines()).with_inlays(&h, &v);
+        // The value is 6 cells and a left pad: the text ends at row x 2 + 7 = 9.
+        // Its cells are not text columns, so a click at row x 10 is one column
+        // past the line end: 2 + (10 - 9) = 3. Without the value it is 10.
+        assert_eq!(text_end_x(&rope, &rows, 0, 4), 9);
+        assert_eq!(text_col_at(&rope, &rows, 0, 10, 4), 3);
+        let plain = Rows::new(&folds, rope.len_lines());
+        assert_eq!(text_col_at(&rope, &plain, 0, 10, 4), 10);
+    }
+
+    #[test]
+    fn render_draws_values_in_the_hint_style() {
+        let theme = Theme::default();
+        let mut buf = Buffer::from_text(1, None, "ab\ncd\n", false);
+        buf.inline_values = one_value(0, 2, "x = 1");
+        buf.view.set_sel(Selection::point(3));
+        let area = Rect::new(0, 0, 30, 3);
+        let mut screen = Screen::empty(area);
+        let out = render(&mut buf, &mut screen, area, &resize_opts(&theme));
+        let x0 = out.text_area.x;
+        let row: String = (x0..x0 + 8).map(|x| screen[(x, 0)].symbol().to_string()).collect();
+        assert_eq!(row, "ab x = 1");
+        let hint = theme.inlay_hint;
+        for x in x0 + 3..x0 + 8 {
+            assert_eq!((screen[(x, 0)].fg, screen[(x, 0)].bg), (hint.fg.unwrap(), hint.bg.unwrap()), "x {x}");
+        }
+        assert_ne!(screen[(x0 + 2, 0)].fg, hint.fg.unwrap(), "the pad is plain background");
+        let row1: String = (x0..x0 + 8).map(|x| screen[(x, 1)].symbol().to_string()).collect();
+        assert_eq!(row1.trim_end(), "cd");
+    }
+
+    #[test]
+    fn a_wrapped_line_has_its_value_on_the_last_row() {
+        let rope = Rope::from_str("abcdefgh\n");
+        let folds = Folds::default();
+        let mut wrap = crate::editor::wrap::Wrap::new(true);
+        wrap.set_geometry(5, 4, 0);
+        let v = one_value(0, 8, "v");
+        let h = InlayHints::new();
+        let rows = Rows::view(&folds, &wrap, &[], &rope, 0).with_inlays(&h, &v);
+        let walk = |seg: i32| {
+            let mut cells = Vec::new();
+            layout_row(&rope, &rows, Row { line: 0, seg }, 4, 80, &mut |g, c, rx| {
+                cells.push((g.to_string(), rx, c.is_inlay()));
+                true
+            });
+            cells
+        };
+        assert!(rows.line_wrap(0).unwrap().segs() >= 2);
+        let last = i32::from(rows.line_wrap(0).unwrap().segs()) - 1;
+        for seg in 0..last {
+            assert!(walk(seg).iter().all(|c| !c.2), "seg {seg} has no value");
+        }
+        let cells = walk(last);
+        let tail: Vec<_> = cells.iter().filter(|c| c.2).map(|c| c.0.as_str()).collect();
+        assert_eq!(tail, [" ", "v"]);
+    }
+
     #[test]
     fn no_hints_no_change() {
         let rope = Rope::from_str("\ta\tb日本x\u{1}y\n  tail 😀\nlast");
         let folds = Folds::default();
         let none = InlayHints::default();
         let plain = Rows::new(&folds, rope.len_lines());
-        let with = Rows::new(&folds, rope.len_lines()).with_inlays(&none);
+        let with = Rows::new(&folds, rope.len_lines()).with_inlays(&none, &NO_VALUES);
         for line in 0..rope.len_lines() {
             let walk = |rows: &Rows| {
                 let mut out = Vec::new();

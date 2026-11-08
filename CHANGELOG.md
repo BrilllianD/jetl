@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Breakpoints can be disabled without removing them (Run > Toggle Breakpoint Enabled, or Space in View Breakpoints): a disabled one is drawn dim and not sent to the debugger. Edit Breakpoint gains a hit count: stop from the Nth hit on. Both are saved with the session. Verified under gdb 17.2 only; gdb restarts the count whenever that file's breakpoints are sent again.
 - With a language server that offers document highlight (rust-analyzer, clangd), the symbol at the caret is highlighted where the server says it is used, with writes and reads in their own colours (theme keys `occurrence_write`, `occurrence_read`); other files keep the textual highlight.
 - Column rulers: `[editor] rulers = [80, 100]` draws a thin vertical line after those columns on every row whose text does not reach them, in the new theme style `ruler`; it follows horizontal scroll and applies without a restart.
+- Debugger inline values: while paused, `name = value` for the frame's variables appears after the lines of the current function that use them, in the inline hint style, whether or not the debug window is shown. `[debug] inline_values = false` turns it off (Live) and stops the extra scopes requests. Values clear on resume, stop and edit.
 
 ### Fixed
 

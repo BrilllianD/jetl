@@ -79,7 +79,7 @@ pub fn wrap_line(rope: &Rope, line: usize, tab_width: usize, text_w: u16, extra_
     let mut out = LineWrap::default();
     // The leading indent: the column of the first non-blank grapheme.
     let mut lead = None;
-    layout_line_inlays(rope, line, tab_width, MAX_WRAP_CHARS, inlays, &mut |g, c| {
+    layout_line_inlays(rope, line, tab_width, MAX_WRAP_CHARS, inlays, None, &mut |g, c| {
         if c.is_inlay() {
             return true;
         }
@@ -100,7 +100,7 @@ pub fn wrap_line(rope: &Rope, line: usize, tab_width: usize, text_w: u16, extra_
     let (mut prev_blank, mut text_seen) = (false, false);
     // The column where the hints before the next text cell start.
     let mut unit: Option<usize> = None;
-    layout_line_inlays(rope, line, tab_width, MAX_WRAP_CHARS, inlays, &mut |g, c| {
+    layout_line_inlays(rope, line, tab_width, MAX_WRAP_CHARS, inlays, None, &mut |g, c| {
         if c.is_inlay() {
             unit.get_or_insert(c.col);
             return true;

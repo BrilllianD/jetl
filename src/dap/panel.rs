@@ -21,7 +21,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::protocol::Thread;
 use super::session::{Phase, SessionId};
-use super::vars::{KeptPaths, MAX_CHILDREN, VarAsk, VarItem, VarsLoad, VarsView};
+use super::vars::{KeptPaths, MAX_CHILDREN, TopValue, VarAsk, VarItem, VarsLoad, VarsView};
 use crate::actions::DebugAction;
 use crate::app::Ctx;
 use crate::config::theme::Theme;
@@ -227,7 +227,12 @@ impl DebugPanel {
 
     /// The selected frame's id and the seq, once per seq, while the Variables tab shows and a frame is selected.
     pub fn scopes_wanted(&mut self) -> Option<(i64, u64)> {
-        if self.tab != DebugTab::Variables || !matches!(self.vars.load, VarsLoad::Idle) {
+        self.scopes_wanted_for(false)
+    }
+
+    /// [`Self::scopes_wanted`], also on the other tabs when `any_tab` (the editor's inline values need the scopes).
+    pub fn scopes_wanted_for(&mut self, any_tab: bool) -> Option<(i64, u64)> {
+        if (!any_tab && self.tab != DebugTab::Variables) || !matches!(self.vars.load, VarsLoad::Idle) {
             return None;
         }
         let id = self.selected_frame()?.id;
@@ -342,9 +347,27 @@ impl DebugPanel {
         }
         let kept = self.selected_frame().map(|f| f.name.clone()).and_then(|name| self.kept.frame(&name));
         let open: Vec<usize> = open.iter().map(|k| first + k).collect();
+        self.vars.auto = open.clone();
         self.vars.reopen_roots(&open, kept);
         self.vars.load = VarsLoad::Shown;
         self.vars.sync();
+    }
+
+    /// Load the children of the auto scopes, also those the user shut, without opening them.
+    pub fn fetch_auto_scopes(&mut self) {
+        for i in self.vars.auto.clone() {
+            self.vars.tree.fetch(i);
+        }
+    }
+
+    /// How many variables the auto scopes hold so far.
+    pub fn auto_loaded(&self) -> usize {
+        self.vars.auto_loaded()
+    }
+
+    /// The top-level variables of the auto scopes (see [`VarsView::top_values`]).
+    pub fn top_values(&self) -> Vec<TopValue> {
+        self.vars.top_values()
     }
 
     /// The scopes could not be read. Asked again only after the next selection.
@@ -2236,6 +2259,61 @@ mod tests {
         let mut q = with_vars();
         q.vars.tree.expand(2);
         assert!(q.var_rows().last().unwrap().ends_with("Registers …"));
+    }
+
+    #[test]
+    fn top_values_follow_the_rules() {
+        let mut p = suspended_with(three());
+        p.set_tab(DebugTab::Variables);
+        p.scopes_wanted().unwrap();
+        p.show_scopes(vec![vi("Arguments", "", "", 1), vi("Locals", "", "", 2), vi("Registers", "", "", 3)], &[0, 1]);
+        p.take_var_asks();
+        p.show_children(0, vec![vi("a", "1", "int", 0)]);
+        assert_eq!(p.auto_loaded(), 1);
+        p.show_children(
+            1,
+            vec![
+                vi("p", "", "struct point", 5),
+                vi("e", "", "int", 0),
+                vi("sum", "7", "int", 0),
+                vi("sum #2", "3", "int", 0),
+                vi("xs", "std::vector of length 3", "vector", 4),
+            ],
+        );
+        assert_eq!(p.auto_loaded(), 6);
+        let v = |n: &str, val: &str, shadowed| TopValue { name: n.into(), value: val.into(), shadowed };
+        assert_eq!(
+            p.top_values(),
+            [v("a", "1", false), v("p", "{…}", false), v("sum", "7", true), v("xs", "std::vector of length 3", false)],
+            "no `e` (empty leaf) and no `sum #2`"
+        );
+    }
+
+    #[test]
+    fn scopes_wanted_for_any_tab() {
+        let mut p = suspended_with(three());
+        p.set_tab(DebugTab::Console);
+        assert_eq!(p.scopes_wanted(), None);
+        assert!(p.scopes_wanted_for(true).is_some());
+        assert_eq!(p.scopes_wanted_for(true), None, "once per seq");
+    }
+
+    #[test]
+    fn a_shut_locals_is_still_fetched() {
+        let mut p = suspended_with(three());
+        p.set_tab(DebugTab::Variables);
+        p.kept.frame_mut("add").record(vec!["Locals".into()], false);
+        p.scopes_wanted().unwrap();
+        p.show_scopes(vec![vi("Arguments", "", "", 1), vi("Locals", "", "", 2), vi("Registers", "", "", 3)], &[0, 1]);
+        let nodes = |p: &mut DebugPanel| p.take_var_asks().iter().map(|a| a.node).collect::<Vec<_>>();
+        assert_eq!(nodes(&mut p), [0], "only Arguments opens by itself");
+        p.fetch_auto_scopes();
+        assert_eq!(nodes(&mut p), [1], "Locals is fetched once");
+        p.fetch_auto_scopes();
+        assert!(nodes(&mut p).is_empty());
+        p.show_children(1, vec![vi("x", "5", "int", 0)]);
+        assert_eq!(p.top_values().len(), 1);
+        assert!(!p.vars.tree.node(1).unwrap().expanded, "still shut");
     }
 
     #[test]

@@ -110,7 +110,7 @@ pub(super) fn draw(
     let top = b.view.top();
     let caret = caret_row(b, top, text_area.height, tab_width);
     let syms = b.scopes.symbols(b.syntax.as_mut(), &b.rope, b.version);
-    let rows = Rows::view(&b.view.folds, &b.view.wrap, &b.view.fillers, &b.rope, b.version).with_inlays(&b.inlays);
+    let rows = Rows::view(&b.view.folds, &b.view.wrap, &b.view.fillers, &b.rope, b.version).with_inlays(&b.inlays, &b.inline_values);
     let pins = pins(syms, &rows, top, caret, text_area.height);
     st.keep_only(&pins);
     if pins.is_empty() {

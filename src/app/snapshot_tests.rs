@@ -4070,6 +4070,24 @@ async fn editor_inlay_hints() {
 }
 
 #[tokio::test]
+async fn editor_inline_values() {
+    use crate::editor::inlay::Inlay;
+    let mut fx = stable_app("inline-values");
+    let app = &mut fx.app;
+    load(app, "m.rs", "fn add(a: i32, b: i32) -> i32 {\n    let sum = a + b;\n    sum\n}\nfn main() {\n    add(1, 2);\n}\n");
+    let b = app.editor.active_buffer_mut().unwrap();
+    // A language-server hint at the end of line 2: the value comes one space after it.
+    let end = b.rope.line_to_char(2) + 7;
+    b.inlays.set(vec![Inlay::new(end, "-> i32", true, false, false).unwrap()], 0, 0..3);
+    b.set_frame_values(2, &[("a", "1", false), ("b", "2", false), ("sum", "3", false)]);
+    b.view.set_sel(Selection::point(0));
+    let term = draw_editor(app, 60, 8);
+    let mut marks = vec![Mark::style('H', "inlay", app.theme.inlay_hint)];
+    marks.extend(editor_marks(&app.theme));
+    assert_snapshot!("editor_inline_values", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
 async fn editor_inlay_hints_carets() {
     let mut fx = stable_app("inlay-hints-carets");
     let app = &mut fx.app;

@@ -228,9 +228,21 @@ struct Choice {
     offered: bool,
 }
 
+/// What the inline values on screen were built from; when it changes, they are built again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InlineKey {
+    seq: u64,
+    loaded: usize,
+    buffer: crate::editor::buffer::BufferId,
+    version: u64,
+    line: usize,
+}
+
 #[derive(Default)]
 pub struct DebugState {
     session: Option<Live>,
+    /// The key of the inline values now in a buffer.
+    inline: Option<InlineKey>,
     /// The last `SessionId` handed out.
     next_id: u64,
     /// `debug.start`s so far; only the newest one's `DebugReady` is used.
@@ -1719,6 +1731,7 @@ impl App {
         self.editor.set_execution_point(None);
         self.debug_panel.clear_stack();
         self.editor.set_selected_frame(None);
+        self.debug_sync_inline_values();
     }
 
     /// An answer to `threads` or `stackTrace`. No epoch check here: the machine drops an answer older than its
@@ -1875,6 +1888,9 @@ impl App {
                 let scopes = body_of::<ScopesBody>("scopes", body).scopes;
                 let open = scopes_to_open(&scopes);
                 self.debug_panel.show_scopes(scopes.iter().map(var_item_of_scope).collect(), &open);
+                if self.config.debug.inline_values {
+                    self.debug_panel.fetch_auto_scopes();
+                }
                 self.debug_sync_vars();
             }
             (TagKind::Scopes { .. }, Err(e)) => {
@@ -1907,17 +1923,59 @@ impl App {
         self.dirty_frame = true;
     }
 
+    /// Puts the selected frame's variables at the line ends of its file while paused, or clears them. Cheap when
+    /// nothing they are built from changed (the tick calls it).
+    pub(super) fn debug_sync_inline_values(&mut self) {
+        let target = (self.config.debug.inline_values && self.debug.suspended())
+            .then(|| self.debug_panel.selected_frame().and_then(|f| f.location.clone()))
+            .flatten()
+            .and_then(|(path, line)| {
+                let i = self.editor.index_of(&path)?;
+                let b = &self.editor.buffers[i];
+                Some((
+                    InlineKey {
+                        seq: self.debug_panel.selection_seq(),
+                        loaded: self.debug_panel.auto_loaded(),
+                        buffer: b.id,
+                        version: b.version,
+                        line,
+                    },
+                    i,
+                ))
+            });
+        if target.map(|t| t.0) == self.debug.inline {
+            return;
+        }
+        for b in &mut self.editor.buffers {
+            if !b.inline_values.is_empty() {
+                b.inline_values.clear();
+            }
+        }
+        if let Some((key, i)) = target {
+            let top = self.debug_panel.top_values();
+            let values: Vec<(&str, &str, bool)> = top.iter().map(|v| (v.name.as_str(), v.value.as_str(), v.shadowed)).collect();
+            self.editor.buffers[i].set_frame_values(key.line, &values);
+        }
+        self.debug.inline = target.map(|t| t.0);
+        self.dirty_frame = true;
+    }
+
     /// On the tick, and after the scopes arrive: asks what the Variables tab wants and has not asked. Nothing is
-    /// asked while the tab is not on screen, so a user who never opens it pays no round trip per step.
+    /// asked while the tab is not on screen, so a user who never opens it pays no round trip per step. With
+    /// `[debug] inline_values` on, the scopes and the variables of the auto scopes are asked while it is hidden too.
     pub(super) fn debug_sync_vars(&mut self) {
+        self.debug_sync_inline_values();
         if !self.debug.suspended() {
             return;
         }
         let shown = self.debug_window_shown();
+        let inline = self.config.debug.inline_values && self.debug_panel.selected_frame().is_some_and(|f| f.location.is_some());
         let Some(live) = self.debug.session.as_ref() else { return };
         let (epoch, trusted) = (live.epoch, live.trusted_paging);
         let mut moved = false;
-        if shown && let Some((frame, seq)) = self.debug_panel.scopes_wanted() {
+        if (shown || inline)
+            && let Some((frame, seq)) = self.debug_panel.scopes_wanted_for(inline)
+        {
             let tag = DapTag { epoch, kind: TagKind::Scopes { seq } };
             self.debug.send(Command::Request { command: "scopes".into(), arguments: json!({"frameId": frame}), tag });
             moved = true;
@@ -1987,12 +2045,14 @@ impl App {
     fn debug_show_row(&mut self, row: &FrameRow, focus: bool) {
         let Some((path, line)) = row.location.clone() else {
             self.debug.view = None;
-            return self.editor.set_selected_frame(None);
+            self.editor.set_selected_frame(None);
+            return self.debug_sync_inline_values();
         };
         let here = ExecutionPoint { path: path.clone(), line };
         let marked = self.editor.execution_point() != Some(&here);
         self.editor.set_selected_frame(marked.then_some(here));
         self.debug_open_view(path, line, focus);
+        self.debug_sync_inline_values();
     }
 
     /// Shows a place for a stop, a frame choice or Alt+F10. Any read still in flight for an earlier one is over.
@@ -2021,6 +2081,7 @@ impl App {
         };
         self.debug.view = None;
         self.file_loaded(path, result, focus, Some(GotoTarget::Char { line, col: 0 }));
+        self.debug_sync_inline_values();
     }
 
     fn debug_choose_thread(&mut self) {
@@ -2303,6 +2364,7 @@ impl App {
             (false, true, None) => (Level::Info, "Debug session ended".to_string()),
         };
         self.notify(level, text);
+        self.debug_sync_inline_values();
     }
 
     /// A root switch: the session belongs to the old root. Called before the generation changes.
@@ -2320,6 +2382,7 @@ impl App {
         self.debug.starting = false;
         self.debug.seq += 1;
         self.debug.pick = None;
+        self.debug_sync_inline_values();
     }
 
     /// For `App::shutdown`: ends the session and whatever is still stopping, within a bound.
@@ -2363,6 +2426,8 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn with_fake_adapters(app: &mut App, caps: Value, order: Order) -> UnboundedReceiver<FakeAdapter> {
+        // The existing fixtures pin the lazy ask (no `scopes` while hidden); the inline tests turn the key on.
+        app.config.debug.inline_values = false;
         app.config.debug.adapters.insert(
             "fake".into(),
             AdapterOverride { command: Some(vec!["sh".into()]), languages: Some(vec!["c".into(), "rust".into()]), launch: None },
@@ -10093,6 +10158,243 @@ pub(crate) mod tests {
         let attach = fake.recv("attach").await;
         assert_eq!(attach["arguments"], json!({"pid": 4242}));
         assert!(!picker_open(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- inline values (yman 457) ----
+
+    const ADD_RS: &str = "fn add(a: i32, b: i32) -> i32 {\n    let sum = a + b;\n    sum\n}\nfn main() {\n    add(1, 2);\n}\n";
+
+    /// Paused in `add` (m.rs:3, 1-based) over `main` (m.rs:6) with the key on and the Debug window hidden. The index of
+    /// the buffer of m.rs is the last item. `p` is a watch.
+    async fn inline_paused(name: &str) -> (App, PathBuf, FakeAdapter, usize) {
+        let (mut app, dir) = test_app(name);
+        let mut fakes = with_fake_adapters(&mut app, caps(), Order::LaunchEarly);
+        app.config.debug.inline_values = true;
+        write_run_toml(&app, DEMO);
+        let m = load(&mut app, "m.rs", ADD_RS);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        app.debug_panel.set_watches(&["p".to_string()]);
+        let frames = vec![frame_at(0, "add", &m, 3), frame_at(1, "main", &m, 6)];
+        stop_listed(&mut app, &mut fake, 7, frames, json!([{"id": 7, "name": "t"}])).await;
+        pump_until(&mut app, |x| point(x).is_some()).await;
+        app.layout.hide(ToolWindowId::Debug);
+        let i = app.editor.index_of(&m).unwrap();
+        (app, dir, fake, i)
+    }
+
+    fn inline_children(reference: i64) -> Value {
+        match reference {
+            1 => json!({"variables": [
+                {"name": "a", "value": "1", "type": "int", "variablesReference": 0},
+                {"name": "b", "value": "2", "type": "int", "variablesReference": 0}]}),
+            2 => json!({"variables": [{"name": "sum", "value": "3", "type": "int", "variablesReference": 0}]}),
+            _ => json!({"variables": []}),
+        }
+    }
+
+    fn values(app: &App, i: usize) -> Vec<(usize, String)> {
+        app.editor.buffers[i].inline_values.iter().map(|(l, v)| (l, v.label.clone())).collect()
+    }
+
+    fn pairs(v: &[(usize, &str)]) -> Vec<(usize, String)> {
+        v.iter().map(|(l, s)| (*l, s.to_string())).collect()
+    }
+
+    /// The tick asks `scopes` (the window is hidden), gdb answers, the two open scopes are read, `children` answers them.
+    async fn read_inline(app: &mut App, fake: &mut FakeAdapter, children: fn(i64) -> Value) {
+        app.debug_sync_vars();
+        let req = fake.recv("scopes").await;
+        fake.respond(&req, gdb_scopes());
+        pump_until(app, |a| a.debug_panel.var_count() >= 3).await;
+        let mut refs = Vec::new();
+        for _ in 0..2 {
+            let req = fake.recv("variables").await;
+            let reference = req["arguments"]["variablesReference"].as_i64().unwrap();
+            refs.push(reference);
+            fake.respond(&req, children(reference));
+        }
+        refs.sort();
+        assert_eq!(refs, [1, 2], "Registers (3) is not read");
+        pump_until(app, |a| a.debug_panel.auto_loaded() == 3).await;
+    }
+
+    #[tokio::test]
+    async fn inline_values_arrive_with_the_window_hidden() {
+        let (mut app, dir, mut fake, i) = inline_paused("inline-hidden").await;
+        assert!(values(&app, i).is_empty());
+        app.debug_sync_vars();
+        let req = fake.recv("scopes").await;
+        assert_eq!(req["arguments"], json!({"frameId": 0}), "asked with the window hidden");
+        fake.respond(&req, gdb_scopes());
+        pump_until(&mut app, |a| a.debug_panel.var_count() >= 3).await;
+        let mut refs = Vec::new();
+        for _ in 0..2 {
+            let req = fake.recv("variables").await;
+            let reference = req["arguments"]["variablesReference"].as_i64().unwrap();
+            refs.push(reference);
+            fake.respond(&req, inline_children(reference));
+        }
+        refs.sort();
+        assert_eq!(refs, [1, 2]);
+        pump_until(&mut app, |a| a.debug_panel.auto_loaded() == 3).await;
+        assert_eq!(values(&app, i), pairs(&[(0, "a = 1, b = 2"), (1, "sum = 3, a = 1, b = 2"), (2, "sum = 3")]));
+        let sent = sent_since(&mut fake).await;
+        assert!(sent.iter().all(|c| c != "evaluate"), "no watch is evaluated while hidden: {sent:?}");
+        app.layout.show(ToolWindowId::Debug);
+        app.debug_sync_vars();
+        assert_eq!(fake.recv("evaluate").await["arguments"]["expression"], "p", "the watch was waiting for the window");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn inline_values_follow_the_frame_and_clear_on_resume_and_stop() {
+        let (mut app, dir, mut fake, i) = inline_paused("inline-follow").await;
+        read_inline(&mut app, &mut fake, inline_children).await;
+        assert_eq!(values(&app, i).len(), 3);
+        // Another frame: the values go at once.
+        app.layout.show(ToolWindowId::Debug);
+        in_frames(&mut app);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.debug_panel.selected_frame().unwrap().id, 1);
+        assert!(values(&app, i).is_empty(), "the frame changed");
+        // Back to the first frame, which asks its scopes again.
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.debug_panel.selected_frame().unwrap().id, 0);
+        app.layout.hide(ToolWindowId::Debug);
+        app.focus.set(PanelId::Editor);
+        let m = app.editor.buffers[i].path.clone().unwrap();
+        // A step clears them until the next stop.
+        press(&mut app, F8);
+        step_stop(&mut app, &mut fake, &m, 3).await;
+        assert!(values(&app, i).is_empty(), "nothing before the new stop's answers");
+        read_inline(&mut app, &mut fake, inline_children).await;
+        assert_eq!(values(&app, i).len(), 3, "back at the new stop");
+        app.perform(Action::Debug(DebugAction::Stop));
+        fake.recv("terminate").await;
+        fake.recv("disconnect").await;
+        dap_until(&mut app, gone).await;
+        assert!(values(&app, i).is_empty(), "the session ended");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_resume_clears_the_values_at_once() {
+        let (mut app, dir, mut fake, i) = inline_paused("inline-resume").await;
+        read_inline(&mut app, &mut fake, inline_children).await;
+        assert_eq!(values(&app, i).len(), 3);
+        app.focus.set(PanelId::Editor);
+        press(&mut app, F8);
+        let req = fake.recv("next").await;
+        fake.respond(&req, json!({}));
+        pump_until(&mut app, |a| point(a).is_none() && a.debug.phase() == Some(Phase::Running)).await;
+        assert!(values(&app, i).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_shadowed_value_shows_only_on_the_frame_line() {
+        fn shadowed(reference: i64) -> Value {
+            match reference {
+                2 => json!({"variables": [
+                    {"name": "sum", "value": "7", "type": "int", "variablesReference": 0},
+                    {"name": "sum #2", "value": "3", "type": "int", "variablesReference": 0}]}),
+                r => inline_children(r),
+            }
+        }
+        let (mut app, dir, mut fake, i) = inline_paused("inline-shadow").await;
+        app.debug_sync_vars();
+        let req = fake.recv("scopes").await;
+        fake.respond(&req, gdb_scopes());
+        pump_until(&mut app, |a| a.debug_panel.var_count() >= 3).await;
+        for _ in 0..2 {
+            let req = fake.recv("variables").await;
+            let reference = req["arguments"]["variablesReference"].as_i64().unwrap();
+            fake.respond(&req, shadowed(reference));
+        }
+        pump_until(&mut app, |a| a.debug_panel.auto_loaded() == 4).await;
+        assert_eq!(values(&app, i), pairs(&[(0, "a = 1, b = 2"), (1, "a = 1, b = 2"), (2, "sum = 7")]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_edit_clears_and_the_values_return_at_the_adapter_line() {
+        let (mut app, dir, mut fake, i) = inline_paused("inline-edit").await;
+        read_inline(&mut app, &mut fake, inline_children).await;
+        let b = &mut app.editor.buffers[i];
+        b.apply(vec![crate::editor::undo::Change::insert(0, "// x\n")], crate::editor::selection::Selection::point(5), TxKind::Other);
+        assert!(values(&app, i).is_empty(), "an edit drops them");
+        app.debug_sync_vars();
+        assert_eq!(
+            values(&app, i),
+            pairs(&[(1, "a = 1, b = 2"), (2, "sum = 3, a = 1, b = 2")]),
+            "the adapter still says line 3, now `let sum`; `fn add` starts at line 1"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn inline_values_off_clear_and_stop_asking() {
+        let (mut app, dir, mut fake, i) = inline_paused("inline-off").await;
+        read_inline(&mut app, &mut fake, inline_children).await;
+        let mut off = app.config.clone();
+        off.debug.inline_values = false;
+        app.apply_config(off);
+        assert!(values(&app, i).is_empty(), "turned off");
+        let m = app.editor.buffers[i].path.clone().unwrap();
+        app.focus.set(PanelId::Editor);
+        press(&mut app, F8);
+        let mut seen = step_stop(&mut app, &mut fake, &m, 3).await;
+        app.debug_sync_vars();
+        seen.extend(sent_since(&mut fake).await);
+        assert!(seen.iter().all(|c| c != "scopes"), "nothing is asked while hidden: {seen:?}");
+        assert!(values(&app, i).is_empty());
+        let mut on = app.config.clone();
+        on.debug.inline_values = true;
+        app.apply_config(on);
+        assert_eq!(fake.recv("scopes").await["arguments"], json!({"frameId": 0}), "turned on: asked at once");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_scope_the_user_shut_still_gives_values() {
+        let (mut app, dir, mut fake, i) = inline_paused("inline-shut").await;
+        read_inline(&mut app, &mut fake, inline_children).await;
+        app.layout.show(ToolWindowId::Debug);
+        in_vars(&mut app);
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Left);
+        let rows = var_rows(&mut app);
+        assert!(rows.iter().any(|r| r.contains("▸ Locals")), "Locals is shut: {rows:?}");
+        app.layout.hide(ToolWindowId::Debug);
+        app.focus.set(PanelId::Editor);
+        let m = app.editor.buffers[i].path.clone().unwrap();
+        press(&mut app, F8);
+        step_stop(&mut app, &mut fake, &m, 3).await;
+        // The new stop reopens by name: Locals stays shut, yet its variables are read for the editor.
+        read_inline(&mut app, &mut fake, inline_children).await;
+        assert_eq!(values(&app, i), pairs(&[(0, "a = 1, b = 2"), (1, "sum = 3, a = 1, b = 2"), (2, "sum = 3")]));
+        let rows = var_rows(&mut app);
+        assert!(rows.iter().any(|r| r.contains("▸ Locals")), "and it is still shut: {rows:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_frame_without_a_file_asks_nothing_while_hidden() {
+        let (mut app, dir) = test_app("inline-nofile");
+        let mut fakes = with_fake_adapters(&mut app, caps(), Order::LaunchEarly);
+        app.config.debug.inline_values = true;
+        write_run_toml(&app, DEMO);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        let frames = vec![json!({"id": 0, "name": "start", "line": 0, "column": 0})];
+        stop_listed(&mut app, &mut fake, 7, frames, json!([{"id": 7, "name": "t"}])).await;
+        assert!(app.debug_panel.selected_frame().is_some_and(|f| f.location.is_none()));
+        app.layout.hide(ToolWindowId::Debug);
+        app.debug_sync_vars();
+        let sent = sent_since(&mut fake).await;
+        assert!(sent.iter().all(|c| c != "scopes"), "{sent:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

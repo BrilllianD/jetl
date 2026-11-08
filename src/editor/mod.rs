@@ -1273,7 +1273,8 @@ impl Editor {
                 if !block && self.column_mode && !*extend && b.blocks_supported() {
                     b.move_virtual(*m, page, tab_width);
                 } else if !block {
-                    let rows = Rows::view(&b.view.folds, &b.view.wrap, &b.view.fillers, &b.rope, b.version).with_inlays(&b.inlays);
+                    let rows = Rows::view(&b.view.folds, &b.view.wrap, &b.view.fillers, &b.rope, b.version)
+                        .with_inlays(&b.inlays, &b.inline_values);
                     apply_motion_all(&b.rope, &rows, &mut b.view.sels, *m, *extend, page, tab_width);
                 }
                 // A moved caret ends an Add Next Occurrence run.

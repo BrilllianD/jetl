@@ -353,6 +353,13 @@ pub static SETTINGS: &[Setting] = &[
         none
     ),
     row!(
+        "debug.inline_values",
+        "Inline values",
+        "While paused, show the values of the frame's variables at the ends of the lines that use them.",
+        Kind::Bool,
+        |c| Value::Bool(c.debug.inline_values)
+    ),
+    row!(
         "clipboard.paste_command",
         "Paste command",
         "Prints the system clipboard. Empty means detect, \"none\" means jetl's own last copy only.",
@@ -521,7 +528,7 @@ pub static PAGES: &[Page] = &[
     page!("Files", None, ["files.show_hidden", "files.show_ignored", "files.watch"]),
     page!("Tools", None, []),
     page!("Terminal", Some(12), ["terminal.shell", "terminal.args", "terminal.scrollback"]),
-    page!("Run", Some(12), ["run.tasks", "run.configs", "run.debug", "debug.adapters"]),
+    page!("Run", Some(12), ["run.tasks", "run.configs", "run.debug", "debug.adapters", "debug.inline_values"]),
     page!("Clipboard", Some(12), ["clipboard.paste_command", "clipboard.copy_command"]),
     page!(
         "Local History",
