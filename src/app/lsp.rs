@@ -578,7 +578,7 @@ impl App {
                             s.init_options.clone(),
                         ));
                     }
-                } else if buf.rope.len_bytes() <= self.config.editor.max_highlight_bytes
+                } else if extra_size_ok(buf, &self.config)
                     && let Some(doc) = open_doc(&lsp.clients[&s.name], buf, language, &path, s.name.clone())
                 {
                     lsp.extra_docs.insert((buf.id, s.name.clone()), doc);
@@ -992,14 +992,15 @@ impl App {
         })
     }
 
-    /// The first extra server of buffer `b`'s language (never for scratch files
-    /// or files over `max_highlight_bytes`, which `lsp_sync` does not open).
+    /// The first extra server of buffer `b`'s language (never for scratch files,
+    /// nor for files `lsp_sync` will not open: over `max_highlight_bytes` and
+    /// not already open on an extra, which keeps syncing as the file grows).
     fn buffer_extra(&self, b: &Buffer) -> Option<String> {
         let language = b.language()?.name;
         if b.path.as_ref().is_some_and(|p| p.starts_with(self.paths.scratches_dir())) {
             return None;
         }
-        if b.rope.len_bytes() > self.config.editor.max_highlight_bytes {
+        if !extra_size_ok(b, &self.config) && !self.lsp.extra_docs.keys().any(|(id, _)| *id == b.id) {
             return None;
         }
         let owned;
@@ -1057,6 +1058,12 @@ fn section(settings: Option<&Value>, section: Option<&str>) -> Value {
         }
     }
     v.clone()
+}
+
+/// Whether an extra server may open `b`: extras skip files over
+/// `max_highlight_bytes`, like the highlighter.
+fn extra_size_ok(b: &Buffer, config: &crate::config::Config) -> bool {
+    b.rope.len_bytes() <= config.editor.max_highlight_bytes
 }
 
 // Every test here opens a Rust file (a language server needs a language).
@@ -2032,6 +2039,10 @@ pub(crate) mod tests {
         let id = app.editor.active_buffer().unwrap().id;
         assert!(!app.lsp.docs.contains_key(&id) && app.lsp.has_doc(id));
         assert_eq!(app.lsp_status(), Some(LspStatus::Idle("typos".into())));
+        let limit = app.config.editor.max_highlight_bytes;
+        app.config.editor.max_highlight_bytes = 4;
+        assert_eq!(app.lsp_status(), Some(LspStatus::Idle("typos".into())), "an open doc keeps its server past the limit");
+        app.config.editor.max_highlight_bytes = limit;
         for (version, col, c) in [(2, 0, 'x'), (3, 1, 'y')] {
             act(&mut app, EditorAction::InsertChar(c));
             let change = server.recv("textDocument/didChange").await;
