@@ -124,7 +124,7 @@ impl App {
             }
             // As for FsOpDone: only the global history store follows.
             AppMsg::EditsApplied { ops, .. } => {
-                for op in ops {
+                for (op, _) in ops {
                     if let FsOp::Rename { from, to, .. } = op {
                         self.history_renamed(&from, &to);
                     }

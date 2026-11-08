@@ -376,6 +376,20 @@ Module rename (yman 444), same project: Shift+F6 on `util` of `mod util;`, name 
 3 rows in `src/main.rs` and `+ 1 file operation` (before the fix: `0 occurrences in 0 files`). Alt+A, Enter:
 `src` holds `assist.rs` and `main.rs`; `main.rs` reads `mod assist;` and two `assist::helper();`. Ctrl+S, then
 `cargo check` in the project exits 0. With `[lsp] rename_preview = false` the same rename applies at once.
+Until Ctrl+S the status bar may show `✖ 1`: rust-analyzer's cargo check sees the files on disk, where `main.rs` still says `mod util;` (`rustc E0583`); saving clears it. rust-analyzer asks for no `did*Files`, so none is sent to it.
+
+### Scenario: file operations of a workspace edit (gopls)
+
+yman 478, at 120x40 and 80x24, with real gopls, in `/tmp/jetl-478` on a private socket such as `jetl478`. Project:
+`go.mod` (`module demo\n\ngo 1.22\n`) and `main.go`
+(`package main\n\nfunc helper() int {\n\treturn 1\n}\n\nfunc main() {\n\t_ = helper()\n}\n`). Under
+`$XDG_CONFIG_HOME/jetl/config.toml`: `[lsp.servers.gopls]` with
+`command = ["sh", "-c", "tee -a /tmp/jetl-478/gopls-in.log | gopls"]`, which records what jetl sends.
+
+Open `main.go:3:1`, wait for gopls, Shift+Down three times (`func helper` through its `}`), Alt+Enter, choose
+"Extract declarations to new file", Enter. `helper.go` holds the function; `main.go` no longer has it and shows no
+`✖` (no `undefined: helper`); `grep -c 'workspace/didCreateFiles' /tmp/jetl-478/gopls-in.log` prints 1 and that line
+holds `helper.go`'s URI. Stderr is empty and Ctrl+Q exits 0.
 
 ### Scenario: Find status row
 

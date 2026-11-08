@@ -1373,7 +1373,7 @@ pub(crate) mod tests {
             origin: EditOrigin::CodeAction("x".into()),
             done: Default::default(),
             errors: vec![],
-            ops: vec![FsOp::Rename { from: b.clone(), to: e.clone(), overwrite: false }],
+            ops: vec![(FsOp::Rename { from: b.clone(), to: e.clone(), overwrite: false }, false)],
             failed: None,
         });
         assert!(snapshots(&app, &e)[0].0.starts_with("Renamed from"));

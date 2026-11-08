@@ -49,12 +49,17 @@ fn file_op_params(op: &FsOp) -> Option<Value> {
     })
 }
 
+/// Whether the op is on a folder; read before the op runs (a deleted or renamed path is gone after).
+pub(super) fn op_is_dir(op: &FsOp) -> bool {
+    match op {
+        FsOp::Create { is_dir, .. } => *is_dir,
+        FsOp::Rename { from: p, .. } | FsOp::Delete { path: p, .. } => p.symlink_metadata().is_ok_and(|m| m.is_dir()),
+    }
+}
+
 impl App {
     pub(super) fn run_fs_op(&mut self, op: FsOp) {
-        let is_dir = match &op {
-            FsOp::Create { is_dir, .. } => *is_dir,
-            FsOp::Rename { from: p, .. } | FsOp::Delete { path: p, .. } => p.symlink_metadata().is_ok_and(|m| m.is_dir()),
-        };
+        let is_dir = op_is_dir(&op);
         // The servers' versions of open documents must be current for their edits.
         self.lsp_sync();
         let (will, _) = file_op_methods(&op);
@@ -183,8 +188,8 @@ impl App {
         }
     }
 
-    /// `did*Files` for the servers that want it.
-    fn lsp_did_file_op(&self, op: &FsOp, is_dir: bool) {
+    /// `did*Files` for the servers that want it; tree operations and workspace edits both use it.
+    pub(super) fn lsp_did_file_op(&self, op: &FsOp, is_dir: bool) {
         let (_, did) = file_op_methods(op);
         let Some(params) = file_op_params(op) else { return };
         for name in self.file_op_servers(did, op, is_dir) {
@@ -300,6 +305,36 @@ mod tests {
         assert!(n.exists() && !m.exists());
         assert_eq!(std::fs::read_to_string(&lib).unwrap(), "mod n;\n");
         assert_eq!(server.recv("workspace/didRenameFiles").await["params"]["files"], files);
+        // The tree op is notified once, not again for the ops of the server's own edit.
+        let extra = sent(&app, &mut server).await;
+        assert!(extra.iter().all(|m| m["method"] != "workspace/didRenameFiles"), "{extra:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_server_edit_before_a_tree_rename_notifies_its_own_creation_once() {
+        let (mut app, dir) = test_app("fileop-own-creation");
+        let root = app.workspace.root.clone();
+        let mut servers = with_fake_servers(&mut app, caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", "fn main() {}\n").await;
+        let (m, n, k) = (root.join("m.rs"), root.join("n.rs"), root.join("k.rs"));
+        std::fs::write(&m, "").unwrap();
+        app.run_fs_op(rename(&m, &n));
+        let req = server.recv("workspace/willRenameFiles").await;
+        let edit = json!({"documentChanges": [{"kind": "create", "uri": sync::uri(&k).unwrap().to_string()}]});
+        server.respond(req["id"].as_i64().unwrap(), edit);
+        handle_next(&mut app, is_lsp).await;
+        handle_next(&mut app, |m| matches!(m, AppMsg::EditsApplied { .. })).await;
+        handle_next(&mut app, fs_op_done).await;
+        assert!(k.exists() && n.exists() && !m.exists());
+        let msgs = sent(&app, &mut server).await;
+        let did: Vec<(&str, &Value)> = msgs
+            .iter()
+            .filter_map(|x| x["method"].as_str().filter(|s| s.starts_with("workspace/did")).map(|s| (s, &x["params"]["files"])))
+            .collect();
+        let (ku, mu, nu) = (sync::uri(&k).unwrap().to_string(), sync::uri(&m).unwrap().to_string(), sync::uri(&n).unwrap().to_string());
+        let (created, renamed) = (json!([{"uri": ku}]), json!([{"oldUri": mu, "newUri": nu}]));
+        assert_eq!(did, vec![("workspace/didCreateFiles", &created), ("workspace/didRenameFiles", &renamed)]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

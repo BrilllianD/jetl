@@ -1054,13 +1054,16 @@ impl App {
                         }
                         Err(e) => Some((e, f.index)),
                     },
-                    DiskStep::Op { index, op } => match op.run() {
-                        Ok(()) => {
-                            ops.push(op);
-                            None
+                    DiskStep::Op { index, op } => {
+                        let is_dir = super::files::op_is_dir(&op);
+                        match op.run() {
+                            Ok(()) => {
+                                ops.push((op, is_dir));
+                                None
+                            }
+                            Err(e) => Some((format!("Cannot {}: {e}", op.describe(&root)), Some(index))),
                         }
-                        Err(e) => Some((format!("Cannot {}: {e}", op.describe(&root)), Some(index))),
-                    },
+                    }
                 };
                 // Abort: the steps after a failed one are not made.
                 if let Some((e, index)) = error {
@@ -1105,10 +1108,10 @@ impl App {
         origin: EditOrigin,
         done: EditCounts,
         mut errors: Vec<String>,
-        ops: Vec<FsOp>,
+        ops: Vec<(FsOp, bool)>,
         failed: Option<u32>,
     ) {
-        for op in &ops {
+        for (op, _) in &ops {
             match op {
                 FsOp::Rename { from, to, .. } => {
                     // History first: snapshots of the old path queued until now are carried.
@@ -1141,6 +1144,10 @@ impl App {
         if !ops.is_empty() {
             // The renamed documents: didClose of the old URI, didOpen of the new.
             self.lsp_sync();
+        }
+        // After the sync, before any `workspace/applyEdit` answer below.
+        for (op, is_dir) in &ops {
+            self.lsp_did_file_op(op, *is_dir);
         }
         let ops_text = describe_ops(&ops, &self.workspace.root);
         let file_op_seq = if let EditOrigin::FileOp { seq, .. } = &origin { Some(*seq) } else { None };
@@ -1201,7 +1208,7 @@ impl App {
 
 /// The file operations made, for messages: "created a.rs, renamed b.rs to
 /// c.rs" (three at most, then how many more); `None` when there are none.
-fn describe_ops(ops: &[FsOp], root: &Path) -> Option<String> {
+fn describe_ops(ops: &[(FsOp, bool)], root: &Path) -> Option<String> {
     if ops.is_empty() {
         return None;
     }
@@ -1209,7 +1216,7 @@ fn describe_ops(ops: &[FsOp], root: &Path) -> Option<String> {
     let mut text = ops
         .iter()
         .take(3)
-        .map(|op| match op {
+        .map(|(op, _)| match op {
             FsOp::Create { path, .. } => format!("created {}", rel(path)),
             FsOp::Rename { from, to, .. } => format!("renamed {} to {}", rel(from), rel(to)),
             FsOp::Delete { path, .. } => format!("deleted {}", rel(path)),
@@ -2285,6 +2292,84 @@ mod tests {
         app.perform(Action::Editor(EditorAction::Undo));
         assert_eq!(text(&app), A);
         assert!(c.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `caps()` plus the file operations the `did*Files` tests listen to.
+    fn did_files_caps() -> Value {
+        let mut c = caps();
+        c["workspace"] = json!({"fileOperations": {
+            "didCreate": {"filters": [{"pattern": {"glob": "**/*.rs"}}]},
+            "didRename": {"filters": [{"scheme": "file", "pattern": {"glob": "**/*.rs", "matches": "file"}}]},
+            "didDelete": {"filters": [{"scheme": "file", "pattern": {"glob": "**", "matches": "folder"}}]},
+        }});
+        c
+    }
+
+    #[tokio::test]
+    async fn workspace_edit_file_operations_send_did_files_in_order() {
+        let (mut app, dir) = test_app("lsp-did-files");
+        let mut servers = with_fake_servers(&mut app, did_files_caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        let root = app.workspace.root.clone();
+        let (n, m, c, old, d) = (root.join("n.rs"), root.join("m.rs"), root.join("c.rs"), root.join("old.txt"), root.join("d"));
+        std::fs::write(&m, "").unwrap();
+        std::fs::write(&old, "old\n").unwrap();
+        std::fs::create_dir(&d).unwrap();
+        std::fs::write(d.join("x.txt"), "x\n").unwrap();
+        server.request(
+            60,
+            "workspace/applyEdit",
+            json!({"edit": {"documentChanges": [
+                {"kind": "create", "uri": uri(&n)},
+                {"kind": "rename", "oldUri": uri(&m), "newUri": uri(&c)},
+                {"kind": "delete", "uri": uri(&old)},
+                {"kind": "delete", "uri": uri(&d), "options": {"recursive": true}},
+            ]}}),
+        );
+        handle_next(&mut app, is_lsp).await;
+        handle_next(&mut app, applied).await;
+        let msgs = sent(&app, &mut server).await;
+        let did: Vec<(&str, &Value)> = msgs
+            .iter()
+            .filter_map(|m| m["method"].as_str().filter(|x| x.starts_with("workspace/did")).map(|x| (x, &m["params"]["files"])))
+            .collect();
+        let want = [
+            ("workspace/didCreateFiles", json!([{"uri": uri(&n)}])),
+            ("workspace/didRenameFiles", json!([{"oldUri": uri(&m), "newUri": uri(&c)}])),
+            ("workspace/didDeleteFiles", json!([{"uri": uri(&d)}])),
+        ];
+        assert_eq!(did.len(), 3, "{did:?}");
+        for (got, (method, files)) in did.iter().zip(&want) {
+            assert_eq!((got.0, got.1), (*method, files));
+        }
+        let last_did = msgs.iter().rposition(|m| m["method"].as_str().is_some_and(|x| x.starts_with("workspace/did"))).unwrap();
+        let answer = msgs.iter().position(|m| m.get("method").is_none() && m["id"] == 60).expect("the applyEdit answer");
+        assert!(answer > last_did, "the answer comes after the notifications");
+        assert_eq!(msgs[answer]["result"], json!({"applied": true}));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_rename_answer_moving_a_file_sends_did_rename_files() {
+        let (mut app, dir) = test_app("lsp-rename-did-files");
+        let mut servers = with_fake_servers(&mut app, did_files_caps());
+        app.config.lsp.rename_preview = false;
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", A).await;
+        let root = app.workspace.root.clone();
+        let (a, c) = (root.join("a.rs"), root.join("c.rs"));
+        app.editor.active_buffer_mut().unwrap().goto_line(1, 18);
+        app.perform(Action::Lsp(LspAction::Rename));
+        answer(&mut app, &mut server, "textDocument/prepareRename", range(1, 18, 1, 21)).await;
+        let d = app.dialog.take().unwrap();
+        app.finish_dialog(d.id, DialogResult::Text("renamed".into()));
+        let we = json!({"documentChanges": [{"kind": "rename", "oldUri": uri(&a), "newUri": uri(&c)}]});
+        answer(&mut app, &mut server, "textDocument/rename", we).await;
+        handle_next(&mut app, applied).await;
+        let msgs = sent(&app, &mut server).await;
+        let renames: Vec<&Value> = msgs.iter().filter(|m| m["method"] == "workspace/didRenameFiles").collect();
+        assert_eq!(renames.len(), 1, "{msgs:?}");
+        assert_eq!(renames[0]["params"]["files"], json!([{"oldUri": uri(&a), "newUri": uri(&c)}]));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
