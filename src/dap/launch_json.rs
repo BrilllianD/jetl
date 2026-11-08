@@ -619,7 +619,7 @@ mod tests {
         let i = read(r#"{"configurations": {}}"#);
         assert_eq!((i.entries.len(), i.warnings), (0, vec![".vscode/launch.json: configurations is not a list".to_string()]));
         let i = read("[]");
-        assert_eq!(i.warnings.len(), 1);
+        assert_eq!(i.warnings, vec![".vscode/launch.json: the top level is not an object".to_string()]);
     }
 
     #[test]

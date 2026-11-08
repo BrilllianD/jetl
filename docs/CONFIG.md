@@ -452,7 +452,8 @@ the process and leaves it running. A value other than `launch` or `attach` is an
 Run > Attach to Process… needs no block: it lists the running processes and
 attaches gdb to the one chosen. A block may write `launch = { pid = "${command:pickProcess}" }`
 to ask for the process instead: Debug then opens the same picker and attaches to the one chosen (Escape starts
-nothing); such a block cannot have a `build`, and it is refused with a toast. Verified under gdb 17.2 only; other adapters
+nothing). A session that is running when Debug is pressed ends before the picker opens, so Escape then leaves no
+session; Run > Attach to Process… keeps it until a process is chosen. Such a block cannot have a `build`, and it is refused with a toast. Verified under gdb 17.2 only; other adapters
 name the pid argument differently and were not tried.
 
 The launch arguments are built in this order, each replacing the same
@@ -518,7 +519,7 @@ codelldb and debugpy were not tried.
 Which entries debug: `type` `cppdbg` with `MIMode` `gdb` or none, and `type` `gdb`, both with the `gdb` adapter
 (`miDebuggerPath` is ignored: the command is `[debug.adapters.gdb]`'s). Every other `type` (`lldb`, `codelldb`,
 `debugpy`, `python`, `go`, `node`, `pwa-node`, `cppdbg` with another `MIMode`, no `type`) is listed, tagged
-`<type> (not supported)`, and Debug refuses it with a toast. `request` must be `launch` or `attach`; any other value
+`launch.json` with the command text `<type> (not supported)`, and Debug refuses it with a toast. `request` must be `launch` or `attach`; any other value
 skips the entry with a warning.
 
 | launch.json key | Becomes |
@@ -538,7 +539,8 @@ ignored with no warning. `inputs`, `compounds` and `version` are ignored too.
 Variables: `${workspaceFolder}` and `${file}` are filled when Debug starts, as in a debug block. `${env:NAME}` is
 filled when the list is read (an unset variable becomes empty, as in VS Code), so a value that itself holds
 `${file}` is filled later. `${command:pickProcess}` is supported as a whole `processId`: Debug opens Attach to
-Process and attaches to the chosen process (Escape starts nothing). Any other `${...}` skips the entry with a
+Process and attaches to the chosen process (Escape starts nothing; a running session has already ended, as for a
+`run.toml` block). Any other `${...}` skips the entry with a
 warning that names it. `preLaunchTask` is not run: the entry is kept, a warning says to build first, `postDebugTask` is not run either. Warnings are toasts, shown once each until they change; an unreadable
 file or invalid JSON gives one warning and no entries.
 
