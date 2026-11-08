@@ -198,7 +198,7 @@ Ranked after 0.9.0 against JetBrains, Zed, Helix and VS Code; tracked as yman ep
 | 9 | Bracket pair colours | S | Done: `()[]{}` tokens from the tree (strings and comments skipped, injections included) coloured by nesting depth in theme styles bracket_1..3, editor.bracket_pair_colours (Live, off by default) |
 | 10 | New file from a template | S | Done: New > From Template… in the Project tree, templates in ~/.config/jetl/templates/ and .jetl/templates/, snippet syntax and variables, tabstops |
 | 11 | Spell checking through a language server | S-M | Done: `extra = true` servers next to the main one (sync, diagnostics, file notifications only); CONFIG recipes for typos-lsp and harper-ls |
-| 12 | Instruction stepping and disassembly | M | `ResumeKind`, DAP `disassemble` |
+| 12 | Instruction stepping and disassembly | M | `ResumeKind`, DAP `disassemble`. Done: next/stepIn with granularity instruction (Ctrl+Shift+F7, Alt+Shift+F7), Disassembly tab in the Debug window (32 instructions forward from an anchor kept while the pc stays in view; gdb cannot disassemble backwards) |
 | 13 | Keyboard macros | M | dispatcher, `Action` |
 | 14 | Shelve and unshelve changes | M | DiffDoc patches, `git apply` |
 | 15 | Find in Files results in an editor tab | M | Find panel, diff tabs |

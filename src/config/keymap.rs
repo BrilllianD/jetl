@@ -548,6 +548,8 @@ impl Keymap {
         out.push_str("Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)).\n");
         out.push_str("While the Terminal window has focus only its `terminal` table is searched: every other\n");
         out.push_str("key goes to the shell, and Esc Esc at the shell prompt focuses the editor.\n");
+        out.push_str("Alt+Shift+F7 steps into a call by one machine instruction; JetBrains binds it to Force Step\n");
+        out.push_str("Into, which jetl does not have.\n");
         for ctx in self.context_order() {
             let t = &self.tables[ctx];
             let mut rows: Vec<(usize, usize, String, &Action)> = t

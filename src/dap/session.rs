@@ -144,6 +144,17 @@ pub enum ResumeKind {
     Next,
     StepIn,
     StepOut,
+    /// `next` with granularity `instruction`: one machine instruction, over a call.
+    NextInstruction,
+    /// `stepIn` with granularity `instruction`: one machine instruction, into a call.
+    StepInInstruction,
+}
+
+impl ResumeKind {
+    /// True for the two steps by machine instruction.
+    pub fn instruction(self) -> bool {
+        matches!(self, ResumeKind::NextInstruction | ResumeKind::StepInInstruction)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -185,6 +196,10 @@ pub enum TagKind {
     Evaluate {
         seq: u64,
         expression: String,
+    },
+    /// The selected frame's disassembly; seq is the panel's selection seq when it was asked.
+    Disassemble {
+        seq: u64,
     },
 }
 
@@ -687,15 +702,23 @@ impl Session {
                 if self.phase != Phase::Suspended {
                     return;
                 }
+                if kind.instruction() && !self.caps.supports_stepping_granularity {
+                    out.push(Action::Emit(DapBody::Info("The debug adapter cannot step by instruction".into())));
+                    return;
+                }
                 self.epoch += 1;
                 let command = match kind {
                     ResumeKind::Continue => "continue",
-                    ResumeKind::Next => "next",
-                    ResumeKind::StepIn => "stepIn",
+                    ResumeKind::Next | ResumeKind::NextInstruction => "next",
+                    ResumeKind::StepIn | ResumeKind::StepInInstruction => "stepIn",
                     ResumeKind::StepOut => "stepOut",
                 };
+                let mut arguments = json!({ "threadId": thread });
+                if kind.instruction() {
+                    arguments["granularity"] = json!("instruction");
+                }
                 let kind = PendingKind::Step { epoch: self.epoch, resumed: Some(thread) };
-                self.send(command, json!({ "threadId": thread }), kind, now, out);
+                self.send(command, arguments, kind, now, out);
                 self.set_phase(Phase::Running, out);
                 out.push(Action::Emit(DapBody::Running { epoch: self.epoch }));
             }
@@ -1662,6 +1685,55 @@ mod tests {
                 assert_eq!(h.last[1], Action::Emit(DapBody::Phase(Phase::Running)));
                 assert_eq!(h.last[2], Action::Emit(DapBody::Running { epoch: 2 }));
             }
+        }
+    }
+
+    fn suspended_with_granularity() -> H {
+        let mut h = H::new(&[]);
+        let mut c = caps();
+        c["supportsSteppingGranularity"] = json!(true);
+        launch_deferred_with(&mut h, c);
+        h.take_emitted();
+        h.event("stopped", json!({"threadId": 7, "reason": "breakpoint"}));
+        h
+    }
+
+    #[test]
+    fn instruction_steps_send_granularity() {
+        for (kind, name) in [(ResumeKind::NextInstruction, "next"), (ResumeKind::StepInInstruction, "stepIn")] {
+            let mut h = suspended_with_granularity();
+            let epoch = h.s.epoch();
+            h.take_emitted();
+            h.cmd(Command::Resume { kind, thread: 7 });
+            let last = h.requests(name).last().map(|v| v["arguments"].clone());
+            assert_eq!(last, Some(json!({"threadId": 7, "granularity": "instruction"})), "{name}");
+            assert_eq!(h.s.epoch(), epoch + 1);
+            assert_eq!(h.phase(), Phase::Running);
+            let emitted = h.take_emitted();
+            assert!(emitted.contains(&DapBody::Phase(Phase::Running)));
+            assert!(emitted.contains(&DapBody::Running { epoch: epoch + 1 }));
+        }
+    }
+
+    #[test]
+    fn line_steps_send_no_granularity() {
+        for kind in [ResumeKind::Continue, ResumeKind::Next, ResumeKind::StepIn, ResumeKind::StepOut] {
+            let mut h = suspended_with_granularity();
+            h.cmd(Command::Resume { kind, thread: 7 });
+            let Action::Send(Outgoing::Request { arguments, .. }) = &h.last[0] else { panic!("no request") };
+            assert_eq!(*arguments, json!({"threadId": 7}), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn instruction_step_without_the_capability_is_refused() {
+        for kind in [ResumeKind::NextInstruction, ResumeKind::StepInInstruction] {
+            let mut h = suspended();
+            h.take_emitted();
+            let (epoch, sent) = (h.s.epoch(), h.sent.len());
+            h.cmd(Command::Resume { kind, thread: 7 });
+            assert_eq!((h.s.epoch(), h.sent.len(), h.phase()), (epoch, sent, Phase::Suspended));
+            assert_eq!(h.take_emitted(), vec![DapBody::Info("The debug adapter cannot step by instruction".into())]);
         }
     }
 

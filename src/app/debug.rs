@@ -22,12 +22,13 @@ use crate::dap::config::{
     load_debug_blocks, needs_artifact, process_env, resolve_build, resolve_launch, test_block,
 };
 use crate::dap::console::{ConsoleGate, MAX_QUEUED, forward_output, spawn_console};
+use crate::dap::disasm::{DISASM_COUNT, DisasmRow};
 use crate::dap::launch_json;
 use crate::dap::panel::{BuildStage, DebugTab, FrameRow, MAX_WATCHES};
 use crate::dap::procs;
 use crate::dap::protocol::{
-    Breakpoint, BreakpointEvent, Capabilities, EvaluateBody, ExceptionFilter, OutputEvent, Scope, ScopesBody, StackFrame, StackTraceBody,
-    StoppedEvent, Thread, ThreadsBody, Variable, VariablesBody, body_of,
+    Breakpoint, BreakpointEvent, Capabilities, DisassembleBody, DisassembledInstruction, EvaluateBody, ExceptionFilter, OutputEvent, Scope,
+    ScopesBody, StackFrame, StackTraceBody, StoppedEvent, Thread, ThreadsBody, Variable, VariablesBody, body_of,
 };
 use crate::dap::session::{
     Command, DapTag, Phase, ResumeKind, SessionId, SessionSpec, SourceBreakpoint, SourceBreakpoints, TagKind, chosen_filters,
@@ -105,6 +106,8 @@ pub(super) struct Live {
     pub(super) run_to_quiet: Option<RunToQuiet>,
     /// The adapter's memory, watched once a second.
     pub(super) mem: MemWatch,
+    /// The last resume was an instruction step: its stop shows the top frame, source or not.
+    pub(super) instruction_step: bool,
 }
 
 /// The adapter's `VmRSS` at which one Warn is raised: gdb passes it under a program that floods its output.
@@ -635,7 +638,37 @@ fn frame_row(frame: &StackFrame, root: &Path) -> FrameRow {
     let place = location
         .as_ref()
         .map(|(p, line)| format!("{}:{}", one_line(&p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()), line + 1));
-    FrameRow { id: frame.id, name: one_line(&frame.name), place, location }
+    let pc = frame.instruction_pointer_reference.as_deref().map(one_line).filter(|s| !s.is_empty());
+    FrameRow { id: frame.id, name: one_line(&frame.name), place, location, pc }
+}
+
+/// The rows of a `disassemble` answer. `place` (`demo.c:10`) is set where the source line changes.
+fn disasm_rows(instructions: &[DisassembledInstruction]) -> Vec<DisasmRow> {
+    let mut previous: Option<(String, i64)> = None;
+    instructions
+        .iter()
+        .map(|i| {
+            let name = i.location.as_ref().and_then(|l| {
+                l.name
+                    .as_deref()
+                    .filter(|n| !n.is_empty())
+                    .map(one_line)
+                    .or_else(|| l.path.as_deref().and_then(|p| Path::new(p).file_name()).map(|n| one_line(&n.to_string_lossy())))
+            });
+            let at = match (name, i.line) {
+                (Some(name), Some(line)) if line > 0 && !name.is_empty() => Some((name, line)),
+                _ => None,
+            };
+            let place = at.as_ref().filter(|a| previous.as_ref() != Some(a)).map(|(name, line)| format!("{name}:{line}"));
+            previous = at;
+            DisasmRow {
+                address: one_line(&i.address),
+                symbol: i.symbol.as_deref().map(one_line).filter(|s| !s.is_empty()),
+                instruction: one_line(&i.instruction.replace('\t', " ")),
+                place,
+            }
+        })
+        .collect()
 }
 
 /// The file and 0-based line a frame is at, when it has a source file: not when `line` is 0, the source is absent
@@ -802,6 +835,9 @@ impl App {
             DebugAction::StepOver => self.debug_resume(ResumeKind::Next),
             DebugAction::StepInto => self.debug_resume(ResumeKind::StepIn),
             DebugAction::StepOut => self.debug_resume(ResumeKind::StepOut),
+            DebugAction::StepOverInstruction => self.debug_resume(ResumeKind::NextInstruction),
+            DebugAction::StepIntoInstruction => self.debug_resume(ResumeKind::StepInInstruction),
+            DebugAction::ShowDisassembly => self.debug_show_disassembly(),
             DebugAction::Pause => self.debug_pause(),
             DebugAction::ShowExecutionPoint => self.debug_show_execution_point(),
             DebugAction::ChooseThread => self.debug_choose_thread(),
@@ -1221,6 +1257,7 @@ impl App {
             run_to: None,
             run_to_quiet: None,
             mem: MemWatch::default(),
+            instruction_step: false,
         });
         self.notify(Level::Info, format!("Debugging {} with {}", p.name, p.adapter.name));
         if let Some(c) = lost_cwd {
@@ -1350,6 +1387,7 @@ impl App {
         } else {
             self.debug.exception_filters.insert(adapter, merged);
         }
+        self.debug_panel.set_can_disassemble(capabilities.supports_disassemble_request);
         self.debug_refresh_breakpoint_list();
     }
 
@@ -1749,7 +1787,8 @@ impl App {
         | TagKind::Scopes { seq }
         | TagKind::Variables { seq, .. }
         | TagKind::Watch { seq, .. }
-        | TagKind::Evaluate { seq, .. } = tag.kind
+        | TagKind::Evaluate { seq, .. }
+        | TagKind::Disassemble { seq } = tag.kind
             && seq != self.debug_panel.selection_seq()
         {
             tracing::debug!("dropping the answer of an older choice");
@@ -1760,6 +1799,9 @@ impl App {
         }
         if let TagKind::Evaluate { expression, .. } = tag.kind {
             return self.debug_evaluate_answer(expression, result);
+        }
+        if matches!(tag.kind, TagKind::Disassemble { .. }) {
+            return self.debug_disasm_answer(result);
         }
         if matches!(tag.kind, TagKind::Scopes { .. } | TagKind::Variables { .. } | TagKind::Watch { .. }) {
             return self.debug_vars_answer(tag.kind, result);
@@ -1795,6 +1837,7 @@ impl App {
                     | TagKind::Variables { .. }
                     | TagKind::Watch { .. }
                     | TagKind::Evaluate { .. }
+                    | TagKind::Disassemble { .. }
                     | TagKind::StartCheck { .. } => return,
                 };
                 return self.notify(Level::Warn, format!("Could not read the {what}: {e}"));
@@ -1842,7 +1885,8 @@ impl App {
                 let stands = self.debug_stop_stands();
                 let frames = body_of::<StackTraceBody>("stackTrace", body).stack_frames;
                 let root = self.workspace.root.clone();
-                let at = stop_frame(&frames, &root);
+                // After an instruction step the top frame stays, source or not: the pc is where the program is.
+                let at = if self.debug.session.as_ref().is_some_and(|l| l.instruction_step) { 0 } else { stop_frame(&frames, &root) };
                 match frames.get(at) {
                     Some(frame) => self.debug_show_frame(frame, stands),
                     None => {
@@ -1872,6 +1916,7 @@ impl App {
             | TagKind::Variables { .. }
             | TagKind::Watch { .. }
             | TagKind::Evaluate { .. }
+            | TagKind::Disassemble { .. }
             | TagKind::StartCheck { .. } => {}
         }
     }
@@ -2008,6 +2053,50 @@ impl App {
         }
     }
 
+    /// Asks for the selected frame's instructions while the Disassembly tab shows during a pause, once per selection seq.
+    pub(super) fn debug_sync_disasm(&mut self) {
+        if !self.debug.suspended() || !self.debug_window_shown() {
+            return;
+        }
+        let Some(epoch) = self.debug.session.as_ref().map(|l| l.epoch) else { return };
+        if let Some((reference, seq)) = self.debug_panel.disasm_wanted() {
+            let arguments =
+                json!({"memoryReference": reference, "instructionOffset": 0, "instructionCount": DISASM_COUNT, "resolveSymbols": true});
+            let tag = DapTag { epoch, kind: TagKind::Disassemble { seq } };
+            self.debug.send(Command::Request { command: "disassemble".into(), arguments, tag });
+            self.dirty_frame = true;
+        }
+    }
+
+    /// An answer to `disassemble`, already known to carry the current seq. A failure stays in the tab and never
+    /// raises a toast.
+    fn debug_disasm_answer(&mut self, result: Result<Value, String>) {
+        // `Stop` bumps neither the epoch nor the seq, so an answer can still arrive while `Stopping`.
+        if self.debug.phase() != Some(Phase::Suspended) {
+            return tracing::debug!("dropping a disassembly answer outside a pause");
+        }
+        match result {
+            Ok(body) => {
+                let rows = disasm_rows(&body_of::<DisassembleBody>("disassemble", body).instructions);
+                self.debug_panel.show_disasm(rows);
+            }
+            Err(e) => {
+                tracing::debug!("dap: disassemble failed: {e}");
+                self.debug_panel.disasm_failed(var_text(&e));
+            }
+        }
+        self.dirty_frame = true;
+    }
+
+    /// Run > Show Disassembly: the Debug window, focused, on its Disassembly tab.
+    fn debug_show_disassembly(&mut self) {
+        if !self.layout.is_visible(ToolWindowId::Debug) {
+            self.layout.show(ToolWindowId::Debug);
+        }
+        self.focus.set(PanelId::Debug);
+        self.debug_panel.set_tab(DebugTab::Disassembly);
+    }
+
     /// No frame or thread was chosen since the stop began, so the stop's own answer may fill the list and open the file.
     fn debug_stop_stands(&self) -> bool {
         self.debug.session.as_ref().is_some_and(|l| l.stop_seq == self.debug_panel.selection_seq())
@@ -2025,7 +2114,7 @@ impl App {
             }
             None => {
                 self.editor.set_execution_point(None);
-                if open {
+                if open && !(self.debug_window_shown() && self.debug_panel.tab() == DebugTab::Disassembly) {
                     self.notify(Level::Info, format!("Paused in {}, no source", one_line(&frame.name)));
                 }
             }
@@ -2139,6 +2228,9 @@ impl App {
         };
         // A breakpoint cleared since the last tick has to reach the adapter before the program runs.
         self.debug_sync_breakpoints();
+        if let Some(live) = self.debug.session.as_mut() {
+            live.instruction_step = kind.instruction();
+        }
         self.debug.send(Command::Resume { kind, thread });
     }
 
@@ -2240,7 +2332,8 @@ impl App {
         if self.debug.phase() != Some(Phase::Running) {
             return self.notify(Level::Info, "No running debug session");
         }
-        let Some(live) = self.debug.session.as_ref() else { return };
+        let Some(live) = self.debug.session.as_mut() else { return };
+        live.instruction_step = false;
         match live.thread {
             Some(thread) => self.debug.send(Command::Pause { thread }),
             None => {
@@ -6563,6 +6656,10 @@ pub(crate) mod tests {
         assert_eq!(app.debug_panel.tab(), DebugTab::Frames);
         app.handle_key(key(KeyCode::Left, KeyModifiers::ALT));
         assert_eq!(app.debug_panel.tab(), DebugTab::Console);
+        app.handle_key(key(KeyCode::Left, KeyModifiers::ALT));
+        assert_eq!(app.debug_panel.tab(), DebugTab::Disassembly);
+        app.handle_key(key(KeyCode::Right, KeyModifiers::ALT));
+        assert_eq!(app.debug_panel.tab(), DebugTab::Console);
         // Elsewhere the keys are the editor's.
         app.focus.set(PanelId::Project);
         assert_eq!(app.editor.active_path(), Some(b.as_path()));
@@ -8018,9 +8115,13 @@ pub(crate) mod tests {
         assert_eq!(var_rows(&mut app).last().map(String::as_str), Some("▾ Registers …"));
         app.handle_key(k(KeyCode::Left));
         assert_eq!(var_rows(&mut app).last().map(String::as_str), Some("▸ Registers …"));
-        // The tab keys walk Frames, Variables, Console.
+        // The tab keys walk Frames, Variables, Disassembly, Console.
+        app.handle_key(key(KeyCode::Right, KeyModifiers::ALT));
+        assert_eq!(app.debug_panel.tab(), DebugTab::Disassembly);
         app.handle_key(key(KeyCode::Right, KeyModifiers::ALT));
         assert_eq!(app.debug_panel.tab(), DebugTab::Console);
+        app.handle_key(key(KeyCode::Left, KeyModifiers::ALT));
+        assert_eq!(app.debug_panel.tab(), DebugTab::Disassembly);
         app.handle_key(key(KeyCode::Left, KeyModifiers::ALT));
         assert_eq!(app.debug_panel.tab(), DebugTab::Variables);
         let _ = std::fs::remove_dir_all(&dir);
@@ -10395,6 +10496,298 @@ pub(crate) mod tests {
         app.debug_sync_vars();
         let sent = sent_since(&mut fake).await;
         assert!(sent.iter().all(|c| c != "scopes"), "{sent:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- instruction stepping and the Disassembly tab (yman 464) ----
+
+    fn disasm_caps() -> Value {
+        let mut c = caps();
+        c["supportsSteppingGranularity"] = json!(true);
+        c["supportsDisassembleRequest"] = json!(true);
+        c
+    }
+
+    fn frame_ip(id: i64, name: &str, path: &Path, line: i64, ip: &str) -> Value {
+        let mut f = frame_at(id, name, path, line);
+        f["instructionPointerReference"] = json!(ip);
+        f
+    }
+
+    fn setup_with(name: &str, caps: Value) -> (App, PathBuf, UnboundedReceiver<FakeAdapter>) {
+        let (mut app, dir) = test_app(name);
+        let fakes = with_fake_adapters(&mut app, caps, Order::LaunchEarly);
+        write_run_toml(&app, DEMO);
+        (app, dir, fakes)
+    }
+
+    /// A stop on thread 7 whose only frame is `main` at `path`:`line` with pc `ip`, handled up to the frame's pc.
+    async fn stop_ip(app: &mut App, fake: &mut FakeAdapter, path: &Path, line: i64, ip: &str) {
+        let frames = vec![frame_ip(0, "main", path, line, ip)];
+        stop_frames(app, fake, 7, frames, json!([{"id": 7, "name": "t"}])).await;
+        let ip = ip.to_string();
+        pump_until(app, |a| a.debug_panel.selected_frame().and_then(|f| f.pc.clone()) == Some(ip.clone())).await;
+    }
+
+    /// A running session stopped at `path`:`line`, pc `ip`; the Debug window shows its Disassembly tab.
+    async fn paused_disasm(app: &mut App, fakes: &mut UnboundedReceiver<FakeAdapter>, path: &Path, line: i64, ip: &str) -> FakeAdapter {
+        let (mut fake, _) = running(app, fakes).await;
+        stop_ip(app, &mut fake, path, line, ip).await;
+        app.debug_panel.set_tab(DebugTab::Disassembly);
+        fake
+    }
+
+    fn instr(address: &str, text: &str) -> Value {
+        json!({"address": address, "instruction": text, "instructionBytes": "90"})
+    }
+
+    /// `n` instructions from `first`, 4 bytes apart.
+    fn listing_from(first: u64, n: usize) -> Value {
+        json!({"instructions": (0..n).map(|i| instr(&format!("{:#x}", first + 4 * i as u64), "nop")).collect::<Vec<_>>()})
+    }
+
+    /// Performs a step, takes its request (`command`), answers it and waits for the app to see the program run.
+    async fn step_sent(app: &mut App, fake: &mut FakeAdapter, action: DebugAction, command: &str) -> Value {
+        let before = epoch_of(app);
+        app.perform(Action::Debug(action));
+        let req = fake.recv(command).await;
+        fake.respond(&req, json!({}));
+        dap_until(app, |x| epoch_of(x) > before).await;
+        req
+    }
+
+    /// Ticks and takes the `disassemble` request.
+    async fn asked_disassemble(app: &mut App, fake: &mut FakeAdapter) -> Value {
+        app.on_tick();
+        fake.recv("disassemble").await
+    }
+
+    async fn shown_disasm(app: &mut App) {
+        pump_until(app, |a| a.debug_panel.disasm().load == crate::dap::disasm::DisasmLoad::Shown).await;
+    }
+
+    #[tokio::test]
+    async fn instruction_keys_by_focus() {
+        let (mut app, dir, mut fakes) = setup_with("instr-keys", disasm_caps());
+        let a = six(&mut app);
+        let _fake = paused(&mut app, &mut fakes, &a, 3).await;
+        let dbg = |d| Some(Action::Debug(d));
+        let over = key(KeyCode::F(7), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        let into = key(KeyCode::F(7), KeyModifiers::ALT | KeyModifiers::SHIFT);
+        for panel in [PanelId::Editor, PanelId::Project, PanelId::Git, PanelId::Debug] {
+            app.focus.set(panel);
+            assert_eq!(action_of(&mut app, over), dbg(DebugAction::StepOverInstruction), "{panel:?}");
+            assert_eq!(action_of(&mut app, into), dbg(DebugAction::StepIntoInstruction), "{panel:?}");
+        }
+        press(&mut app, F9);
+        dap_until(&mut app, |x| x.debug.phase() == Some(Phase::Running)).await;
+        app.focus.set(PanelId::Editor);
+        assert_eq!(action_of(&mut app, over), None, "running");
+        assert_eq!(action_of(&mut app, into), None, "running");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn instruction_steps_go_out_with_granularity() {
+        let (mut app, dir, mut fakes) = setup_with("instr-wire", disasm_caps());
+        let a = six(&mut app);
+        let mut fake = paused(&mut app, &mut fakes, &a, 3).await;
+        let req = step_sent(&mut app, &mut fake, DebugAction::StepOverInstruction, "next").await;
+        assert_eq!(req["arguments"], json!({"threadId": 7, "granularity": "instruction"}));
+        stop_at(&mut app, &mut fake, 7, &a, 3).await;
+        let req = step_sent(&mut app, &mut fake, DebugAction::StepIntoInstruction, "stepIn").await;
+        assert_eq!(req["arguments"], json!({"threadId": 7, "granularity": "instruction"}));
+        stop_at(&mut app, &mut fake, 7, &a, 3).await;
+        let req = step_sent(&mut app, &mut fake, DebugAction::StepOver, "next").await;
+        assert_eq!(req["arguments"], json!({"threadId": 7}));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn instruction_step_without_the_capability_toasts() {
+        let (mut app, dir, mut fakes) = setup("instr-refused", Order::LaunchEarly);
+        let a = six(&mut app);
+        let mut fake = paused(&mut app, &mut fakes, &a, 3).await;
+        app.perform(Action::Debug(DebugAction::StepOverInstruction));
+        pump_until(&mut app, |x| texts(x).iter().any(|t| t.contains("cannot step by instruction"))).await;
+        assert_eq!(last(&app), (Level::Info, "The debug adapter cannot step by instruction".to_string()));
+        assert_eq!(app.debug.phase(), Some(Phase::Suspended));
+        // The very next message is the new file's breakpoints: no `next` went out.
+        assert_quiet(&mut app, &mut fake, "q-instr.log").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn disassembly_is_asked_only_on_its_shown_tab() {
+        let (mut app, dir, mut fakes) = setup_with("disasm-lazy", disasm_caps());
+        let a = six(&mut app);
+        let mut fake = paused_disasm(&mut app, &mut fakes, &a, 3, "0x1000").await;
+        app.debug_panel.set_tab(DebugTab::Console);
+        quiet_twice(&mut app, &mut fake, "dq-console.log").await;
+        app.debug_panel.set_tab(DebugTab::Disassembly);
+        app.layout.hide(ToolWindowId::Debug);
+        quiet_twice(&mut app, &mut fake, "dq-hidden.log").await;
+        app.layout.show(ToolWindowId::Debug);
+        let req = asked_disassemble(&mut app, &mut fake).await;
+        assert_eq!(
+            req["arguments"],
+            json!({"memoryReference": "0x1000", "instructionOffset": 0, "instructionCount": 32, "resolveSymbols": true})
+        );
+        quiet_twice(&mut app, &mut fake, "dq-again.log").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn disassembly_shows_and_marks_the_pc() {
+        let (mut app, dir, mut fakes) = setup_with("disasm-show", disasm_caps());
+        let a = six(&mut app);
+        let mut fake = paused_disasm(&mut app, &mut fakes, &a, 3, "0x555555555139").await;
+        let req = asked_disassemble(&mut app, &mut fake).await;
+        let add = json!({"address": "0x555555555139", "instruction": "push   %rbp", "instructionBytes": "55", "symbol": "add",
+            "line": 3, "location": {"name": "demo.c", "path": "demo.c", "sourceReference": 1}});
+        let mov = json!({"address": "0x55555555513a", "instruction": "mov\t%rsp,%rbp", "instructionBytes": "48 89 e5", "line": 3,
+            "location": {"name": "demo.c", "path": "demo.c", "sourceReference": 1}});
+        let next = json!({"address": "0x55555555513d", "instruction": "mov    %edi,-0x14(%rbp)", "line": 4,
+            "location": {"name": "demo.c", "path": "demo.c", "sourceReference": 1}});
+        fake.respond(&req, json!({"instructions": [add, mov, next]}));
+        shown_disasm(&mut app).await;
+        let view = app.debug_panel.disasm();
+        assert_eq!(view.pc_row, Some(0));
+        assert_eq!(view.list.selected, 0);
+        let row = |i: usize| (view.rows[i].symbol.clone(), view.rows[i].place.clone(), view.rows[i].instruction.clone());
+        assert_eq!(row(0), (Some("add".into()), Some("demo.c:3".into()), "push   %rbp".into()));
+        assert_eq!(row(1), (None, None, "mov %rsp,%rbp".into()), "no place while the line stays; a tab is a space");
+        assert_eq!(row(2).1, Some("demo.c:4".into()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_listing_keeps_its_start_while_stepping() {
+        let (mut app, dir, mut fakes) = setup_with("disasm-anchor", disasm_caps());
+        let a = six(&mut app);
+        let mut fake = paused_disasm(&mut app, &mut fakes, &a, 3, "0x1000").await;
+        let req = asked_disassemble(&mut app, &mut fake).await;
+        assert_eq!(req["arguments"]["memoryReference"], "0x1000");
+        fake.respond(&req, listing_from(0x1000, 32));
+        shown_disasm(&mut app).await;
+        assert_eq!(app.debug_panel.disasm().pc_row, Some(0));
+        step_sent(&mut app, &mut fake, DebugAction::StepOverInstruction, "next").await;
+        stop_ip(&mut app, &mut fake, &a, 3, "0x1004").await;
+        let req = asked_disassemble(&mut app, &mut fake).await;
+        assert_eq!(req["arguments"]["memoryReference"], "0x1000", "the anchor stays while the pc is above the tail");
+        fake.respond(&req, listing_from(0x1000, 32));
+        shown_disasm(&mut app).await;
+        assert_eq!(app.debug_panel.disasm().pc_row, Some(1));
+        step_sent(&mut app, &mut fake, DebugAction::StepOverInstruction, "next").await;
+        // Row 24 of 32: 24 + 8 is not below 32.
+        stop_ip(&mut app, &mut fake, &a, 3, "0x1060").await;
+        let req = asked_disassemble(&mut app, &mut fake).await;
+        assert_eq!(req["arguments"]["memoryReference"], "0x1060");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_disassembly_answer_of_an_older_choice_is_dropped() {
+        let (mut app, dir, mut fakes) = setup_with("disasm-stale", disasm_caps());
+        let a = six(&mut app);
+        let (mut fake, _) = running(&mut app, &mut fakes).await;
+        let frames = vec![frame_ip(0, "add", &a, 3, "0x1000"), frame_ip(1, "main", &a, 5, "0x2000")];
+        stop_listed(&mut app, &mut fake, 7, frames, json!([{"id": 7, "name": "t"}])).await;
+        app.debug_panel.set_tab(DebugTab::Disassembly);
+        let old = asked_disassemble(&mut app, &mut fake).await;
+        assert_eq!(old["arguments"]["memoryReference"], "0x1000");
+        // Choose the other frame, then look at the Disassembly tab again: the new listing is asked.
+        in_frames(&mut app);
+        app.perform(Action::Debug(DebugAction::Down));
+        assert_eq!(app.debug_panel.selected_frame().unwrap().id, 1);
+        app.debug_panel.set_tab(DebugTab::Disassembly);
+        let new = asked_disassemble(&mut app, &mut fake).await;
+        assert_eq!(new["arguments"]["memoryReference"], "0x2000");
+        fake.respond(&old, listing_from(0x1000, 4));
+        handle_next(&mut app, |m| matches!(m, AppMsg::Dap(_))).await;
+        let view = app.debug_panel.disasm();
+        assert_eq!((view.load.clone(), view.rows.len()), (crate::dap::disasm::DisasmLoad::Asked, 0), "the old answer applied nowhere");
+        fake.respond(&new, listing_from(0x2000, 4));
+        shown_disasm(&mut app).await;
+        assert_eq!(app.debug_panel.disasm().rows[0].address, "0x2000");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_failed_disassembly_stays_in_the_tab() {
+        let (mut app, dir, mut fakes) = setup_with("disasm-failed", disasm_caps());
+        let a = six(&mut app);
+        let mut fake = paused_disasm(&mut app, &mut fakes, &a, 3, "0x0").await;
+        let toasts = app.notifications.len();
+        let req = asked_disassemble(&mut app, &mut fake).await;
+        fake.respond_error(&req, "Cannot access memory at address 0x0");
+        let failed = crate::dap::disasm::DisasmLoad::Failed("Cannot access memory at address 0x0".into());
+        pump_until(&mut app, |x| x.debug_panel.disasm().load == failed).await;
+        assert_eq!(app.notifications.len(), toasts, "no toast");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn no_disassemble_capability_asks_nothing() {
+        let (mut app, dir, mut fakes) = setup("disasm-no-cap", Order::LaunchEarly);
+        let a = six(&mut app);
+        let mut fake = paused_disasm(&mut app, &mut fakes, &a, 3, "0x1000").await;
+        quiet_twice(&mut app, &mut fake, "nc.log").await;
+        assert!(drawn(&mut app).contains("The adapter cannot disassemble"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_instruction_step_into_no_source_shows_the_top_frame() {
+        let (mut app, dir, mut fakes) = setup_with("disasm-plt", disasm_caps());
+        let a = six(&mut app);
+        let mut fake = paused_disasm(&mut app, &mut fakes, &a, 3, "0x1000").await;
+        let plt = || {
+            vec![
+                json!({"id": 0, "name": "printf@plt", "line": 0, "instructionPointerReference": "0x2000"}),
+                frame_ip(1, "main", &a, 3, "0x1004"),
+            ]
+        };
+        let toast = "Paused in printf@plt, no source";
+        let stack_in = |x: &App| x.debug_panel.frame(1).is_some();
+        step_sent(&mut app, &mut fake, DebugAction::StepIntoInstruction, "stepIn").await;
+        stop_frames(&mut app, &mut fake, 7, plt(), json!([{"id": 7, "name": "t"}])).await;
+        pump_until(&mut app, stack_in).await;
+        assert_eq!(app.debug_panel.selected_frame().unwrap().name, "printf@plt");
+        assert_eq!(app.debug_panel.selected_frame().unwrap().id, 0);
+        assert_eq!(point(&app), None);
+        assert!(!texts(&app).iter().any(|t| t == toast), "the Disassembly tab shows where the pc is: {:?}", texts(&app));
+        // The same stop with another tab shown says it.
+        app.debug_panel.set_tab(DebugTab::Console);
+        step_sent(&mut app, &mut fake, DebugAction::StepIntoInstruction, "stepIn").await;
+        stop_frames(&mut app, &mut fake, 7, plt(), json!([{"id": 7, "name": "t"}])).await;
+        pump_until(&mut app, stack_in).await;
+        assert!(texts(&app).iter().any(|t| t == toast), "{:?}", texts(&app));
+        // A line step keeps the first frame with a source.
+        let step = step_sent(&mut app, &mut fake, DebugAction::StepInto, "stepIn").await;
+        assert_eq!(step["arguments"], json!({"threadId": 7}));
+        stop_frames(&mut app, &mut fake, 7, plt(), json!([{"id": 7, "name": "t"}])).await;
+        pump_until(&mut app, |x| point(x).is_some()).await;
+        assert_eq!(app.debug_panel.selected_frame().unwrap().id, 1);
+        assert_eq!(point(&app), Some((a.clone(), 2)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn show_disassembly_shows_and_focuses_the_tab() {
+        let (mut app, dir) = test_app("disasm-show-window");
+        app.layout.hide(ToolWindowId::Debug);
+        app.focus.set(PanelId::Editor);
+        app.perform(Action::Debug(DebugAction::ShowDisassembly));
+        assert!(app.layout.is_visible(ToolWindowId::Debug));
+        assert!(app.focus.is(PanelId::Debug));
+        assert_eq!(app.debug_panel.tab(), DebugTab::Disassembly);
+        // Shown already: it only takes focus.
+        app.focus.set(PanelId::Editor);
+        app.debug_panel.set_tab(DebugTab::Console);
+        app.perform(Action::Debug(DebugAction::ShowDisassembly));
+        assert!(app.focus.is(PanelId::Debug));
+        assert_eq!(app.debug_panel.tab(), DebugTab::Disassembly);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

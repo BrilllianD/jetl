@@ -581,6 +581,12 @@ pub enum DebugAction {
     StepInto,
     /// Run the paused program until its frame returns.
     StepOut,
+    /// Run the paused program one machine instruction, over a call.
+    StepOverInstruction,
+    /// Run the paused program one machine instruction, into a call.
+    StepIntoInstruction,
+    /// Show the Debug window's Disassembly tab.
+    ShowDisassembly,
     /// Pause the running program.
     Pause,
     /// Open the file at the line the program is paused on.
@@ -1234,6 +1240,9 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "debug.step_over" => "Debug: Step Over", Debug(DebugAction::StepOver);
         "debug.step_into" => "Debug: Step Into", Debug(DebugAction::StepInto);
         "debug.step_out" => "Debug: Step Out", Debug(DebugAction::StepOut);
+        "debug.step_over_instruction" => "Debug: Step Over Instruction (one machine instruction, over calls)", Debug(DebugAction::StepOverInstruction);
+        "debug.step_into_instruction" => "Debug: Step Into Instruction (one machine instruction, into calls)", Debug(DebugAction::StepIntoInstruction);
+        "debug.show_disassembly" => "Debug: Show Disassembly (the Debug window's Disassembly tab, at the selected frame's pc)", Debug(DebugAction::ShowDisassembly);
         "debug.pause" => "Debug: Pause", Debug(DebugAction::Pause);
         "debug.show_execution_point" => "Debug: Show Execution Point", Debug(DebugAction::ShowExecutionPoint);
         "debug.evaluate" => "Debug: Evaluate Expression", Debug(DebugAction::Evaluate);
@@ -1420,6 +1429,8 @@ impl Action {
                 | DebugAction::StepOver
                 | DebugAction::StepInto
                 | DebugAction::StepOut
+                | DebugAction::StepOverInstruction
+                | DebugAction::StepIntoInstruction
                 | DebugAction::ShowExecutionPoint
                 | DebugAction::Evaluate
                 | DebugAction::RunToCursor,

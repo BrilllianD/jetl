@@ -1,5 +1,5 @@
 //! The Debug tool window: a toolbar (Resume, Pause, Step Over, Step Into, Step Out, Stop; each enabled by the
-//! session's phase), a tab row of its own (Frames, Variables, Console) and the tab's content. The Console is the program's
+//! session's phase), a tab row of its own (Frames, Variables, Disassembly, Console) and the tab's content. The Console is the program's
 //! output, at most `MAX_LINES` lines. Locations are underlined and open on a click, a double click or Enter, as in
 //! the Run window. The selection follows new output while it sits on the last line and that line is in view.
 //! Frames, while the program is paused, is a thread row (it opens the thread menu) above the selected thread's
@@ -7,8 +7,9 @@
 //! itself because the toolbar leaves no room for it at 80 columns. Variables, while paused, is the selected frame's
 //! scopes as a tree (`vars::VarsView`) whose children are read when a node opens; the App asks (`debug_sync_vars`)
 //! and the tree goes with the selection seq: every frame choice, thread choice and stop replaces it (`bump`), and
-//! the new tree starts with one pending watch row per watched expression, above the scopes. The title names the
-//! configuration and the state.
+//! the new tree starts with one pending watch row per watched expression, above the scopes. Disassembly, while paused,
+//! is the instructions at the selected frame's pc (`disasm::DisasmView`), asked by the App on the same seq. The title
+//! names the configuration and the state.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -19,6 +20,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use unicode_width::UnicodeWidthStr;
 
+use super::disasm::{DisasmLoad, DisasmRow, DisasmView};
 use super::protocol::Thread;
 use super::session::{Phase, SessionId};
 use super::vars::{KeptPaths, MAX_CHILDREN, TopValue, VarAsk, VarItem, VarsLoad, VarsView};
@@ -50,18 +52,20 @@ pub enum BuildStage {
 pub enum DebugTab {
     Frames,
     Variables,
+    Disassembly,
     #[default]
     Console,
 }
 
 /// The tabs in tab order.
-pub const TABS: [DebugTab; 3] = [DebugTab::Frames, DebugTab::Variables, DebugTab::Console];
+pub const TABS: [DebugTab; 4] = [DebugTab::Frames, DebugTab::Variables, DebugTab::Disassembly, DebugTab::Console];
 
 impl DebugTab {
     fn label(self) -> &'static str {
         match self {
             DebugTab::Frames => "Frames",
             DebugTab::Variables => "Variables",
+            DebugTab::Disassembly => "Disassembly",
             DebugTab::Console => "Console",
         }
     }
@@ -85,6 +89,8 @@ pub struct FrameRow {
     pub place: Option<String>,
     /// The file and 0-based line; `None` when the frame has no file.
     pub location: Option<(PathBuf, usize)>,
+    /// The adapter's instructionPointerReference, as sent; None when absent or empty.
+    pub pc: Option<String>,
 }
 
 /// Watches one run of jetl keeps.
@@ -165,6 +171,10 @@ pub struct DebugPanel {
     seq: u64,
     /// The Variables tab's tree, for the current `seq` only.
     vars: VarsView,
+    /// The Disassembly tab's listing, for the current `seq` only (its rows stay across a `bump` for the anchor).
+    disasm: DisasmView,
+    /// The adapter declared `supportsDisassembleRequest`; set at each start.
+    can_disassemble: bool,
     /// The selected thread's choices, from `threads`.
     threads: Vec<Thread>,
     /// The thread whose stack the list shows.
@@ -195,6 +205,8 @@ impl DebugPanel {
         self.stage = None;
         self.clear_stack();
         self.kept.clear();
+        self.disasm.clear();
+        self.can_disassemble = false;
     }
 
     pub fn tab(&self) -> DebugTab {
@@ -212,6 +224,36 @@ impl DebugPanel {
         self.tab = TABS[if forward { (at + 1) % n } else { (at + n - 1) % n }];
     }
 
+    /// Whether the adapter can answer `disassemble`.
+    pub fn set_can_disassemble(&mut self, can: bool) {
+        self.can_disassemble = can;
+    }
+
+    /// The `memoryReference` to disassemble from and the seq, once per seq, while the Disassembly tab shows and the
+    /// selected frame has a pc.
+    pub fn disasm_wanted(&mut self) -> Option<(String, u64)> {
+        if self.tab != DebugTab::Disassembly || !self.can_disassemble || self.disasm.load != DisasmLoad::Idle {
+            return None;
+        }
+        let pc = self.selected_frame()?.pc.clone()?;
+        Some((self.disasm.ask(&pc), self.seq))
+    }
+
+    /// The listing came back. Only the answer to an ask counts.
+    pub fn show_disasm(&mut self, rows: Vec<DisasmRow>) {
+        self.disasm.show(rows);
+    }
+
+    /// The listing was refused; it stays in the tab.
+    pub fn disasm_failed(&mut self, message: String) {
+        self.disasm.failed(message);
+    }
+
+    #[cfg(test)]
+    pub fn disasm(&self) -> &DisasmView {
+        &self.disasm
+    }
+
     pub fn selection_seq(&self) -> u64 {
         self.seq
     }
@@ -219,6 +261,7 @@ impl DebugPanel {
     /// The selection moved: an answer asked before is stale, and so is the tree it would have filled.
     fn bump(&mut self) {
         self.seq += 1;
+        self.disasm.reset();
         self.vars = VarsView::default();
         for w in &self.watches {
             self.vars.tree.add_watch(w.clone());
@@ -590,6 +633,7 @@ impl DebugPanel {
         match self.tab {
             DebugTab::Frames => self.render_frames(buf, content, focused, theme, phase),
             DebugTab::Variables => self.render_vars(buf, content, focused, theme, phase),
+            DebugTab::Disassembly => self.render_disasm(buf, content, focused, theme, phase),
             DebugTab::Console => self.render_console(buf, content, focused, theme),
         }
     }
@@ -667,6 +711,67 @@ impl DebugPanel {
             if y < content.bottom() {
                 let text = format!("Could not read the variables: {m}");
                 buf.set_stringn(content.x + 1, y, text, content.width.saturating_sub(1) as usize, theme.error);
+            }
+        }
+    }
+
+    /// The Disassembly tab: the instructions from the anchor, the pc row marked. Only while paused.
+    fn render_disasm(&mut self, buf: &mut ratatui::buffer::Buffer, content: Rect, focused: bool, theme: &Theme, phase: Option<Phase>) {
+        let hint = |buf: &mut ratatui::buffer::Buffer, text: &str, style: Style| {
+            buf.set_stringn(content.x + 1, content.y, text, content.width.saturating_sub(1) as usize, style);
+        };
+        if self.session.is_none() {
+            return hint(buf, "Shift+F9 starts the selected configuration", theme.dim);
+        }
+        if phase != Some(Phase::Suspended) {
+            return hint(buf, "Disassembly shows while the program is paused", theme.dim);
+        }
+        if !self.can_disassemble {
+            return hint(buf, "The adapter cannot disassemble", theme.dim);
+        }
+        if self.frames.is_empty() {
+            let text = if self.loading { "Reading the stack…" } else { "No frames" };
+            return hint(buf, text, theme.dim);
+        }
+        if self.selected_frame().is_some_and(|f| f.pc.is_none()) {
+            return hint(buf, "No instruction address for this frame", theme.dim);
+        }
+        match &self.disasm.load {
+            DisasmLoad::Idle | DisasmLoad::Asked => return hint(buf, "Reading the disassembly…", theme.dim),
+            DisasmLoad::Failed(m) => return hint(buf, &format!("Could not disassemble: {m}"), theme.error),
+            DisasmLoad::Shown if self.disasm.rows.is_empty() => return hint(buf, "No instructions", theme.dim),
+            DisasmLoad::Shown => {}
+        }
+        self.list_rect = content;
+        self.disasm.list.fit(self.disasm.rows.len(), content.height as usize);
+        let right = content.right();
+        let dim = theme.dim.fg.unwrap_or(theme.fg);
+        for (vi, i) in self.disasm.list.visible().enumerate() {
+            let y = content.y + vi as u16;
+            let selected = i == self.disasm.list.selected;
+            let at_pc = self.disasm.pc_row == Some(i);
+            let mut base = row_style(selected, focused, theme);
+            if at_pc && !selected {
+                base = base.bg(theme.debug_execution_line_bg);
+            }
+            if selected || at_pc {
+                buf.set_style(Rect::new(content.x, y, content.width, 1), base);
+            }
+            let row = &self.disasm.rows[i];
+            let mut x = content.x + 1;
+            if at_pc {
+                put(buf, &mut x, y, right, "▶ ", base.patch(theme.debug_execution_arrow));
+            } else {
+                put(buf, &mut x, y, right, "  ", base);
+            }
+            let faint = if selected { base } else { base.fg(dim) };
+            put(buf, &mut x, y, right, &row.address, base);
+            if let Some(symbol) = &row.symbol {
+                put(buf, &mut x, y, right, &format!(" <{symbol}>"), faint);
+            }
+            put(buf, &mut x, y, right, &format!("  {}", row.instruction), base);
+            if let Some(place) = &row.place {
+                put(buf, &mut x, y, right, &format!("  {place}"), faint);
             }
         }
     }
@@ -809,6 +914,14 @@ impl DebugPanel {
                     true
                 }
                 DebugTab::Variables => self.vars_press(m),
+                DebugTab::Disassembly => {
+                    if self.disasm.load != DisasmLoad::Shown {
+                        return false;
+                    }
+                    let Some(i) = self.disasm.list.hit(self.list_rect, m.x, m.y) else { return false };
+                    self.disasm.list.select(i);
+                    true
+                }
                 DebugTab::Console => {
                     let Some(i) = self.state.hit(self.list_rect, m.x, m.y) else { return false };
                     self.state.select(i);
@@ -834,6 +947,7 @@ impl DebugPanel {
         match self.tab {
             DebugTab::Frames => &mut self.frames_state,
             DebugTab::Variables => &mut self.vars.list,
+            DebugTab::Disassembly => &mut self.disasm.list,
             DebugTab::Console => &mut self.state,
         }
     }
@@ -994,8 +1108,28 @@ impl DebugPanel {
         match self.tab {
             DebugTab::Frames => self.frames_action(a, cx),
             DebugTab::Variables => self.vars_action(a),
+            DebugTab::Disassembly => self.disasm_action(a),
             DebugTab::Console => self.console_action(a, cx),
         }
+    }
+
+    /// The Disassembly tab's keys. Moves only select, and only once the listing is shown.
+    fn disasm_action(&mut self, a: &DebugAction) -> bool {
+        if self.disasm.load != DisasmLoad::Shown {
+            return false;
+        }
+        let list = &mut self.disasm.list;
+        let page = list.viewport.max(1);
+        match a {
+            DebugAction::Up => list.up(1),
+            DebugAction::Down => list.down(1),
+            DebugAction::PageUp => list.up(page),
+            DebugAction::PageDown => list.down(page),
+            DebugAction::Home => list.home(),
+            DebugAction::End => list.end(),
+            _ => return false,
+        }
+        true
     }
 
     fn console_action(&mut self, a: &DebugAction, cx: &mut Ctx) -> bool {
@@ -1336,7 +1470,13 @@ mod tests {
     }
 
     fn row(id: i64, name: &str, place: Option<&str>) -> FrameRow {
-        FrameRow { id, name: name.into(), place: place.map(Into::into), location: place.map(|_| (PathBuf::from("/tmp/demo.c"), 0)) }
+        FrameRow {
+            id,
+            name: name.into(),
+            place: place.map(Into::into),
+            location: place.map(|_| (PathBuf::from("/tmp/demo.c"), 0)),
+            pc: None,
+        }
     }
 
     /// Paused on thread 1, `rows` listed, the Frames tab up.
@@ -1384,13 +1524,115 @@ mod tests {
         p.step_tab(true);
         assert_eq!(p.tab(), DebugTab::Variables);
         p.step_tab(true);
+        assert_eq!(p.tab(), DebugTab::Disassembly);
+        p.step_tab(true);
         assert_eq!(p.tab(), DebugTab::Console);
+        p.step_tab(false);
+        assert_eq!(p.tab(), DebugTab::Disassembly);
         p.step_tab(false);
         assert_eq!(p.tab(), DebugTab::Variables);
         p.step_tab(false);
         assert_eq!(p.tab(), DebugTab::Frames);
         p.step_tab(false);
         assert_eq!(p.tab(), DebugTab::Console, "wraps back");
+        draw(&mut p, 60, 8, Some(Phase::Running));
+        let r = at(&p, DebugTab::Disassembly);
+        let fx = with_cx(|cx| assert!(p.handle_mouse(&press(r.x, r.y, 1), Some(Phase::Running), cx)));
+        assert!(fx.is_empty(), "{fx:?}");
+        assert_eq!(p.tab(), DebugTab::Disassembly);
+    }
+
+    fn pc_row(id: i64, pc: &str) -> FrameRow {
+        FrameRow { pc: Some(pc.into()), ..row(id, "f", Some("d.c:1")) }
+    }
+
+    fn listing(n: usize) -> Vec<DisasmRow> {
+        (0..n)
+            .map(|i| DisasmRow { address: format!("{:#x}", 0x10 + 4 * i), symbol: None, instruction: "nop".into(), place: None })
+            .collect()
+    }
+
+    #[test]
+    fn disasm_is_wanted_once_per_seq_on_its_tab_only() {
+        let mut p = suspended_with(vec![pc_row(0, "0x10"), pc_row(1, "0x20"), row(2, "nopc", None)]);
+        p.set_can_disassemble(true);
+        p.set_tab(DebugTab::Variables);
+        assert_eq!(p.disasm_wanted(), None, "not on another tab");
+        p.set_tab(DebugTab::Disassembly);
+        p.set_can_disassemble(false);
+        assert_eq!(p.disasm_wanted(), None, "not without the capability");
+        p.set_can_disassemble(true);
+        let seq = p.selection_seq();
+        assert_eq!(p.disasm_wanted(), Some(("0x10".to_string(), seq)));
+        assert_eq!(p.disasm_wanted(), None, "once per seq");
+        p.select_stop_frame(2);
+        p.bump();
+        assert_eq!(p.disasm_wanted(), None, "not without a pc");
+        p.select_stop_frame(1);
+        p.bump();
+        assert_eq!(p.disasm_wanted(), Some(("0x20".to_string(), p.selection_seq())), "again after the seq moved");
+    }
+
+    #[test]
+    fn a_stale_disasm_answer_is_ignored() {
+        let mut p = suspended_with(vec![pc_row(0, "0x10")]);
+        p.set_can_disassemble(true);
+        p.set_tab(DebugTab::Disassembly);
+        p.disasm_wanted().unwrap();
+        p.bump();
+        p.show_disasm(listing(3));
+        assert_eq!((p.disasm().load.clone(), p.disasm().rows.len()), (DisasmLoad::Idle, 0));
+        p.disasm_failed("late".into());
+        assert_eq!(p.disasm().load, DisasmLoad::Idle);
+    }
+
+    #[test]
+    fn disasm_keys_move_only_when_shown() {
+        let mut p = suspended_with(vec![pc_row(0, "0x10")]);
+        p.set_can_disassemble(true);
+        p.set_tab(DebugTab::Disassembly);
+        let key = |p: &mut DebugPanel, a: DebugAction| {
+            let mut handled = false;
+            with_cx(|cx| handled = p.handle_action(&a, cx));
+            handled
+        };
+        assert!(!key(&mut p, DebugAction::Down), "idle");
+        p.disasm_wanted().unwrap();
+        assert!(!key(&mut p, DebugAction::Down), "asked");
+        p.show_disasm(listing(20));
+        draw(&mut p, 60, 9, Some(Phase::Suspended));
+        assert_eq!(p.disasm().list.selected, 0);
+        assert!(key(&mut p, DebugAction::Down));
+        assert!(key(&mut p, DebugAction::Down));
+        assert_eq!(p.disasm().list.selected, 2);
+        assert!(key(&mut p, DebugAction::End));
+        assert_eq!(p.disasm().list.selected, 19);
+        assert!(key(&mut p, DebugAction::Home));
+        assert!(key(&mut p, DebugAction::PageDown));
+        assert!(p.disasm().list.selected > 1);
+        assert!(!key(&mut p, DebugAction::Open), "no other key");
+    }
+
+    #[test]
+    fn the_disasm_tab_says_why_it_is_empty() {
+        let text = |p: &mut DebugPanel, phase| {
+            let term = draw(p, 90, 6, phase);
+            row_text(&term, 3, 90)
+        };
+        let mut p = started();
+        p.set_tab(DebugTab::Disassembly);
+        assert!(text(&mut p, Some(Phase::Running)).contains("Disassembly shows while the program is paused"));
+        let mut p = suspended_with(vec![pc_row(0, "0x10"), row(1, "nopc", None)]);
+        p.set_tab(DebugTab::Disassembly);
+        assert!(text(&mut p, Some(Phase::Suspended)).contains("The adapter cannot disassemble"));
+        p.set_can_disassemble(true);
+        assert!(text(&mut p, Some(Phase::Suspended)).contains("Reading the disassembly…"));
+        p.disasm_wanted().unwrap();
+        p.disasm_failed("Cannot access memory at address 0x0".into());
+        assert!(text(&mut p, Some(Phase::Suspended)).contains("Could not disassemble: Cannot access memory at address 0x0"));
+        p.select_stop_frame(1);
+        p.bump();
+        assert!(text(&mut p, Some(Phase::Suspended)).contains("No instruction address for this frame"));
     }
 
     #[test]
@@ -1399,7 +1641,7 @@ mod tests {
         p.push(vec![RunLine::plain("hello")]);
         let term = draw(&mut p, 60, 5, Some(Phase::Running));
         assert!(row_text(&term, 1, 60).contains("Resume"), "{}", row_text(&term, 1, 60));
-        assert!(row_text(&term, 2, 60).starts_with("│ Frames  Variables  Console "), "{}", row_text(&term, 2, 60));
+        assert!(row_text(&term, 2, 60).starts_with("│ Frames  Variables  Disassembly  Console "), "{}", row_text(&term, 2, 60));
         assert!(row_text(&term, 3, 60).contains("hello"), "{}", row_text(&term, 3, 60));
         assert_eq!(p.list_rect.y, 3);
     }
@@ -1793,8 +2035,13 @@ mod tests {
 
     #[test]
     fn select_point_row_picks_the_first_matching_row() {
-        let at =
-            |id, name: &str| FrameRow { id, name: name.into(), place: Some("x".into()), location: Some((PathBuf::from("/tmp/demo.c"), 4)) };
+        let at = |id, name: &str| FrameRow {
+            id,
+            name: name.into(),
+            place: Some("x".into()),
+            location: Some((PathBuf::from("/tmp/demo.c"), 4)),
+            pc: None,
+        };
         let mut p = suspended_with(vec![row(0, "lib", None), at(1, "a"), at(2, "b")]);
         let seq = p.selection_seq();
         p.select_point_row(Path::new("/tmp/demo.c"), 4);
@@ -2362,7 +2609,8 @@ mod tests {
     fn every_tab_has_its_own_press_and_scroll() {
         let long = |p: &mut DebugPanel| {
             p.push((0..30).map(|i| RunLine::plain(format!("line {i}"))).collect());
-            let frames: Vec<FrameRow> = (0..30).map(|i| row(i, &format!("f{i}"), Some("d.c:1"))).collect();
+            let frames: Vec<FrameRow> =
+                (0..30).map(|i| FrameRow { pc: Some("0x10".into()), ..row(i, &format!("f{i}"), Some("d.c:1")) }).collect();
             p.show_stack(1, frames);
         };
         let mut seen = Vec::new();
@@ -2373,22 +2621,33 @@ mod tests {
             p.scopes_wanted();
             let items: Vec<VarItem> = (0..30).map(|i| vi(&format!("s{i}"), "", "", 0)).collect();
             p.show_scopes(items, &[]);
+            p.set_can_disassemble(true);
+            p.set_tab(DebugTab::Disassembly);
+            let (reference, _) = p.disasm_wanted().unwrap();
+            assert_eq!(reference, "0x10");
+            p.show_disasm(
+                (0..30)
+                    .map(|i| DisasmRow { address: format!("{:#x}", 0x10 + i), symbol: None, instruction: "nop".into(), place: None })
+                    .collect(),
+            );
+            p.disasm.list.home();
             p.set_tab(tab);
             p.state.home();
             draw(&mut p, 60, 9, Some(Phase::Suspended));
             let list = p.list_rect;
-            let others = |p: &DebugPanel| (p.state.selected, p.frames_state.selected, p.vars.list.selected);
+            let others = |p: &DebugPanel| (p.state.selected, p.frames_state.selected, p.vars.list.selected, p.disasm.list.selected);
             let before = others(&p);
             with_cx(|cx| assert!(p.handle_mouse(&press(list.x + 3, list.y + 2, 1), Some(Phase::Suspended), cx)));
             let after = others(&p);
-            let moved: Vec<bool> = [before.0 != after.0, before.1 != after.1, before.2 != after.2].to_vec();
+            let moved: Vec<bool> = [before.0 != after.0, before.1 != after.1, before.2 != after.2, before.3 != after.3].to_vec();
             let want = match tab {
-                DebugTab::Console => [true, false, false],
-                DebugTab::Frames => [false, true, false],
-                DebugTab::Variables => [false, false, true],
+                DebugTab::Console => [true, false, false, false],
+                DebugTab::Frames => [false, true, false, false],
+                DebugTab::Variables => [false, false, true, false],
+                DebugTab::Disassembly => [false, false, false, true],
             };
             assert_eq!(moved, want, "{tab:?}: a press reaches its own tab's selection");
-            let offsets = |p: &DebugPanel| (p.state.offset, p.frames_state.offset, p.vars.list.offset);
+            let offsets = |p: &DebugPanel| (p.state.offset, p.frames_state.offset, p.vars.list.offset, p.disasm.list.offset);
             let before = offsets(&p);
             with_cx(|cx| {
                 assert!(p.handle_mouse(
@@ -2398,7 +2657,7 @@ mod tests {
                 ))
             });
             let after = offsets(&p);
-            let moved: Vec<bool> = [before.0 != after.0, before.1 != after.1, before.2 != after.2].to_vec();
+            let moved: Vec<bool> = [before.0 != after.0, before.1 != after.1, before.2 != after.2, before.3 != after.3].to_vec();
             assert_eq!(moved, want, "{tab:?}: the wheel scrolls its own tab's list");
             seen.push(tab);
         }

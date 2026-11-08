@@ -1778,6 +1778,48 @@ History and merge windows. The hop from a physical keyboard through the terminal
 user's to confirm (`send-keys` enters at tmux). Bare `F9` is taken by Omarchy's voxtype binding when voxtype is
 installed (it is not on the test machine); `Run > Resume` stays.
 
+### Scenario: instruction stepping and disassembly
+
+Needs `gdb` 14 or newer (the run used 17.2), `gcc`, `g++` and `rustc`. At 80x24 and at 120x40, in a private tmux
+socket, with `XDG_CONFIG_HOME` and `XDG_STATE_HOME` under `/tmp` and a fresh state directory for each start (a saved
+breakpoint turns Ctrl+F8 into a clear), `[lsp] enabled = false`, `[ui] toolbar = false` and a `[debug.<name>]`
+table running `gdb -q -i=dap` (add `-iex 'set debug dap-log-file /tmp/jetl-464/dap.log'` to read the wire). Fixtures:
+`demo.c` (`gcc -g -O0 -o demo demo.c`; line 9 `int x = 2;`, line 10 `int y = add(x, 3);`, line 11 the `printf`),
+`demo.cpp` (`g++ -g -O0`, a `std::vector` on line 12), `demo.rs` (`rustc -g -C opt-level=0`, a `println!` on line 8).
+Start only when `pgrep -x demo` and `pgrep -f '[g]db -q -i=dap'` print nothing. tmux sends `C-S-F7` and `M-S-F7`; the
+status bar says `legacy keys` there and both chords still reach jetl (a terminal without the kitty protocol on a
+real keyboard is not covered). A step reads the pane only with no toast over it.
+
+1. Negative control: `jetl demo.c`, Ctrl+Shift+F7 and Alt+Shift+F7 with no session do nothing (no toast, no `gdb`).
+   F10 `r`: the Run menu has `Step Over Instruction  Ctrl+Shift+F7`, `Step Into Instruction  Alt+Shift+F7` and
+   `Show Disassembly`. Escape twice.
+2. Ctrl+G `10`, Ctrl+F8, Shift+F9: `paused (breakpoint)`, `10▶`. Alt+F5, then Alt+Left from Console: the tab row reads
+   ` Frames  Variables  Disassembly  Console ` with Disassembly active, and the first row is
+   `▶ 0x…  mov    -0x8(%rbp),%eax  demo.c:10`. Its address is the last `instructionPointerReference` in the log, and
+   the log has one `disassemble` with `"instructionOffset": 0, "instructionCount": 32`.
+3. Ctrl+Shift+F7: `next` with `"granularity": "instruction"`, the title `paused (step)`, the `▶` on row 2 and row 1 keeps
+   its address. Twice more: `▶` on `call … <add>`.
+4. Alt+Shift+F7: `stepIn` with `"granularity": "instruction"`, Frames' top row `add`, the editor on `3▶`, the first
+   row `▶ 0x… <add>  push   %rbp  demo.c:3`.
+5. Shift+F8: `stepOut` with no `granularity`, back in `main`, the `▶` on the instruction after the `call`.
+6. Lazy control: Alt+Right to Console and F8. The count of `disassemble` requests in the log does not rise; Alt+Left
+   gives exactly one more.
+7. Into the PLT: F8 to line 11, Ctrl+Shift+F7 until the `▶` is on `call … <printf@plt>`, then Alt+Shift+F7. Frames'
+   selected row is `printf@plt  no source`, the editor shows no `▶`, no `Paused in printf@plt, no source` toast
+   appears, and the pc row is a `jmp    *0x…(%rip)`. Alt+Right to Console, Alt+Shift+F7: the toast may appear (the tab
+   is not shown). F9: the program ends.
+8. Show Disassembly: Alt+F5 to hide the window, F1 `show disassembly`, Enter: the window shows, focused, on Disassembly.
+9. C++: `jetl demo.cpp`, Ctrl+G `12`, Ctrl+F8, Shift+F9, Disassembly tab, Ctrl+Shift+F7 four times, Alt+Shift+F7: the
+   editor opens `stl_vector.h` and Frames' top row is `std::vector<int, std::allocator<int> >::begin`. Ctrl+F2.
+10. Rust: `jetl demo.rs`, Ctrl+G `8`, Ctrl+F8, Shift+F9, Disassembly tab, Ctrl+Shift+F7 four times: the editor moves to
+    line 9. Alt+Shift+F7 five times: Frames' top row is `core::fmt::rt::Argument::new_display<i32>`. Ctrl+F2.
+11. Ctrl+Q while paused: exit 0, empty stderr, no `demo` and no `gdb` left.
+
+gdb 17.2 can show all of it, but its `disassemble` is forward-only (a negative `instructionOffset` is ignored), so the
+listing is 32 instructions from an anchor that stays while the pc is inside the listing. gdb cannot show, and the unit tests
+prove: the refusal when the adapter has no `supportsSteppingGranularity` (gdb declares it), the hint when
+`supportsDisassembleRequest` is missing, a failed or stale `disassemble` answer, and the keys of the panel.
+
 ### Scenario: a late file read for a stop
 
 Needs `gdb` 14 or newer and `gcc`. Directories, config, log and `pgrep` precondition as in `### Scenario: stepping and

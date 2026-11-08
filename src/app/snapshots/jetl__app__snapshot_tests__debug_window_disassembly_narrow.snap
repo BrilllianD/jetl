@@ -1,0 +1,47 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &disasm_marks(&fx.app.theme), None)"
+---
+80x24 cursor=hidden
+00  ≣ ┌ Project: root ───────────────┐│  a.log ×
+01    │                              ││  1    l0
+02  ⌂ │                              ││  2    l1
+03  ◫ │                              ││  3▶   l2
+04  ⊢ │                              ││  4    l3
+05    │                              ││  5    l4
+06    │                              ││  6    l5
+07    └──────────────────────────────┘│  7
+08    ─────────────────────────────────────────────────────────────────────────────
+09    ┌ Debug: demo · paused (breakpoint) ────────────────────────────────────────┐
+10    │  Resume   Pause   Step Over   Step Into   Step Out   Stop                 │
+11    │ Frames  Variables  Disassembly  Console                                   │
+12  ◉ │   0x555555555139 <add>  push   %rbp  demo.c:3                             │
+13  ⋔ │   0x55555555513a  mov    %rsp,%rbp                                        │
+14  ✎ │   0x55555555513d  mov    %edi,-0x14(%rbp)                                 │
+15  ✓ │ ▶ 0x555555555140  mov    %esi,-0x18(%rbp)                                 │
+16  ⟲ │   0x555555555143  mov    -0x14(%rbp),%edx  demo.c:4                       │
+17  ⚑ │   0x555555555146  mov    -0x18(%rbp),%eax                                 │
+18  ⎇ │   0x555555555149  call   0x555555555030 <very_long_symbol_name_very_long_s│
+19  ❯ │   0x55555555514b  mov    %eax,-0x4(%rbp)                                  │
+20  ⚠ │                                                                           │
+21  ► │                                                                           │
+22  ⌕ └───────────────────────────────────────────────────────────────────────────┘
+23  a.log                             Ln 3, Col 1  LF  UTF-8  4 spaces  Plain text
+-- marks: D=disabled E=error U=link T=active tab W=selected row A=execution arrow X=execution line
+00 DDD                                 TTTTTTTTTTDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
+03 DDD                                    A     XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+04 DDD
+09     TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT
+10               DDDDDDD
+11     DDDDDDDDDDDDDDDDDDDTTTTTTTTTTTTTDDDDDDDDD
+12 UUU
+13 DDD
+14 DDD
+15 DDD XAAXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+16 DDD WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW
+17 DDD
+18 DDD
+19 DDD
+20 DDD
+21 DDD
+22 DDD

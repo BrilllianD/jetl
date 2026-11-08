@@ -806,6 +806,7 @@ impl App {
         self.lsp_confirm_orphaned();
         self.debug_sync_breakpoints();
         self.debug_sync_vars();
+        self.debug_sync_disasm();
         self.debug_offer_artifacts();
         self.debug_adapter_memory(Instant::now());
     }

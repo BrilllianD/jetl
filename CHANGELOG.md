@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Run > Step Over Instruction (Ctrl+Shift+F7) and Step Into Instruction (Alt+Shift+F7) step the paused program one machine instruction, and the Debug window's new Disassembly tab (Run > Show Disassembly) lists the instructions at the selected frame's pc with the pc marked, following it on every stop. Verified under gdb 17.2 only.
 - Extra language servers: a `[lsp.servers.<name>]` table with `extra = true` runs next to the file's main server (document sync, file notifications and diagnostics only, no requests), and `languages = ["*"]` attaches it to every file with a language. docs/CONFIG.md has recipes for spell checking with typos-lsp and harper-ls (yman 463).
 - New file from a template: Project tree > New > From Template… (or the context menu, or Find Action) lists the files of ~/.config/jetl/templates/ and .jetl/templates/ (a project one wins by name), asks for a name, and opens the new file with the template expanded: variables like $TM_FILENAME_BASE and tabstops as in live templates, one undo step (yman 462).
 - Bracket pair colours: `[editor] bracket_pair_colours = true` colours (), [] and {} by nesting depth in three theme styles (bracket_1 to bracket_3), skipping strings and comments, in every file with a tree-sitter grammar (fenced code in Markdown too); off by default, applies without a restart.

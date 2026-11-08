@@ -11,6 +11,8 @@ WezTerm, Ghostty); legacy terminals and tmux have the listed fallbacks instead
 Override any of them in `~/.config/jetl/keymap.toml` (see [CONFIG.md](CONFIG.md)).
 While the Terminal window has focus only its `terminal` table is searched: every other
 key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
+Alt+Shift+F7 steps into a call by one machine instruction; JetBrains binds it to Force Step
+Into, which jetl does not have.
 
 ## global
 
@@ -453,6 +455,8 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `F8` | `debug.step_over` | Debug: Step Over |
 | `F7` | `debug.step_into` | Debug: Step Into |
 | `Shift+F8` | `debug.step_out` | Debug: Step Out |
+| `Ctrl+Shift+F7` | `debug.step_over_instruction` | Debug: Step Over Instruction (one machine instruction, over calls) |
+| `Alt+Shift+F7` | `debug.step_into_instruction` | Debug: Step Into Instruction (one machine instruction, into calls) |
 | `Alt+F10` | `debug.show_execution_point` | Debug: Show Execution Point |
 | `Alt+F8` | `debug.evaluate` | Debug: Evaluate Expression |
 | `Alt+F9` | `debug.run_to_cursor` | Debug: Run to Cursor (the paused program runs to the caret's line) |
@@ -725,6 +729,7 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `run.rerun_failed` | Run: rerun the failed tests |
 | `run.build_scip_index` | Run: build the SCIP index with [index] scip_command, then load it |
 | `debug.attach` | Debug: attach to a running process (gdb) |
+| `debug.show_disassembly` | Debug: Show Disassembly (the Debug window's Disassembly tab, at the selected frame's pc) |
 | `debug.pause` | Debug: Pause |
 | `debug.toggle_breakpoint_enabled` | Debug: enable or disable the breakpoint on the caret's line (kept, not sent while disabled) |
 | `lsp.restart` | Restart language servers |

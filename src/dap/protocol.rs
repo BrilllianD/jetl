@@ -149,6 +149,10 @@ pub struct Capabilities {
     pub supports_log_points: bool,
     #[serde(deserialize_with = "nullable")]
     pub supports_hit_conditional_breakpoints: bool,
+    #[serde(deserialize_with = "nullable")]
+    pub supports_stepping_granularity: bool,
+    #[serde(deserialize_with = "nullable")]
+    pub supports_disassemble_request: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
@@ -252,6 +256,31 @@ pub struct StackFrame {
     pub line: i64,
     #[serde(deserialize_with = "nullable")]
     pub column: i64,
+    /// The frame's pc as the adapter spells it (gdb: `"0x555555555139"`; for an outer frame, the return address).
+    pub instruction_pointer_reference: Option<String>,
+}
+
+/// One row of a `disassemble` answer. `symbol` comes on a function's first instruction only; `line` and `location`
+/// are absent outside debug info. gdb's `location.path` is relative, so it is never a file to open.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DisassembledInstruction {
+    #[serde(deserialize_with = "nullable")]
+    pub address: String,
+    #[serde(deserialize_with = "nullable")]
+    pub instruction: String,
+    pub instruction_bytes: Option<String>,
+    pub symbol: Option<String>,
+    pub location: Option<Source>,
+    pub line: Option<i64>,
+}
+
+/// The body of a `disassemble` response.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DisassembleBody {
+    #[serde(deserialize_with = "nullable")]
+    pub instructions: Vec<DisassembledInstruction>,
 }
 
 /// The body of a `stackTrace` response.
@@ -490,6 +519,48 @@ mod tests {
         assert!(!c.supports_hit_conditional_breakpoints);
         let c: Capabilities = body_of("t", json!({}));
         assert!(!c.supports_hit_conditional_breakpoints);
+    }
+
+    #[test]
+    fn capabilities_read_granularity_and_disassemble() {
+        let c: Capabilities = body_of("t", json!({}));
+        assert!(!c.supports_stepping_granularity && !c.supports_disassemble_request);
+        let c: Capabilities = body_of("t", json!({"supportsSteppingGranularity": true, "supportsDisassembleRequest": true}));
+        assert!(c.supports_stepping_granularity && c.supports_disassemble_request);
+        let c: Capabilities = body_of("t", json!({"supportsSteppingGranularity": null, "supportsDisassembleRequest": null}));
+        assert!(!c.supports_stepping_granularity && !c.supports_disassemble_request);
+    }
+
+    #[test]
+    fn frame_reads_instruction_pointer_reference() {
+        let f: StackFrame = body_of(
+            "t",
+            json!({"id": 0, "name": "add", "line": 3, "column": 1, "instructionPointerReference": "0x555555555139",
+                   "source": {"name": "demo.c", "path": "/tmp/demo.c"}}),
+        );
+        assert_eq!(f.instruction_pointer_reference.as_deref(), Some("0x555555555139"));
+        let f: StackFrame = body_of("t", json!({"id": 1, "name": "main", "line": 9, "column": 1}));
+        assert_eq!(f.instruction_pointer_reference, None);
+    }
+
+    #[test]
+    fn disassemble_body_reads_gdbs_shape() {
+        let b: DisassembleBody = body_of(
+            "t",
+            json!({"instructions": [
+                {"address": "0x555555555139", "instruction": "push   %rbp", "instructionBytes": "55", "symbol": "add", "line": 3,
+                 "location": {"name": "demo.c", "path": "demo.c", "sourceReference": 1}},
+                {"address": "0x55555555516a", "instruction": "endbr64", "instructionBytes": "f3 0f 1e fa"}
+            ]}),
+        );
+        assert_eq!(b.instructions.len(), 2);
+        let add = &b.instructions[0];
+        assert_eq!((add.address.as_str(), add.instruction.as_str()), ("0x555555555139", "push   %rbp"));
+        assert_eq!((add.symbol.as_deref(), add.line), (Some("add"), Some(3)));
+        assert_eq!(add.location.as_ref().and_then(|l| l.name.as_deref()), Some("demo.c"));
+        let end = &b.instructions[1];
+        assert_eq!((end.symbol.clone(), end.line, end.location.clone()), (None, None, None));
+        assert!(body_of::<DisassembleBody>("t", json!({"instructions": null})).instructions.is_empty());
     }
 
     #[test]

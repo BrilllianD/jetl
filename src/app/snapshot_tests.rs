@@ -4922,7 +4922,13 @@ async fn frames_window(name: &str, add: &str, width: u16, height: u16) -> (Fixtu
     write_run_toml(app, DEMO);
     let a = six(app);
     let _fake = paused(app, &mut fakes, &a, 3).await;
-    let row = |id: i64, name: &str, place: Option<&str>| FrameRow { id, name: name.into(), place: place.map(Into::into), location: None };
+    let row = |id: i64, name: &str, place: Option<&str>| FrameRow {
+        id,
+        name: name.into(),
+        place: place.map(Into::into),
+        location: None,
+        pc: None,
+    };
     app.debug_panel.set_tab(DebugTab::Frames);
     app.debug_panel.set_threads(vec![Thread { id: 1, name: "main".into() }, Thread { id: 7, name: "t".into() }]);
     app.debug_panel.show_stack(7, vec![row(0, add, Some("demo.c:4")), row(1, "main", Some("demo.c:9")), row(2, "__libc_start_main", None)]);
@@ -4951,6 +4957,72 @@ async fn debug_window_frames_narrow() {
     assert_snapshot!("debug_window_frames_narrow", snapshot(&term, &marks, None));
 }
 
+/// A paused session in `add` whose Disassembly tab lists the C probe's rows from `0x555555555139`, the pc on row 3 and
+/// the selection on row 4. Row 6 has an instruction of 90 characters.
+async fn disasm_window(name: &str, width: u16, height: u16) -> (Fixture, ratatui::Terminal<ratatui::backend::TestBackend>) {
+    use super::debug::tests::{DEMO, caps, paused, six, with_fake_adapters, write_run_toml};
+    use crate::actions::{Action, DebugAction};
+    use crate::dap::disasm::DisasmRow;
+    use crate::dap::fake::Order;
+    use crate::dap::panel::{DebugTab, FrameRow};
+    let mut fx = stable_app(name);
+    let app = &mut fx.app;
+    let mut fakes = with_fake_adapters(app, caps(), Order::LaunchEarly);
+    write_run_toml(app, DEMO);
+    let a = six(app);
+    let _fake = paused(app, &mut fakes, &a, 3).await;
+    app.debug_panel.set_can_disassemble(true);
+    app.debug_panel.show_stack(
+        7,
+        vec![FrameRow { id: 0, name: "add".into(), place: Some("demo.c:3".into()), location: None, pc: Some("0x555555555140".into()) }],
+    );
+    app.debug_panel.set_tab(DebugTab::Disassembly);
+    app.debug_panel.disasm_wanted().expect("asked");
+    let long = format!("call   0x555555555030 <{}>", "very_long_symbol_name_".repeat(4));
+    let row = |address: &str, symbol: Option<&str>, instruction: &str, place: Option<&str>| DisasmRow {
+        address: address.into(),
+        symbol: symbol.map(Into::into),
+        instruction: instruction.into(),
+        place: place.map(Into::into),
+    };
+    app.debug_panel.show_disasm(vec![
+        row("0x555555555139", Some("add"), "push   %rbp", Some("demo.c:3")),
+        row("0x55555555513a", None, "mov    %rsp,%rbp", None),
+        row("0x55555555513d", None, "mov    %edi,-0x14(%rbp)", None),
+        row("0x555555555140", None, "mov    %esi,-0x18(%rbp)", None),
+        row("0x555555555143", None, "mov    -0x14(%rbp),%edx", Some("demo.c:4")),
+        row("0x555555555146", None, "mov    -0x18(%rbp),%eax", None),
+        row("0x555555555149", None, &long, None),
+        row("0x55555555514b", None, "mov    %eax,-0x4(%rbp)", None),
+    ]);
+    app.focus.set(crate::ui::focus::PanelId::Debug);
+    app.perform(Action::Debug(DebugAction::Down));
+    app.notifications.clear();
+    app.toasts = Default::default();
+    let term = draw_app(app, width, height);
+    (fx, term)
+}
+
+fn disasm_marks(theme: &Theme) -> Vec<Mark> {
+    let mut marks = debug_marks(theme);
+    marks.push(Mark::style('W', "selected row", theme.list_selected));
+    marks.push(Mark::style('A', "execution arrow", theme.debug_execution_arrow));
+    marks.push(Mark::bg('X', "execution line", theme.debug_execution_line_bg));
+    marks
+}
+
+#[tokio::test]
+async fn debug_window_disassembly() {
+    let (fx, term) = disasm_window("debug-disasm", 120, 40).await;
+    assert_snapshot!("debug_window_disassembly", snapshot(&term, &disasm_marks(&fx.app.theme), None));
+}
+
+#[tokio::test]
+async fn debug_window_disassembly_narrow() {
+    let (fx, term) = disasm_window("debug-disasm-narrow", 80, 24).await;
+    assert_snapshot!("debug_window_disassembly_narrow", snapshot(&term, &disasm_marks(&fx.app.theme), None));
+}
+
 /// A paused session whose Variables tab shows Arguments and Locals open, `p` open, `arr` closed with 1000 of its 5000
 /// children kept, `buf` still loading, Registers failed and selected. `b_value` is the value of `b`.
 async fn variables_window(
@@ -4971,7 +5043,13 @@ async fn variables_window(
     write_run_toml(app, DEMO);
     let a = six(app);
     let _fake = paused(app, &mut fakes, &a, 3).await;
-    let row = |id: i64, name: &str, place: Option<&str>| FrameRow { id, name: name.into(), place: place.map(Into::into), location: None };
+    let row = |id: i64, name: &str, place: Option<&str>| FrameRow {
+        id,
+        name: name.into(),
+        place: place.map(Into::into),
+        location: None,
+        pc: None,
+    };
     let item = |name: &str, value: &str, ty: &str, reference: i64| VarItem {
         name: name.into(),
         value: value.into(),
@@ -5052,7 +5130,13 @@ async fn watches_window(name: &str, width: u16, height: u16) -> (Fixture, ratatu
     write_run_toml(app, DEMO);
     let a = six(app);
     let _fake = paused(app, &mut fakes, &a, 3).await;
-    let row = |id: i64, name: &str, place: Option<&str>| FrameRow { id, name: name.into(), place: place.map(Into::into), location: None };
+    let row = |id: i64, name: &str, place: Option<&str>| FrameRow {
+        id,
+        name: name.into(),
+        place: place.map(Into::into),
+        location: None,
+        pc: None,
+    };
     let item = |name: &str, value: &str, ty: &str, reference: i64| VarItem {
         name: name.into(),
         value: value.into(),
@@ -5149,7 +5233,13 @@ async fn variables_more_window(
     write_run_toml(app, DEMO);
     let a = six(app);
     let _fake = paused(app, &mut fakes, &a, 3).await;
-    let row = |id: i64, name: &str, place: Option<&str>| FrameRow { id, name: name.into(), place: place.map(Into::into), location: None };
+    let row = |id: i64, name: &str, place: Option<&str>| FrameRow {
+        id,
+        name: name.into(),
+        place: place.map(Into::into),
+        location: None,
+        pc: None,
+    };
     let item = |name: &str, value: &str, ty: &str, reference: i64| VarItem {
         name: name.into(),
         value: value.into(),
