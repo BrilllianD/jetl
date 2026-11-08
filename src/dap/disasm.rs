@@ -143,6 +143,9 @@ mod tests {
         assert_eq!(parse_address("0X1F"), Some(31));
         assert_eq!(parse_address("31"), Some(31));
         assert_eq!(parse_address("zz"), None);
+        assert_eq!(parse_address("0x"), None);
+        assert_eq!(parse_address("0x1ffffffffffffffff"), None);
+        assert_eq!(parse_address("0xffffffffffffffff"), Some(u64::MAX));
     }
 
     #[test]

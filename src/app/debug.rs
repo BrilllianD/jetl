@@ -108,6 +108,8 @@ pub(super) struct Live {
     pub(super) mem: MemWatch,
     /// The last resume was an instruction step: its stop shows the top frame, source or not.
     pub(super) instruction_step: bool,
+    /// The resume asked for is an instruction step; `instruction_step` takes it once the step is sent (`Running`).
+    pub(super) instruction_wanted: bool,
 }
 
 /// The adapter's `VmRSS` at which one Warn is raised: gdb passes it under a program that floods its output.
@@ -1258,6 +1260,7 @@ impl App {
             run_to_quiet: None,
             mem: MemWatch::default(),
             instruction_step: false,
+            instruction_wanted: false,
         });
         self.notify(Level::Info, format!("Debugging {} with {}", p.name, p.adapter.name));
         if let Some(c) = lost_cwd {
@@ -1763,6 +1766,7 @@ impl App {
     fn debug_running(&mut self, epoch: u64) {
         if let Some(live) = self.debug.session.as_mut() {
             live.epoch = epoch;
+            live.instruction_step = live.instruction_wanted;
         }
         self.debug.view = None;
         self.debug_panel.set_reason(None);
@@ -2229,7 +2233,7 @@ impl App {
         // A breakpoint cleared since the last tick has to reach the adapter before the program runs.
         self.debug_sync_breakpoints();
         if let Some(live) = self.debug.session.as_mut() {
-            live.instruction_step = kind.instruction();
+            live.instruction_wanted = kind.instruction();
         }
         self.debug.send(Command::Resume { kind, thread });
     }
@@ -10612,6 +10616,7 @@ pub(crate) mod tests {
         pump_until(&mut app, |x| texts(x).iter().any(|t| t.contains("cannot step by instruction"))).await;
         assert_eq!(last(&app), (Level::Info, "The debug adapter cannot step by instruction".to_string()));
         assert_eq!(app.debug.phase(), Some(Phase::Suspended));
+        assert!(!app.debug.session.as_ref().unwrap().instruction_step, "a refused step leaves the flag clear");
         // The very next message is the new file's breakpoints: no `next` went out.
         assert_quiet(&mut app, &mut fake, "q-instr.log").await;
         let _ = std::fs::remove_dir_all(&dir);
