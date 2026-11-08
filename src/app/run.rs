@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use super::App;
 use crate::actions::PaletteKind;
 use crate::event::{AppMsg, Level};
-use crate::run::caret;
+use crate::run::caret::{self, RustTest};
 use crate::run::matcher::{Matcher, RunLine};
 use crate::run::panel::Status;
 use crate::run::process::{self, RunEnd, RunGate, Spec};
@@ -225,6 +225,12 @@ impl App {
     /// The task that runs the test around the caret; reads `package.json` for JavaScript, nothing else.
     pub(crate) fn test_at_caret_task(&mut self) -> Result<RunTask, String> {
         const SUPPORTED: &str = "Run Test at Caret supports Rust, Python, JavaScript and TypeScript";
+        self.caret_test("Run Test at Caret", &["rust", "python", "javascript", "typescript", "tsx"], SUPPORTED).map(|(t, _)| t)
+    }
+
+    /// The test around the caret as a task, for the languages in `langs` (`unsupported` is the refusal for any
+    /// other). For Rust, also the `RustTest` the task was made from.
+    pub(super) fn caret_test(&mut self, feature: &str, langs: &[&str], unsupported: &str) -> Result<(RunTask, Option<RustTest>), String> {
         let root = self.workspace.root.clone();
         // Edits reparse at once, a freshly opened file waits for its first frame.
         if let Some(b) = self.editor.active_buffer_mut()
@@ -232,32 +238,34 @@ impl App {
         {
             s.reparse(&b.rope);
         }
-        let b = self.editor.active_buffer().ok_or("Run Test at Caret needs a saved file")?;
-        let file = b.path.clone().ok_or("Run Test at Caret needs a saved file")?;
+        let saved = || format!("{feature} needs a saved file");
+        let b = self.editor.active_buffer().ok_or_else(saved)?;
+        let file = b.path.clone().ok_or_else(saved)?;
         let lang = b.language().map_or("", |l| l.name);
-        if !matches!(lang, "rust" | "python" | "javascript" | "typescript" | "tsx") {
-            return Err(SUPPORTED.into());
+        if !langs.contains(&lang) {
+            return Err(unsupported.into());
         }
         let caret = b.view.sels.primary().head;
         let tree = b.syntax.as_ref().and_then(|s| s.tree_at_char(&b.rope, caret));
         let byte = b.rope.char_to_byte(caret.min(b.rope.len_chars()));
         let none = || "No test at the caret".to_string();
         let tree = tree.ok_or_else(none)?;
-        let (found, command) = match lang {
+        let (found, command, rust) = match lang {
             "rust" => {
                 let f = caret::rust_test_at(tree, &b.rope, byte).ok_or_else(none)?;
-                let c = caret::rust_command(&file, &root, &f);
-                (f, c)
+                let t = caret::rust_test(&file, &root, &f);
+                let c = (t.dir.clone(), t.command());
+                (f, c, Some(t))
             }
             "python" => {
                 let f = caret::python_test_at(tree, &b.rope, byte).ok_or_else(none)?;
                 let c = caret::python_command(&file, &root, &f);
-                (f, c)
+                (f, c, None)
             }
             _ => {
                 let f = caret::js_test_at(tree, &b.rope, byte).ok_or_else(none)?;
                 let c = caret::js_command(&file, &root, &f)?;
-                (f, c)
+                (f, c, None)
             }
         };
         let (cwd, argv) = command;
@@ -266,7 +274,7 @@ impl App {
             Ok(rel) => Some(rel.to_string_lossy().into_owned()),
             Err(_) => Some(cwd.to_string_lossy().into_owned()),
         };
-        Ok(RunTask {
+        let task = RunTask {
             name: format!("Test {}", found.names.join("::")),
             command: TaskCommand::Argv(argv),
             cwd,
@@ -274,7 +282,8 @@ impl App {
             args: Vec::new(),
             matcher: None,
             origin: Origin::Detected,
-        })
+        };
+        Ok((task, rust))
     }
 
     /// `run.stop`: kill the task's process group; the exit still arrives.

@@ -44,6 +44,8 @@
 "ctrl-alt-r" = "run.http_request_at_caret"
 "ctrl-f2" = "run.stop"
 "shift-f9" = "debug.start"
+# Ctrl+Shift+F9 debugs the Rust test at the caret (Run menu and F1 where the terminal keeps the key).
+"ctrl-shift-f9" = "run.debug_test_at_caret"
 # Ctrl+Shift+F8 lists every breakpoint (View Breakpoints; Find Action too).
 "ctrl-shift-f8" = "debug.view_breakpoints"
 "f4" = "run.next_problem"

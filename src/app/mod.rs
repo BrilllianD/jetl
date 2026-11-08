@@ -1265,6 +1265,11 @@ impl App {
                 self.run_test_at_caret();
                 return;
             }
+            Action::Run(RunAction::DebugTestAtCaret) => {
+                drop(cx);
+                self.debug_test_at_caret();
+                return;
+            }
             Action::Run(RunAction::HttpRequestAtCaret) => {
                 drop(cx);
                 self.http_request_at_caret();

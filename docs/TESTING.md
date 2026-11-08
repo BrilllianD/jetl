@@ -2192,6 +2192,54 @@ own capture (a toast can cover code, not the gutter in the default layout). The 
 What gdb cannot show: Rust formatting under codelldb or lldb-dap, the default under any adapter but gdb 17.2, the
 Variables tree, a real multi-member workspace, a compiler message over 16 KiB from a real rustc, other Cargo versions.
 
+### Scenario: Debug Test at Caret
+
+Needs `gdb` 14 or newer (the run used 17.2) and `cargo`, no network. At 80x24 and at 120x40, a private tmux socket,
+`XDG_*` directories under `/tmp`, `[lsp] enabled = false`, `[ui] toolbar = false`. Fixture `/tmp/jetl-s7-probe`, a Cargo
+package `probe` (edition 2024, `[[bin]] probe` at `src/main.rs`) made by these files, then `git init` and a
+`.gitignore` of `target`:
+
+- `src/lib.rs`: `pub mod util;` and `pub fn add(a: i32, b: i32) -> i32 { a + b }`.
+- `src/util.rs`: `pub fn twice(x: i32) -> i32 { x * 2 }` (lines 1-3), then on line 5 `#[cfg(test)]`, line 6 `mod tests {`,
+  line 7 `use super::*;`, line 9 `#[test]`, line 10 `fn twice_works() {`, line 11 `let v = twice(21);`, line 12
+  `println!("value is {v}");`, line 13 `assert_eq!(v, 42);`, line 14 `}`, and a second test `twice_works_too` (lines 16-19,
+  `assert_eq!(twice(1), 2);`).
+- `src/main.rs`: `fn main() { println!("{}", probe::add(1, 2)); }`, then `#[cfg(test)] mod tests { #[test] fn main_test() {
+  assert_eq!(probe::add(1, 1), 2); } }` with the assert on line 9.
+- `tests/it.rs`: `#[test] fn integration() { assert_eq!(probe::add(2, 2), 4); }`, the assert on line 3.
+- `notes.txt`: `hello`.
+
+Start only when `pgrep -f '[g]db -q -i=dap'` and `pgrep -f 'jetl-s7-probe/target'` print nothing. A step reads the pane
+only with no toast on it, except where it greps its own capture. The script of the last run is
+`~/.claude/plans/backlog-run-26-S7-evidence/474/scripts/s7-scenario.sh` (it also writes the fixture).
+
+1. `src/util.rs`, Ctrl+G 11, Ctrl+F8, caret on line 11, Ctrl+Shift+F9 (`send-keys C-S-F9` reaches jetl in tmux): the
+   toast `Building Test util::tests::twice_works` (a warm build can replace it before a capture sees it), the Console
+   `$ cargo test --no-run --message-format=json`, then `Looking for util::tests::twice_works in 2 test executables`, the
+   title `Debug: Test util::tests::twice_works · paused (breakpoint)` and `11▶`. Frames (Alt+F5, Alt+Left twice) shows
+   `Thread 2: util::tests::tw` and `probe::util::tests::twice_works  util.rs:11`.
+2. F9: the Console has `value is 42`, `test util::tests::twice_works ... ok` and `1 filtered out`; the toast
+   `Debug session ended, exit code 0`; no gdb or test executable is left.
+3. `tests/it.rs`, a breakpoint on line 3, caret there, Ctrl+Shift+F9: no `Looking for` line (one candidate: `--test it`),
+   the build is `cargo test --no-run --message-format=json --test it`, and it stops on line 3.
+4. `src/main.rs`, a breakpoint on line 9: `Looking for tests::main_test in 2 test executables`, it stops there.
+5. `src/util.rs`, the caret on the `mod tests {` line (no fn around it), the breakpoint on 11 still set: it stops at 11
+   (`Looking for util::tests:: in 2 test executables`); F9 runs on, and the Console says `2 passed`.
+6. The caret on line 1 (`pub fn twice`, not a test): the toast `No test at the caret`, nothing starts.
+7. An unsaved space on line 11, Ctrl+Shift+F9: the toast `Debugging the saved version of util.rs`, and it still stops
+   at 11. F9, then Ctrl+Z and Ctrl+S: the disk files hash as before.
+8. `notes.txt`, Ctrl+Shift+F9: the toast `Debug Test at Caret supports Rust only; Python and JavaScript wait for debug
+   adapter research (yman 451)`, nothing starts.
+9. A `build.rs` that sleeps 40 s, Ctrl+Shift+F9 in `src/util.rs`, 4 s later `pgrep -x cargo` shows one, then Ctrl+F2:
+   `Debug start cancelled`, the title `not started`, and no `cargo`, build script or test executable is left.
+10. F10, `r`: the Run menu shows `Debug Test at Caret  Ctrl+Shift+F9` after `Debug`; at 80x24 it scrolls (`▼`).
+11. Ctrl+Q: exit 0, empty stderr, no gdb or test executable left.
+
+If tmux does not deliver `C-S-F9`, use F1 and `Run: debug the test at the caret (Rust)`.
+
+What gdb cannot show: other adapters (codelldb and lldb-dap pass `args` their own way and were not tried), a
+multi-package workspace, a test with `harness = false`, doctests.
+
 ### Scenario: Save As
 
 At 80x24 and at 120x40, with `run()` and `$T` from the crash recovery

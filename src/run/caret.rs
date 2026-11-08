@@ -218,8 +218,43 @@ fn words(w: &[&str]) -> Vec<String> {
     w.iter().map(|s| s.to_string()).collect()
 }
 
+/// The Rust test (or module of tests) around the caret, as cargo selects it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustTest {
+    /// The package directory: the nearest `Cargo.toml` above the file.
+    pub dir: PathBuf,
+    /// `["--bin", x]`, `["--test", x]` or empty.
+    pub target: Vec<String>,
+    /// The module path joined by `::`, with a trailing `::` for a module.
+    pub filter: String,
+    /// True only for a leaf whose path is known: libtest matches the whole name.
+    pub exact: bool,
+    /// True only for a file under `src/` outside `src/bin/`: no target flag is
+    /// given, so only the library's and binaries' test executables can hold it.
+    pub in_src: bool,
+}
+
+impl RustTest {
+    /// `cargo test [target] <filter> [-- --exact]`.
+    pub fn command(&self) -> Vec<String> {
+        let mut argv = words(&["cargo", "test"]);
+        argv.extend(self.target.iter().cloned());
+        argv.push(self.filter.clone());
+        if self.exact {
+            argv.extend(words(&["--", "--exact"]));
+        }
+        argv
+    }
+}
+
 /// `cargo test` for `found`, run in the directory of the nearest `Cargo.toml` above `file`.
 pub fn rust_command(file: &Path, root: &Path, found: &Found) -> (PathBuf, Vec<String>) {
+    let t = rust_test(file, root, found);
+    (t.dir.clone(), t.command())
+}
+
+/// The test `found` in `file`, located in its package.
+pub fn rust_test(file: &Path, root: &Path, found: &Found) -> RustTest {
     let dir = project_dir(file, root, "Cargo.toml").unwrap_or_else(|| root.to_path_buf());
     let rel: Vec<String> = file
         .strip_prefix(&dir)
@@ -227,6 +262,7 @@ pub fn rust_command(file: &Path, root: &Path, found: &Found) -> (PathBuf, Vec<St
         .unwrap_or_default();
     let stem = |s: &str| s.strip_suffix(".rs").unwrap_or(s).to_string();
     // (target flags, module path of the file, whether the path is exact)
+    let mut in_src = false;
     let (target, mut path, exact): (Vec<String>, Vec<String>, bool) = match rel.first().map(String::as_str) {
         Some("src") if rel.len() >= 2 => {
             let rest = &rel[1..];
@@ -248,6 +284,7 @@ pub fn rust_command(file: &Path, root: &Path, found: &Found) -> (PathBuf, Vec<St
                 if path.last().is_some_and(|l| l == "mod") {
                     path.pop();
                 }
+                in_src = true;
                 (vec![], path, true)
             }
         }
@@ -262,18 +299,10 @@ pub fn rust_command(file: &Path, root: &Path, found: &Found) -> (PathBuf, Vec<St
     };
     path.extend(found.names.iter().cloned());
     let mut filter = path.join("::");
-    let mut argv = words(&["cargo", "test"]);
-    argv.extend(target);
-    if found.leaf {
-        argv.push(filter);
-        if exact {
-            argv.extend(words(&["--", "--exact"]));
-        }
-    } else {
+    if !found.leaf {
         filter.push_str("::");
-        argv.push(filter);
     }
-    (dir, argv)
+    RustTest { dir, target, filter, exact: found.leaf && exact, in_src }
 }
 
 /// `pytest -v <file>::<Class>::<test>` in the project root.
@@ -368,6 +397,34 @@ mod tests {
         assert_eq!(cmd("benches/b.rs", &top).1, words(&["cargo", "test", "tests::top"]), "outside src and tests: no --exact");
         let (dir, argv) = cmd("crates/core/src/lib.rs", &top);
         assert_eq!((dir, argv), (root.join("crates/core"), words(&["cargo", "test", "tests::top", "--", "--exact"])));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rust_test_fields() {
+        let root = std::env::temp_dir().join(format!("jetl-caret-rust-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for d in ["", "crates/core"] {
+            std::fs::create_dir_all(root.join(d).join("src")).unwrap();
+            std::fs::write(root.join(d).join("Cargo.toml"), "[package]\n").unwrap();
+        }
+        let top = found(&["tests", "top"], true);
+        let t = |f: &str, found: &Found| rust_test(&root.join(f), &root, found);
+        let words = |w: &[&str]| w.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let m = t("src/run/matcher.rs", &top);
+        assert_eq!((m.filter.as_str(), m.exact, m.in_src, m.target.is_empty()), ("run::matcher::tests::top", true, true, true));
+        assert_eq!(m.dir, root);
+        let m = t("src/main.rs", &top);
+        assert_eq!((m.filter.as_str(), m.in_src), ("tests::top", true));
+        let c = t("tests/cli.rs", &found(&["outside"], true));
+        assert_eq!((c.target, c.in_src, c.exact, c.filter.as_str()), (words(&["--test", "cli"]), false, true, "outside"));
+        let b = t("src/bin/tool.rs", &top);
+        assert_eq!((b.target, b.in_src), (words(&["--bin", "tool"]), false));
+        let m = t("src/run/matcher.rs", &found(&["tests"], false));
+        assert_eq!((m.filter.as_str(), m.exact), ("run::matcher::tests::", false));
+        let b = t("benches/b.rs", &top);
+        assert_eq!((b.exact, b.in_src, b.target.is_empty()), (false, false, true));
+        assert_eq!(t("crates/core/src/lib.rs", &top).dir, root.join("crates/core"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

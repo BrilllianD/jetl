@@ -620,6 +620,27 @@ gives an info note; a file with unsaved changes runs from disk and says so.
 Ctrl+Shift+F10 reaches jetl in xterm-compatible terminals and tmux without the
 kitty protocol; the Run menu and F1 work everywhere.
 
+Debug Test at Caret (Ctrl+Shift+F9, Run > Debug Test at Caret, the action
+`run.debug_test_at_caret`) finds the test as Run Test at Caret does, for Rust
+only. It builds with `cargo test --no-run --message-format=json` and the same
+`--bin` / `--test` flag in the same directory, and keeps the test-profile
+executables (for a file under `src/` outside `src/bin`, only the library's and
+binaries' test executables, not integration tests, examples or benches). When
+more than one remains it runs each with `--list --format terse` (10 s each at
+most, then it is killed and dropped) and keeps those that list the test; one is
+launched, several give the executable dialog, none is refused with a toast. The
+program gets `<test path> --exact --nocapture` (a module: `<module path>::
+--nocapture`) and runs in the package directory, under the adapter a Rust debug
+block would get (codelldb, lldb-dap, then gdb; only gdb 17.2 was tried). Its
+output goes to the Debug Console. Nothing is written to `.jetl/run.toml`, and
+the selected configuration and the last Run task stay. Python and JavaScript
+are refused (they need debugpy and js-debug, yman 451); a file with unsaved
+changes is debugged from disk and says so. Doctests and a test target with
+`harness = false` are not covered. Pressing it runs `cargo` in the project with
+the trust note of Debug (see "A project's `.jetl/run.toml` can run commands
+through Debug" above); the listed test executables are the project's own code
+and run with `--list`.
+
 Send HTTP Request at Caret (Ctrl+Alt+R, Run > Send HTTP Request at Caret, the action `run.http_request_at_caret`) sends the request around the caret of a `.http` or `.rest` file with `curl -q -sS -i --max-time 30` and shows the response in the Run window, in a task named after the request (`# @name`, else the text after `###`, else the method and URL). Requests are separated by lines starting `###`; a request is a method and URL line (a bare URL means GET), header lines, a blank line and the body; `#` and `//` lines are comments and response-handler lines (`> ...`) are ignored. `{{name}}` is replaced from the `dev` object of `http-client.env.json` in the file's directory, else in the project root. The text is sent as typed, saved or not. curl must be in `PATH`; curl's own config file (`~/.curlrc`) is not read; there is no timeout setting.
 
 One task runs at a time: starting another kills the running one first, as

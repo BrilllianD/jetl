@@ -12,6 +12,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value, json};
 
 use crate::doctor::Find;
+use crate::run::caret::RustTest;
 use crate::run::process::Spec;
 use crate::run::{Origin, RunTask};
 
@@ -301,6 +302,20 @@ pub fn default_block(task: &RunTask) -> Option<DebugBlock> {
     Some(DebugBlock { adapter: None, language: Some("rust".into()), build: Some(strings(build)), launch: json!({"program": ARTIFACT_VAR}) })
 }
 
+/// The block Debug Test at Caret debugs with. It is not a configuration: nothing names it, writes it or
+/// selects it. It builds the package's tests with the Run version's target flag and launches
+/// `${artifact}` (the test executable that holds the test) with only that test (or module) selected.
+pub fn test_block(t: &RustTest) -> DebugBlock {
+    let mut build = strings(&["cargo", "test", "--no-run", "--message-format=json"]);
+    build.extend(t.target.iter().cloned());
+    let mut args = vec![t.filter.clone()];
+    if t.exact {
+        args.push("--exact".into());
+    }
+    args.push("--nocapture".into());
+    DebugBlock { adapter: None, language: Some("rust".into()), build: Some(build), launch: json!({"program": ARTIFACT_VAR, "args": args}) }
+}
+
 /// The `launch` arguments for a session. Later wins, by top-level key: the adapter's `launch`; `cwd`
 /// (the task's, with the variables replaced, joined to the root, so an absolute result replaces the root; else the root); `env` (the task's, with jetl's beneath it when the adapter
 /// takes the exact environment; left out when empty); the block's `launch`. Then `${workspaceFolder}`,
@@ -542,6 +557,25 @@ mod tests {
 
     fn adapter(launch: Value, exact_env: bool) -> AdapterConfig {
         AdapterConfig { name: "t".into(), command: vec!["t".into()], languages: vec![], launch, exact_env, install_hint: "" }
+    }
+
+    #[test]
+    fn test_block_builds_and_passes_the_filter() {
+        let t = RustTest { dir: "/w".into(), target: strings(&["--test", "it"]), filter: "integration".into(), exact: true, in_src: false };
+        let b = test_block(&t);
+        assert_eq!(b.build, Some(strings(&["cargo", "test", "--no-run", "--message-format=json", "--test", "it"])));
+        assert_eq!((b.language.as_deref(), b.adapter.as_deref()), (Some("rust"), None));
+        assert_eq!(b.launch, json!({"program": "${artifact}", "args": ["integration", "--exact", "--nocapture"]}));
+        let all = DebugConfig::default().adapters();
+        let gdb = all.iter().find(|a| a.name == "gdb").unwrap();
+        let v = LaunchVars { artifact: Some("/t/exe".into()), ..vars() };
+        let v = resolve_launch(gdb, &b, &task(None, &[]), &v, &BTreeMap::new);
+        assert_eq!(v["program"], "/t/exe");
+        assert_eq!(v["args"], json!(["integration", "--exact", "--nocapture"]));
+        let m = RustTest { dir: "/w".into(), target: vec![], filter: "util::tests::".into(), exact: false, in_src: true };
+        let b = test_block(&m);
+        assert_eq!(b.build, Some(strings(&["cargo", "test", "--no-run", "--message-format=json"])));
+        assert_eq!(b.launch["args"], json!(["util::tests::", "--nocapture"]));
     }
 
     #[test]

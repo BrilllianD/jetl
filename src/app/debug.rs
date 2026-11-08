@@ -19,7 +19,7 @@ use crate::dap::build::{Artifact, BuildTags, drive_build};
 use crate::dap::client::{DapClient, SHUTDOWN_LIMIT};
 use crate::dap::config::{
     AdapterConfig, DebugBlock, DebugConfig, LaunchVars, choose_adapter, default_block, fill_artifact, load_debug_blocks, needs_artifact,
-    process_env, resolve_build, resolve_launch,
+    process_env, resolve_build, resolve_launch, test_block,
 };
 use crate::dap::console::{ConsoleGate, MAX_QUEUED, forward_output, spawn_console};
 use crate::dap::panel::{BuildStage, DebugTab, FrameRow, MAX_WATCHES};
@@ -38,6 +38,7 @@ use crate::event::{AppMsg, Effect, Level};
 #[cfg(test)]
 use crate::lsp::client::Conn;
 use crate::lsp::client::{spawn_process, spawn_tied_to_thread};
+use crate::run::caret::RustTest;
 use crate::run::matcher::{Link, RunLine, Severity};
 use crate::run::process::{RunEnd, Spec, clean, kill_group};
 use crate::run::{RunTask, load_tasks, quote_word};
@@ -307,6 +308,16 @@ pub struct Prepared {
     pub launch: Value,
     /// The step to run before the adapter; taken when it starts.
     pub build: Option<Spec>,
+    /// Debug Test at Caret's test; the build's executables are narrowed to the ones holding it.
+    pub test: Option<RustTest>,
+}
+
+/// A Debug Test at Caret start: what `prepare` debugs instead of choosing a configuration. `block` is
+/// `test_block(&test)`; tests may swap its build.
+struct TestStart {
+    task: RunTask,
+    block: DebugBlock,
+    test: RustTest,
 }
 
 struct Job {
@@ -317,6 +328,7 @@ struct Job {
     selected: Option<String>,
     language: Option<String>,
     file: Option<String>,
+    test: Option<TestStart>,
 }
 
 /// Whether the file's text differs from what is on disk: an open buffer's dirty state; a closed file has none.
@@ -595,27 +607,38 @@ fn frame_location(frame: &StackFrame, root: &Path) -> Option<(PathBuf, usize)> {
 
 /// Reads the project files, picks the configuration and the adapter, and resolves the launch arguments.
 fn prepare(job: Job) -> Result<Prepared, String> {
-    let (tasks, tasks_error) = load_tasks(&job.root, &job.tasks);
-    let (blocks, blocks_error) = load_debug_blocks(&job.root, &job.blocks);
-    // `load_debug_blocks` is the only reporter of a bad block: Run does not show it.
-    if let Some(e) = blocks_error.or(tasks_error) {
-        return Err(e);
-    }
-    let block_of = |t: &RunTask| blocks.get(&t.name).cloned().or_else(|| default_block(t));
-    let (task, block) = match &job.selected {
-        Some(name) => {
-            let task = tasks.iter().find(|t| &t.name == name).ok_or_else(|| format!("Run configuration '{name}' no longer exists"))?;
-            let block =
-                block_of(task).ok_or_else(|| format!("Configuration '{name}' has no [debug.\"{name}\"] table in .jetl/run.toml"))?;
-            (task, block)
+    let (tasks, blocks);
+    let (task, block, test) = match job.test {
+        // A test start reads no configuration: a broken `.jetl/run.toml` is not its business.
+        Some(TestStart { task, block, test }) => (task, block, Some(test)),
+        None => {
+            let (t, tasks_error) = load_tasks(&job.root, &job.tasks);
+            let (b, blocks_error) = load_debug_blocks(&job.root, &job.blocks);
+            (tasks, blocks) = (t, b);
+            // `load_debug_blocks` is the only reporter of a bad block: Run does not show it.
+            if let Some(e) = blocks_error.or(tasks_error) {
+                return Err(e);
+            }
+            let block_of = |t: &RunTask| blocks.get(&t.name).cloned().or_else(|| default_block(t));
+            let (task, block) = match &job.selected {
+                Some(name) => {
+                    let task =
+                        tasks.iter().find(|t| &t.name == name).ok_or_else(|| format!("Run configuration '{name}' no longer exists"))?;
+                    let block = block_of(task)
+                        .ok_or_else(|| format!("Configuration '{name}' has no [debug.\"{name}\"] table in .jetl/run.toml"))?;
+                    (task, block)
+                }
+                // A written block wins over a default, whatever the order of the tasks.
+                None => tasks
+                    .iter()
+                    .find_map(|t| blocks.get(&t.name).map(|b| (t, b.clone())))
+                    .or_else(|| tasks.iter().find_map(|t| default_block(t).map(|b| (t, b))))
+                    .ok_or_else(|| "No debug configuration: add [debug.<name>] to .jetl/run.toml".to_string())?,
+            };
+            (task.clone(), block, None)
         }
-        // A written block wins over a default, whatever the order of the tasks.
-        None => tasks
-            .iter()
-            .find_map(|t| blocks.get(&t.name).map(|b| (t, b.clone())))
-            .or_else(|| tasks.iter().find_map(|t| default_block(t).map(|b| (t, b))))
-            .ok_or_else(|| "No debug configuration: add [debug.<name>] to .jetl/run.toml".to_string())?,
     };
+    let task = &task;
     let root = job.root.as_path();
     let adapter =
         choose_adapter(&job.debug, &block, job.language.as_deref(), &|cmd| crate::doctor::resolve(cmd, root, &crate::util::fs::which))?;
@@ -626,8 +649,12 @@ fn prepare(job: Job) -> Result<Prepared, String> {
         return Err(format!("Cannot debug '{}': ${{artifact}} needs a build step: add build = [...] to its debug table", task.name));
     }
     check_line_breaks(&task.name, &launch)?;
-    Ok(Prepared { name: task.name.clone(), adapter, launch, build })
+    Ok(Prepared { name: task.name.clone(), adapter, launch, build, test })
 }
+
+/// The refusal of Debug Test at Caret for any file but Rust.
+const DEBUG_TEST_RUST_ONLY: &str =
+    "Debug Test at Caret supports Rust only; Python and JavaScript wait for debug adapter research (yman 451)";
 
 /// What a session under gdb says when `launch` left no program: gdb logs the failure of `cd`, `file` and `run` only.
 const NOT_STARTED: &str = "The program did not start: check launch.program and launch.cwd";
@@ -689,6 +716,10 @@ impl App {
     }
 
     fn debug_start(&mut self) {
+        self.debug_start_with(None);
+    }
+
+    fn debug_start_with(&mut self, test: Option<TestStart>) {
         // The build the press replaces is gone below; a start that is refused must not leave `building` on screen.
         if self.debug.pending_build() {
             self.debug_panel.set_stage(Some(BuildStage::NotStarted));
@@ -711,6 +742,7 @@ impl App {
             selected: self.run.selected.clone(),
             language: self.editor.active_buffer().and_then(|b| b.language()).map(|l| l.name.to_string()),
             file: self.editor.active_path().map(|p| p.to_string_lossy().into_owned()),
+            test,
         };
         self.debug.retiring = Some(tokio::spawn(async move {
             if let Some(b) = before {
@@ -719,6 +751,27 @@ impl App {
             let result = tokio::task::spawn_blocking(move || prepare(job)).await.unwrap_or_else(|e| Err(format!("Debug: {e}")));
             let _ = tx.send(AppMsg::DebugReady { generation, seq, result: Box::new(result) });
         }));
+    }
+
+    /// `run.debug_test_at_caret`: debug the Rust test (or module of tests) around the caret.
+    pub(super) fn debug_test_at_caret(&mut self) {
+        if self.editor.active_buffer().and_then(|b| b.language()).is_none_or(|l| l.name != "rust") {
+            return self.notify(Level::Info, DEBUG_TEST_RUST_ONLY);
+        }
+        match self.caret_test("Debug Test at Caret", &["rust"], DEBUG_TEST_RUST_ONLY) {
+            Ok((mut task, Some(test))) => {
+                // The full path, not the module path inside the file as Run names it.
+                task.name = format!("Test {}", test.filter.trim_end_matches("::"));
+                if let Some(b) = self.editor.active_buffer().filter(|b| b.dirty()) {
+                    let name = b.path.as_deref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    self.notify(Level::Info, format!("Debugging the saved version of {name}"));
+                }
+                let block = test_block(&test);
+                self.debug_start_with(Some(TestStart { task, block, test }));
+            }
+            Ok((_, None)) => self.notify(Level::Info, DEBUG_TEST_RUST_ONLY),
+            Err(e) => self.notify(Level::Info, e),
+        }
     }
 
     fn debug_stop(&mut self) {
@@ -781,7 +834,7 @@ impl App {
         };
         let pid = Arc::new(AtomicU32::new(task.pid));
         let tags = BuildTags { generation: self.workspace.generation, seq: self.debug.seq, session: id };
-        let drive = drive_build(task, spec.cwd, self.workspace.root.clone(), tags, self.bus_tx.clone(), pid.clone());
+        let drive = drive_build(task, spec.cwd, self.workspace.root.clone(), tags, self.bus_tx.clone(), pid.clone(), p.test.clone());
         // The prepare task that held this has finished: it sent the message being handled.
         self.debug.retiring = Some(tokio::spawn(drive));
         self.debug.building = Some(Building { _group: BuildGroup(pid), prepared: p, session: id, json });
@@ -821,6 +874,10 @@ impl App {
             return self.debug_launch(p, Some(session));
         }
         match artifacts.len() {
+            0 if p.test.is_some() => {
+                let filter = p.test.as_ref().map_or("", |t| t.filter.as_str());
+                self.debug_refuse(format!("Cannot debug '{name}': no test executable of its build lists {filter}"))
+            }
             0 => {
                 let advice = if json { "" } else { ". A Cargo build needs --message-format=json" };
                 self.debug_refuse(format!("Cannot debug '{name}': its build named no executable, so ${{artifact}} has no value{advice}"))
@@ -2037,7 +2094,7 @@ pub(crate) mod tests {
     use tokio::sync::mpsc::UnboundedReceiver;
 
     use super::*;
-    use crate::actions::Action;
+    use crate::actions::{Action, RunAction};
     use crate::app::tests::{handle_next, load, test_app};
     use crate::dap::config::AdapterOverride;
     use crate::dap::fake::{self, FakeAdapter, Order};
@@ -4769,6 +4826,178 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // ---- Debug Test at Caret (yman 474) ----
+
+    #[tokio::test]
+    async fn debug_test_at_caret_refuses_other_languages() {
+        let (mut app, dir, mut fakes) = setup("dtac-refuse", Order::LaunchDeferred);
+        let refuse = |app: &mut App| {
+            app.perform(Action::Run(RunAction::DebugTestAtCaret));
+            assert_eq!(last(app), (Level::Info, DEBUG_TEST_RUST_ONLY.to_string()));
+            assert!(!app.debug.starting());
+        };
+        refuse(&mut app);
+        crate::app::tests::load(&mut app, "notes.txt", "hello\n");
+        refuse(&mut app);
+        #[cfg(feature = "lang-python")]
+        {
+            let src = "def test_x():\n    pass\n";
+            crate::app::tests::load(&mut app, "t.py", src);
+            app.editor.active_buffer_mut().unwrap().view.sels.primary_mut().head = src.find("pass").unwrap();
+            refuse(&mut app);
+        }
+        assert!(fakes.try_recv().is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn ctrl_shift_f9_is_bound_to_debug_test_at_caret() {
+        let (app, dir) = test_app("dtac-key");
+        let action = Action::Run(RunAction::DebugTestAtCaret);
+        assert_eq!(app.keymap.shortcut_for(&action, action.contexts()).as_deref(), Some("Ctrl+Shift+F9"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[tokio::test]
+    async fn debug_test_at_caret_outside_a_test() {
+        let (mut app, dir, mut fakes) = setup("dtac-outside", Order::LaunchDeferred);
+        std::fs::write(app.workspace.root.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        std::fs::create_dir_all(app.workspace.root.join("src")).unwrap();
+        let src = "pub fn add() {}\n\n#[test]\nfn top() {}\n";
+        crate::app::tests::load(&mut app, "src/lib.rs", src);
+        app.editor.active_buffer_mut().unwrap().view.sels.primary_mut().head = src.find("add").unwrap();
+        app.perform(Action::Run(RunAction::DebugTestAtCaret));
+        assert_eq!(last(&app), (Level::Info, "No test at the caret".to_string()));
+        assert!(!app.debug.starting());
+        assert!(fakes.try_recv().is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn fake_job(root: &Path, test: Option<TestStart>) -> Job {
+        let mut debug = DebugConfig::default();
+        let o = AdapterOverride { command: Some(vec!["sh".into()]), languages: Some(vec!["rust".into()]), launch: None };
+        debug.adapters.insert("fake".into(), o);
+        Job {
+            root: root.to_path_buf(),
+            debug,
+            tasks: Vec::new(),
+            blocks: BTreeMap::new(),
+            selected: None,
+            language: None,
+            file: None,
+            test,
+        }
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[tokio::test]
+    async fn prepare_builds_the_test_of_the_caret() {
+        let (mut app, dir) = test_app("dtac-prepare");
+        let root = app.workspace.root.clone();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        std::fs::create_dir_all(root.join("tests")).unwrap();
+        write_run_toml(&app, "[[configs\ngarbage\n");
+        let src = "#[test]\nfn integration() {}\n";
+        crate::app::tests::load(&mut app, "tests/it.rs", src);
+        app.editor.active_buffer_mut().unwrap().view.sels.primary_mut().head = src.find("integration").unwrap();
+        let (task, test) = app.caret_test("Debug Test at Caret", &["rust"], "x").unwrap();
+        let test = test.unwrap();
+        let block = DebugBlock { adapter: Some("fake".into()), ..test_block(&test) };
+        let p = prepare(fake_job(&root, Some(TestStart { block, task, test }))).unwrap();
+        assert_eq!(p.name, "Test integration");
+        let build = p.build.as_ref().unwrap();
+        assert_eq!(build.argv.join(" "), "cargo test --no-run --message-format=json --test it");
+        assert_eq!(build.cwd, root);
+        assert_eq!(p.launch["program"], "${artifact}");
+        assert_eq!(p.launch["args"], json!(["integration", "--exact", "--nocapture"]));
+        assert!(p.test.is_some());
+        // The broken run.toml is not read by a test start, and is by any other.
+        let err = prepare(fake_job(&root, None)).unwrap_err();
+        assert!(err.contains("run.toml"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `one.jsonl` with a test-profile artifact line per executable, in `kinds`.
+    fn write_test_artifacts(root: &Path, exes: &[(&Path, &str)]) {
+        let lines: Vec<String> = exes
+            .iter()
+            .map(|(e, kind)| {
+                let name = e.file_name().unwrap().to_string_lossy().into_owned();
+                json!({"reason": "compiler-artifact", "target": {"name": name, "kind": [kind]}, "profile": {"test": true}, "executable": e})
+                    .to_string()
+            })
+            .collect();
+        std::fs::write(root.join("one.jsonl"), lines.join("\n") + "\n").unwrap();
+    }
+
+    /// An executable that lists `listed` for `--list`.
+    fn lister(root: &Path, name: &str, listed: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = root.join("bin").join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, format!("#!/bin/sh\n[ \"$1\" = --list ] && echo '{listed}: test'\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    fn test_start(root: &Path) -> TestStart {
+        let task = RunTask {
+            name: "Test a::b".into(),
+            command: crate::run::TaskCommand::Argv(vec!["cargo".into(), "test".into(), "a::b".into()]),
+            cwd: None,
+            env: BTreeMap::new(),
+            args: Vec::new(),
+            matcher: None,
+            origin: crate::run::Origin::Detected,
+        };
+        let test = RustTest { dir: root.to_path_buf(), target: Vec::new(), filter: "a::b".into(), exact: true, in_src: true };
+        let block = DebugBlock { adapter: Some("fake".into()), build: Some(vec!["cat".into(), "one.jsonl".into()]), ..test_block(&test) };
+        TestStart { task, block, test }
+    }
+
+    #[tokio::test]
+    async fn a_test_start_launches_the_executable_that_lists_it() {
+        let (mut app, dir) = test_app("dtac-launch");
+        let mut fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        let root = app.workspace.root.clone();
+        let (holds, other) = (lister(&root, "lib_t", "a::b"), lister(&root, "main_t", "other"));
+        write_test_artifacts(&root, &[(&holds, "lib"), (&other, "bin")]);
+        app.debug_start_with(Some(test_start(&root)));
+        console_until(&mut app, |a| a.debug.session.is_some()).await;
+        let mut fake = fakes.try_recv().expect("an adapter");
+        let launch = fake.recv("launch").await;
+        assert_eq!(launch["arguments"]["program"], json!(holds.to_string_lossy()));
+        assert_eq!(launch["arguments"]["args"], json!(["a::b", "--exact", "--nocapture"]));
+        assert!(console(&app).contains(&"Looking for a::b in 2 test executables".to_string()), "{:?}", console(&app));
+        app.debug.retire();
+
+        // No executable lists it: refused, nothing connects.
+        let (mut app, dir2) = test_app("dtac-none");
+        let mut fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        let root = app.workspace.root.clone();
+        let (a, b) = (lister(&root, "lib_t", "other"), lister(&root, "main_t", "other"));
+        write_test_artifacts(&root, &[(&a, "lib"), (&b, "bin")]);
+        app.debug_start_with(Some(test_start(&root)));
+        console_until(&mut app, |a| !a.debug.starting()).await;
+        assert!(fakes.try_recv().is_err());
+        assert_eq!(last(&app), (Level::Warn, "Cannot debug 'Test a::b': no test executable of its build lists a::b".to_string()));
+        assert_eq!(title(&app), " Debug: Test a::b · not started ");
+
+        // Both list it: the choice dialog.
+        let (mut app, dir3) = test_app("dtac-both");
+        let _fakes = with_fake_adapters(&mut app, caps(), Order::LaunchDeferred);
+        let root = app.workspace.root.clone();
+        let (a, b) = (lister(&root, "lib_t", "a::b"), lister(&root, "main_t", "a::b"));
+        write_test_artifacts(&root, &[(&a, "lib"), (&b, "bin")]);
+        app.debug_start_with(Some(test_start(&root)));
+        console_until(&mut app, |a| a.dialog.is_some()).await;
+        assert_eq!(dialog_items(&app).len(), 2);
+        for d in [dir, dir2, dir3] {
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
     #[tokio::test]
     async fn a_failed_build_starts_nothing() {
         for layout in ["shown", "hidden", "covered"] {
@@ -5092,6 +5321,7 @@ pub(crate) mod tests {
             selected: selected.map(String::from),
             language: None,
             file: None,
+            test: None,
         };
         let argv = |p: &Prepared| p.build.as_ref().map(|b| b.argv.join(" "));
         let none = prepare(job(None, BTreeMap::new(), Vec::new())).unwrap();

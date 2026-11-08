@@ -531,6 +531,8 @@ pub enum RunAction {
     RerunFailed,
     /// Run the test around the caret.
     TestAtCaret,
+    /// Debug the Rust test around the caret.
+    DebugTestAtCaret,
     /// Send the HTTP request around the caret with curl.
     HttpRequestAtCaret,
     /// Run [index] scip_command, then load the SCIP index again.
@@ -1189,6 +1191,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "run.rerun" => "Run: run the last run again", Run(RunAction::Rerun);
         "run.rerun_failed" => "Run: rerun the failed tests", Run(RunAction::RerunFailed);
         "run.test_at_caret" => "Run: run the test at the caret", Run(RunAction::TestAtCaret);
+        "run.debug_test_at_caret" => "Run: debug the test at the caret (Rust)", Run(RunAction::DebugTestAtCaret);
         "run.http_request_at_caret" => "Run: send the HTTP request at the caret of a .http file with curl", Run(RunAction::HttpRequestAtCaret);
         "run.build_scip_index" => "Run: build the SCIP index with [index] scip_command, then load it", Run(RunAction::BuildScipIndex);
         "run.stop" => "Run: stop the running task", Run(RunAction::Stop);

@@ -5,23 +5,31 @@
 //! `compiler-artifact` with an `executable` is an [`Artifact`], a `compiler-message` shows its `rendered`
 //! text, the other Cargo reasons known to be noise show nothing, and everything else, JSON or not, shows as
 //! written. [`drive_build`] runs that over a spawned process and reports to the App.
+//!
+//! Debug Test at Caret asks `drive_build` for one more step: [`find_tests`] narrows the test-profile
+//! executables to the ones that hold the test, listing each with libtest's `--list --format terse` when
+//! two or more candidates remain.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::time::Duration;
 
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::session::SessionId;
 use crate::event::AppMsg;
+use crate::run::caret::RustTest;
 use crate::run::matcher::{Matcher, RunLine};
-use crate::run::process::{LineSplitter, Spawned, clean, pump};
+use crate::run::process::{LineSplitter, RunEnd, Spawned, Spec, clean, kill_group, pump, spawn};
 
 /// A line longer than this with no newline stops being collected for parsing and is shown as text.
 const MAX_JSON_LINE: usize = 4 * 1024 * 1024;
 /// More executables than this are not collected.
 const MAX_ARTIFACTS: usize = 1000;
+/// How long one test executable gets to list its tests.
+pub const LIST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// An executable a build made.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,6 +174,86 @@ pub(crate) fn sorted_artifacts(mut v: Vec<Artifact>) -> Vec<Artifact> {
     v
 }
 
+/// The executables that can hold the test `t`: the test profile's, and for a file under `src/` (no target flag
+/// given) only the library's and binaries', not integration tests, examples or benches. Order kept.
+pub(crate) fn test_candidates(artifacts: Vec<Artifact>, t: &RustTest) -> Vec<Artifact> {
+    artifacts.into_iter().filter(|a| a.test && !(t.in_src && matches!(a.kind.as_str(), "test" | "example" | "bench"))).collect()
+}
+
+/// Whether a line of libtest's `--list --format terse` names the test: the whole name for an exact filter,
+/// else a substring, as libtest's own filter matches.
+pub(crate) fn lists_test(line: &str, t: &RustTest) -> bool {
+    line.strip_suffix(": test").is_some_and(|name| if t.exact { name == t.filter } else { name.contains(&t.filter) })
+}
+
+/// The candidates of `artifacts` that hold the test `t`. With fewer than two candidates nothing is run.
+/// Otherwise `note` gets one line and each candidate runs `--list --format terse` in `cwd`, at most `timeout`
+/// (then its process group is killed and it counts as not listing). `pid` is the build's shared handle: when
+/// it has no other holder, the `BuildGroup` that stops the build is gone (Stop, a new start, a root switch,
+/// quit), so no more lists start and the result is empty.
+pub(crate) async fn find_tests(
+    artifacts: Vec<Artifact>,
+    t: &RustTest,
+    cwd: &Path,
+    pid: &Arc<AtomicU32>,
+    timeout: Duration,
+    mut note: impl FnMut(String),
+) -> Vec<Artifact> {
+    let candidates = test_candidates(artifacts, t);
+    if candidates.len() < 2 {
+        return candidates;
+    }
+    note(format!("Looking for {} in {} test executables", t.filter, candidates.len()));
+    let mut keep = Vec::new();
+    for a in candidates {
+        if Arc::strong_count(pid) == 1 {
+            return Vec::new();
+        }
+        let argv = vec![a.path.to_string_lossy().into_owned(), "--list".into(), "--format".into(), "terse".into()];
+        let task = match spawn(&Spec { argv, cwd: cwd.to_path_buf(), env: Vec::new() }) {
+            Ok(task) => task,
+            Err(e) => {
+                tracing::debug!("listing the tests of {}: {e}", a.path.display());
+                continue;
+            }
+        };
+        pid.store(task.pid, Ordering::SeqCst);
+        let found = AtomicBool::new(false);
+        let mut split = LineSplitter::default();
+        let want = t.clone();
+        let list = pump(
+            task,
+            move |bytes| {
+                let lines = match bytes {
+                    Some(b) => split.push(b),
+                    None => split.finish().into_iter().collect(),
+                };
+                if lines.iter().any(|l| lists_test(l, &want)) { vec![true] } else { Vec::new() }
+            },
+            |hit: Vec<bool>| {
+                if !hit.is_empty() {
+                    found.store(true, Ordering::SeqCst);
+                }
+            },
+            pid.clone(),
+        );
+        tokio::pin!(list);
+        tokio::select! {
+            _ = &mut list => {}
+            _ = tokio::time::sleep(timeout) => {
+                tracing::warn!("{} did not list its tests in {timeout:?}", a.path.display());
+                kill_group(pid.load(Ordering::SeqCst));
+                list.await;
+                continue;
+            }
+        };
+        if found.load(Ordering::SeqCst) {
+            keep.push(a);
+        }
+    }
+    keep
+}
+
 /// What a build's messages carry back.
 pub(crate) struct BuildTags {
     pub generation: u64,
@@ -175,6 +263,8 @@ pub(crate) struct BuildTags {
 
 /// Run `task` to its end: its lines go out as `AppMsg::DebugOutput` for `tags.session`, then one
 /// `AppMsg::DebugBuilt` with how it ended and its executables, sorted. `pid` is cleared when it is reaped.
+/// With a `test` (Debug Test at Caret) and a build that succeeded, the executables are narrowed by
+/// [`find_tests`] first.
 pub(crate) async fn drive_build(
     task: Spawned,
     cwd: PathBuf,
@@ -182,6 +272,7 @@ pub(crate) async fn drive_build(
     tags: BuildTags,
     tx: UnboundedSender<AppMsg>,
     pid: Arc<AtomicU32>,
+    test: Option<RustTest>,
 ) {
     let mut feed = BuildFeed::new(&cwd, &root);
     let mut artifacts = Vec::new();
@@ -204,10 +295,19 @@ pub(crate) async fn drive_build(
                 let _ = tx.send(AppMsg::DebugOutput { generation: tags.generation, session: tags.session, lines });
             }
         },
-        pid,
+        pid.clone(),
     )
     .await;
-    let _ = tx.send(AppMsg::DebugBuilt { generation: tags.generation, seq: tags.seq, end, artifacts: sorted_artifacts(artifacts) });
+    let mut artifacts = sorted_artifacts(artifacts);
+    if end == RunEnd::Code(0)
+        && let Some(t) = &test
+    {
+        artifacts = find_tests(artifacts, t, &cwd, &pid, LIST_TIMEOUT, |text| {
+            let _ = tx.send(AppMsg::DebugOutput { generation: tags.generation, session: tags.session, lines: vec![RunLine::plain(text)] });
+        })
+        .await;
+    }
+    let _ = tx.send(AppMsg::DebugBuilt { generation: tags.generation, seq: tags.seq, end, artifacts });
 }
 
 #[cfg(test)]
@@ -390,5 +490,115 @@ mod tests {
         assert_eq!(a.label(Path::new("/other")), "demo (bin) /w/target/debug/demo");
         let evil = Artifact { name: "a\x1b[31mb\nc".into(), ..a };
         assert!(!evil.label(Path::new("/w")).contains(['\x1b', '\n']));
+    }
+
+    fn rust_test(filter: &str, exact: bool, in_src: bool) -> RustTest {
+        RustTest { dir: "/w".into(), target: Vec::new(), filter: filter.into(), exact, in_src }
+    }
+
+    fn kind(path: &str, kind: &str, test: bool) -> Artifact {
+        Artifact { path: path.into(), name: "probe".into(), kind: kind.into(), test }
+    }
+
+    #[test]
+    fn test_candidates_keep_the_test_profile_and_the_target_kinds() {
+        // The four executables a build with no target flag names (design probe, build-all.json).
+        let all =
+            vec![kind("/t/bin", "bin", false), kind("/t/lib", "lib", true), kind("/t/it", "test", true), kind("/t/bint", "bin", true)];
+        let paths = |v: Vec<Artifact>| v.into_iter().map(|a| a.path.to_str().unwrap().to_string()).collect::<Vec<_>>();
+        assert_eq!(paths(test_candidates(all.clone(), &rust_test("x", true, true))), ["/t/lib", "/t/bint"]);
+        assert_eq!(paths(test_candidates(all.clone(), &rust_test("x", true, false))), ["/t/lib", "/t/it", "/t/bint"]);
+        let more = vec![kind("/t/ex", "example", true), kind("/t/be", "bench", true), kind("/t/lib", "lib", true)];
+        assert_eq!(paths(test_candidates(more, &rust_test("x", true, true))), ["/t/lib"]);
+    }
+
+    #[test]
+    fn lists_test_matches_libtests_terse_lines() {
+        let exact = rust_test("util::tests::twice_works", true, true);
+        assert!(lists_test("util::tests::twice_works: test", &exact));
+        assert!(!lists_test("util::tests::twice_works_too: test", &exact));
+        let sub = rust_test("util::tests::twice_works", false, true);
+        assert!(lists_test("util::tests::twice_works_too: test", &sub));
+        assert!(!lists_test("a::b: bench", &rust_test("a::b", true, true)));
+        assert!(!lists_test("util::tests::twice_works", &exact), "no suffix");
+        let module = rust_test("util::tests::", false, true);
+        assert!(lists_test("util::tests::twice_works: test", &module) && lists_test("util::tests::twice_works_too: test", &module));
+        assert!(!lists_test("tests::main_test: test", &module));
+    }
+
+    /// An executable script that prints `body` when asked to `--list`.
+    fn script(dir: &Path, name: &str, body: &str) -> Artifact {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        Artifact { path, name: name.into(), kind: "lib".into(), test: true }
+    }
+
+    #[tokio::test]
+    async fn find_tests_lists_only_when_two_remain() {
+        let one = Artifact { test: true, ..art("/nonexistent/exe") };
+        let pid = Arc::new(AtomicU32::new(0));
+        let hold = pid.clone();
+        let mut notes = Vec::new();
+        let got = find_tests(vec![one.clone(), art("/other")], &rust_test("a::b", true, true), Path::new("/"), &pid, LIST_TIMEOUT, |n| {
+            notes.push(n)
+        })
+        .await;
+        assert_eq!(got, vec![one], "the non-test artifact is dropped, the single candidate is returned unrun");
+        assert!(notes.is_empty());
+        drop(hold);
+    }
+
+    #[tokio::test]
+    async fn find_tests_keeps_the_executables_that_list_the_test() {
+        let dir = scratch("list");
+        let yes = script(&dir, "yes", "[ \"$1\" = --list ] && echo 'a::b: test'");
+        let no = script(&dir, "no", "[ \"$1\" = --list ] && echo 'other: test'");
+        let pid = Arc::new(AtomicU32::new(0));
+        let _hold = pid.clone();
+        let mut notes = Vec::new();
+        let got = find_tests(vec![yes.clone(), no], &rust_test("a::b", true, true), &dir, &pid, LIST_TIMEOUT, |n| notes.push(n)).await;
+        assert_eq!(got, vec![yes]);
+        assert_eq!(notes, ["Looking for a::b in 2 test executables"]);
+        assert_eq!(pid.load(Ordering::SeqCst), 0, "reaped");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_list_that_hangs_is_killed_and_dropped() {
+        let dir = scratch("hang");
+        let pid_file = dir.join("sleeper.pid");
+        let hang = script(&dir, "hang", &format!("echo $$ > {}\nexec sleep 30", pid_file.display()));
+        let fast = script(&dir, "fast", "echo 'a::b: test'");
+        let pid = Arc::new(AtomicU32::new(0));
+        let _hold = pid.clone();
+        let got =
+            find_tests(vec![fast.clone(), hang], &rust_test("a::b", true, true), &dir, &pid, Duration::from_millis(200), |_| {}).await;
+        assert_eq!(got, vec![fast]);
+        let sleeper: u32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+        let alive = |p: u32| {
+            std::fs::read_to_string(format!("/proc/{p}/stat"))
+                .is_ok_and(|s| s.rsplit(')').next().is_some_and(|r| !r.trim_start().starts_with('Z')))
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while alive(sleeper) && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!alive(sleeper), "the hung list was killed");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn find_tests_stops_when_the_start_is_gone() {
+        let dir = scratch("gone");
+        let marker = dir.join("ran");
+        let a = script(&dir, "a", &format!("touch {}\necho 'a::b: test'", marker.display()));
+        let b = script(&dir, "b", &format!("touch {}\necho 'a::b: test'", marker.display()));
+        let pid = Arc::new(AtomicU32::new(0));
+        let got = find_tests(vec![a, b], &rust_test("a::b", true, true), &dir, &pid, LIST_TIMEOUT, |_| {}).await;
+        assert!(got.is_empty());
+        assert!(!marker.exists(), "no list ran");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

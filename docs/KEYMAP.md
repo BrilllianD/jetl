@@ -125,6 +125,7 @@ key goes to the shell, and Esc Esc at the shell prompt focuses the editor.
 | `Shift+F10` | `run.run_selected` | Run: run the selected configuration |
 | `Ctrl+F5` | `run.rerun` | Run: run the last run again |
 | `Ctrl+Shift+F10` | `run.test_at_caret` | Run: run the test at the caret |
+| `Ctrl+Shift+F9` | `run.debug_test_at_caret` | Run: debug the test at the caret (Rust) |
 | `Ctrl+Alt+R` | `run.http_request_at_caret` | Run: send the HTTP request at the caret of a .http file with curl |
 | `Ctrl+F2` | `run.stop` | Run: stop the running task |
 | `F4` | `run.next_problem` | Run: next problem (opens it) |

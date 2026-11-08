@@ -427,6 +427,7 @@ impl RunPanel {
             RunAction::Rerun
             | RunAction::RerunFailed
             | RunAction::TestAtCaret
+            | RunAction::DebugTestAtCaret
             | RunAction::HttpRequestAtCaret
             | RunAction::BuildScipIndex
             | RunAction::Stop
