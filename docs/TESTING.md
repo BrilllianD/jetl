@@ -411,7 +411,10 @@ build `cargo build --no-default-features --features lang-rust`. Project: `n.txt`
    regex replacement uses groups ($1, ${name})` appears and `AB` is dim.
 3. Esc, `M-3`, type `foo`, `M-r`, type `bar`, `M-p`: `AB` is highlighted and the `m.txt` rows preview `BAR` and `Bar`.
    `M-a`: the dialog reads `with "bar" (preserving case)?`; Enter. `m.txt` holds `BAR` and `Bar`.
-4. Stderr is empty and Ctrl+Q exits 0.
+4. At 80x24, steps 1 and 3 again: `AB` stays on the Replace row. The editor bar clips ` Replace all ` at the right
+   edge while the Project tree is open, as before; in the Find in Files window the Replace field is narrower so
+   ` Replace all ` stays whole.
+5. Stderr is empty and Ctrl+Q exits 0.
 
 ### Scenario: rename with comments and strings
 

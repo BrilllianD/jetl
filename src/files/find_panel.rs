@@ -67,6 +67,7 @@ const STRUCTURAL_W: u16 = if cfg!(feature = "structural") { 6 } else { 0 };
 
 const NOT_STRUCTURAL: &str = "Case, whole word and regex do not apply to a structural search";
 const NO_STRUCTURAL_REPLACE: &str = "Structural search cannot replace; Alt+T turns it off";
+const NO_RENAME_PRESERVE: &str = "Preserve case does not apply to a rename";
 
 pub struct FindPanel {
     /// `ui.file_icons`, set by `App::sync_file_icons`.
@@ -526,6 +527,10 @@ impl FindPanel {
     fn toggle_preserve_case(&mut self, cx: &mut Ctx) {
         if self.structural {
             cx.notify(Level::Info, NO_STRUCTURAL_REPLACE);
+            return;
+        }
+        if self.preview.is_some() {
+            cx.notify(Level::Info, NO_RENAME_PRESERVE);
             return;
         }
         self.preserve_case ^= true;
@@ -1361,6 +1366,18 @@ mod tests {
         p.preview = Some(preview_of(0));
         p.on_batch(Batch { seq: p.current_seq(), hits, files_searched: 1, done: true, capped: false });
         p
+    }
+
+    #[test]
+    fn preserve_case_toggle_is_refused_in_a_rename_preview() {
+        let (dir, config, theme, workspace) = temp_root("preserve-rename");
+        let mut cx = test_ctx(&config, &theme, &workspace);
+        let mut p = preview_panel(vec![rename_hit("a", 0, 3, "new", Some((0, 0)), RenameSource::Exact)]);
+        assert!(p.handle_action(&FindAction::TogglePreserveCase, &mut cx));
+        assert!(!p.preserve_case, "a rename never shapes its text");
+        assert!(p.rename_preview().is_some(), "the preview stays");
+        assert!(matches!(cx.effects.as_slice(), [Effect::Notify(Level::Info, t)] if t == NO_RENAME_PRESERVE));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn included(p: &FindPanel) -> Vec<bool> {
