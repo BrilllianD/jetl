@@ -3431,10 +3431,10 @@ Env as in the other scenarios plus `XDG_CACHE_HOME=/tmp/jt-home/cache RUST_LOG=j
 
 Run with `[lsp] enabled = false`, jetl's own repo as the root, at 120x40 then 80x24.
 
-1. Start jetl and wait a few seconds for the symbol index (Go to Symbol finds `fallback_usages`). Open `src/app/lsp_nav.rs` and put the caret on `fallback_usages` in `pub(crate) fn fallback_usages` (Ctrl+G to its line, see `grep -n "fn fallback_usages" src/app/lsp_nav.rs`).
-2. Navigate > Call Hierarchy (Ctrl+Alt+H): the Hierarchy window opens focused, titled `Callers of fallback_usages (approximate)`, root `fallback_usages  lsp_nav.rs:<line>`, a child `lsp_usages_without_server  lsp_nav.rs:<line>`.
-3. Tab: the title becomes `Callees of fallback_usages (approximate)`; the children include `usage_group` and `refs_named`. Right on a child expands it; a `…` may show for a moment. F5 shows the same tree.
-4. Enter on `usage_group`: the editor opens `lsp_nav.rs` with the caret on the name `usage_group` of its definition.
+1. Start jetl and wait a few seconds for the symbol index (Go to Symbol finds `fallback_spawn`). Open `src/app/lsp_nav.rs` and put the caret on `fallback_spawn` in `pub(super) fn fallback_spawn` (Ctrl+G to its line, see `grep -n "fn fallback_spawn" src/app/lsp_nav.rs`; Home, then Right 18 times).
+2. Navigate > Call Hierarchy (Ctrl+Alt+H): the Hierarchy window opens focused, titled `Callers of fallback_spawn (approximate)`, root `fallback_spawn  lsp_nav.rs:<line>`, children `text_rename_open  lsp_edit.rs:<line>`, `lsp_usages_without_server  lsp_nav.rs:<line>` and `scip_usages  lsp_nav.rs:<line>`.
+3. Tab: the title becomes `Callees of fallback_spawn (approximate)`; the first children are `caret_position`, `active_buffer`, `focused_group`, `usages_job` and `run` (then name matches such as `send`). Right on a child expands it; a `…` may show for a moment. F5 shows the same tree.
+4. Down 4 times to `usages_job`, Enter: the editor opens `lsp_nav.rs` with the caret on the name `usages_job` of its definition.
 5. Caret on a word that is no definition anywhere (a local variable): Ctrl+Alt+H shows the toast `No call hierarchy here`.
 6. Large project (yman 394): root a copy under /tmp of part of the cargo registry (`cp -r ~/.cargo/registry/src/index.crates.io-*/[a-e]* "$T"`), with `XDG_*` under /tmp. Wait for the symbol index, open a long function, Ctrl+Alt+H, Tab: the root row may show `…`, then the callees appear without a key. Right on a child expands it, a `…` may show for a moment. Stderr is empty, Ctrl+Q exits 0.
 

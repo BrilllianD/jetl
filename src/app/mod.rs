@@ -2652,21 +2652,6 @@ pub(crate) mod tests {
 
     /// Wait for the first bus message `want` accepts and handle it; other
     /// messages are dropped.
-    /// Wait for the next `AppMsg::FallbackUsages` and return it unhandled, so a test can feed it back changed.
-    pub(crate) async fn take_fallback(app: &mut App) -> FallbackUsages {
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                match app.bus_rx.recv().await {
-                    Some(AppMsg::FallbackUsages(f)) => break *f,
-                    Some(_) => {}
-                    None => panic!("bus closed"),
-                }
-            }
-        })
-        .await
-        .expect("message in time")
-    }
-
     pub(crate) async fn handle_next(app: &mut App, want: impl Fn(&AppMsg) -> bool) {
         let msg = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -2683,6 +2668,23 @@ pub(crate) mod tests {
         .await
         .expect("message in time");
         app.handle_msg(msg);
+    }
+
+    /// Wait for the next `AppMsg::FallbackUsages` and return it unhandled, so a test can feed it back changed.
+    pub(crate) async fn take_fallback(app: &mut App) -> FallbackUsages {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match app.bus_rx.recv().await {
+                    Some(AppMsg::FallbackUsages(f)) => break *f,
+                    // Handled as `handle_next` does: a skipped Local History diff answer holds the next one back.
+                    Some(m @ AppMsg::LocalHistory(crate::history::HistoryMsg::Diff { .. })) => app.handle_msg(m),
+                    Some(_) => {}
+                    None => panic!("bus closed"),
+                }
+            }
+        })
+        .await
+        .expect("message in time")
     }
 
     fn fs_op_done(m: &AppMsg) -> bool {

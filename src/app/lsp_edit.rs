@@ -1492,6 +1492,13 @@ mod tests {
         feed(&mut app, f);
         assert!(toasts(&app).contains(&"The file changed; rename again".to_string()), "{:?}", toasts(&app));
         assert!(app.find.query.text.is_empty());
+        // Both: the caret check comes first, so the user is told to rename again.
+        let f = ask(&mut app).await;
+        app.find.reset();
+        app.editor.active_buffer_mut().unwrap().goto_line(2, 7);
+        app.toasts = Default::default();
+        feed(&mut app, f);
+        assert!(toasts(&app).contains(&"The file changed; rename again".to_string()), "{:?}", toasts(&app));
         // Neither: the rename opens in Find.
         let f = ask(&mut app).await;
         feed(&mut app, f);

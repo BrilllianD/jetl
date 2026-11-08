@@ -461,16 +461,16 @@ impl App {
         if tag.seq != newest {
             return tracing::debug!("dropping superseded fallback usages");
         }
-        if let UsagesFor::TextRename { find_seq, .. } = &purpose
-            && *find_seq != self.find.current_seq()
-        {
-            return tracing::debug!("dropping fallback usages: the Find results moved on");
-        }
         if !self.doc_tag_current(&tag) {
             if matches!(purpose, UsagesFor::TextRename { .. }) {
                 self.lsp_hint("The file changed; rename again");
             }
             return;
+        }
+        if let UsagesFor::TextRename { find_seq, .. } = &purpose
+            && *find_seq != self.find.current_seq()
+        {
+            return tracing::debug!("dropping fallback usages: the Find results moved on");
         }
         self.dirty_frame = true;
         match purpose {
@@ -1538,6 +1538,36 @@ mod tests {
         assert_eq!(app.palette.as_ref().expect("Locations").kind, PaletteKind::Locations);
         let buf = draw(&mut app, 100, 30);
         assert!((0..30).any(|y| row(&buf, y).contains("Usages of helper (unverified)")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_clean_open_buffer_gives_its_own_preview_line() {
+        const MAIN: &str = "mod util;\nfn helper() {}\nfn main() {\n    helper();\n}\n";
+        const UTIL: &str = "fn f() {\n    helper(); // buffer\n}\n";
+        let (mut app, dir) = test_app("usages-clean-preview");
+        let (root, g) = (app.workspace.root.clone(), app.workspace.generation);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.rs"), MAIN).unwrap();
+        std::fs::write(root.join("src/util.rs"), UTIL).unwrap();
+        let files = ["src/main.rs", "src/util.rs"];
+        app.handle_msg(AppMsg::FileIndex { generation: g, seq: 1, files: files.iter().map(|s| s.to_string()).collect() });
+        let job = app.symbols.start(root.clone());
+        let (seq, mut batches) = (job.seq, Vec::new());
+        job.run(|b| batches.push(b));
+        for batch in batches {
+            app.handle_msg(AppMsg::Symbols { generation: g, seq, batch });
+        }
+        let util = crate::app::tests::load(&mut app, "src/util.rs", UTIL);
+        crate::app::tests::load(&mut app, "src/main.rs", MAIN);
+        assert!(!app.editor.buffers.iter().any(|b| b.dirty()));
+        // The file changes on disk; the clean buffer has not reloaded yet.
+        std::fs::write(&util, "fn f() {\n    helper(); // disk\n}\n").unwrap();
+        goto(&mut app, 3, 6);
+        act(&mut app, LspAction::FindUsages);
+        let real = crate::app::tests::take_fallback(&mut app).await;
+        let text = real.items.iter().find(|i| i.path == util).map(|i| i.text.as_str());
+        assert_eq!(text, Some("helper(); // buffer"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
