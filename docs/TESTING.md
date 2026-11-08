@@ -3227,6 +3227,26 @@ Setup as above.
 6. Set `rulers = []`: the rulers disappear without a restart.
 7. Repeat at 80x24.
 
+### Scenario: bracket pair colours
+
+Setup as above.
+
+1. Add `bracket_pair_colours = true` under `[editor]` in `/tmp/jt-home/config/jetl/config.toml`
+   and open `src/editor/brackets.rs` (Ctrl+N) at 120x40: `capture-pane -e` shows `(`, `[` and
+   `{` in three foreground colours cycling with depth, both brackets of a pair alike; the `"("`
+   and `'['`-style brackets inside strings, char literals and comments keep their string or
+   comment colour.
+2. Put the caret on a bracket: both brackets of the pair get the match background and bold and
+   keep their depth colour.
+3. Scroll down with PageDown through `mod tests`, then jump to the end (Ctrl+End) and back up:
+   a line shows the same bracket colours however it was reached (the depth does not restart at
+   the window top).
+4. In one function delete a `)`: the brackets of the next function keep their colours.
+5. Open a Markdown file with a ```` ```rust ```` fence: the fence's brackets are coloured, the
+   prose is not changed. Open a `.txt` file: no bracket colours.
+6. Remove the line (or set it to `false`): the colours go without a restart.
+7. Repeat 1-3 at 80x24.
+
 ### Scenario: inlay hints
 
 Setup as above, but rust-analyzer on: no `[lsp] enabled = false`. Wait for indexing (the status

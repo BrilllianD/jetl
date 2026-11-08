@@ -46,6 +46,9 @@ tab_dirty = "{{yellow}}"
 line_number = "{{mix foreground background 55}}"
 line_number_current = "{{foreground}}"
 bracket_match = { bg = "{{mix background accent 30}}", bold = true }
+bracket_1 = "{{yellow}}"
+bracket_2 = "{{magenta}}"
+bracket_3 = "{{cyan}}"
 secondary_caret = { reverse = true }
 bookmark = "{{yellow}}"
 breakpoint = "{{red}}"

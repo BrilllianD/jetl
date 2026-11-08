@@ -37,6 +37,17 @@ impl Mark {
         Self { ch, name, hit: Box::new(hit) }
     }
 
+    /// Like [`Mark::style`], but only on cells that show one of `symbols`.
+    pub(crate) fn style_on(ch: char, name: &'static str, style: Style, symbols: &'static str) -> Self {
+        let hit = move |c: &Cell| {
+            !c.symbol().is_empty()
+                && symbols.contains(c.symbol())
+                && style.fg.is_none_or(|fg| c.fg == fg)
+                && c.modifier.contains(style.add_modifier)
+        };
+        Self { ch, name, hit: Box::new(hit) }
+    }
+
     /// Cells with `modifier` set.
     pub(crate) fn modifier(ch: char, name: &'static str, modifier: Modifier) -> Self {
         Self { ch, name, hit: Box::new(move |c| c.modifier.contains(modifier)) }

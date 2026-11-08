@@ -133,6 +133,8 @@ pub struct EditorConfig {
     pub indent_guides: bool,
     /// Columns after which a vertical ruler is drawn (0-based cell n) on rows whose text does not reach it; 0 is ignored.
     pub rulers: Vec<usize>,
+    /// Colour (), [] and {} by nesting depth (theme styles bracket_1 to bracket_3) in files with a tree-sitter grammar.
+    pub bracket_pair_colours: bool,
     /// Show the caret line's blame (author, date, summary) after its text in the focused pane.
     pub inline_blame: bool,
     /// A row at the bottom of each editor pane naming the definitions around the caret.
@@ -330,6 +332,7 @@ impl Default for EditorConfig {
             highlight_occurrences: true,
             indent_guides: true,
             rulers: Vec::new(),
+            bracket_pair_colours: false,
             inline_blame: false,
             breadcrumbs: false,
             sticky_scroll: false,

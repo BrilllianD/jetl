@@ -171,6 +171,13 @@ pub static SETTINGS: &[Setting] = &[
         none
     ),
     row!(
+        "editor.bracket_pair_colours",
+        "Bracket pair colours",
+        "Colour (), [] and {} by nesting depth (theme styles bracket_1 to bracket_3), in files with a tree-sitter grammar.",
+        Kind::Bool,
+        |c| Value::Bool(c.editor.bracket_pair_colours)
+    ),
+    row!(
         "editor.inline_blame",
         "Inline blame on the caret line",
         "Author, date and summary of the commit that last changed the caret line, shown after its text (files in a git repository).",
@@ -516,6 +523,7 @@ pub static PAGES: &[Page] = &[
             "editor.highlight_occurrences",
             "editor.indent_guides",
             "editor.rulers",
+            "editor.bracket_pair_colours",
             "editor.inline_blame",
             "editor.breadcrumbs",
             "editor.sticky_scroll",

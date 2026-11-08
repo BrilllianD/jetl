@@ -13,10 +13,10 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 07   │Keymap                  │  Highlight the word …  [x]                      │
 08   │  Mode                  │  Show indent guides    [x]                      │
 09   │Version Control         │  Column rulers         Edit in config.toml…     │
-10   │  Git                   │  Inline blame on the…  [ ]                      │
-11   │  Worktrees             │  Show breadcrumbs      [ ]                      │
-12  ◉│Files                   │  Sticky scroll         [ ]                      │
-13  ⋔│Tools                   │  Live templates (sni…  [x]                      │
+10   │  Git                   │  Bracket pair colours  [ ]                      │
+11   │  Worktrees             │  Inline blame on the…  [ ]                      │
+12  ◉│Files                   │  Show breadcrumbs      [ ]                      │
+13  ⋔│Tools                   │  Sticky scroll         [ ]                      │
 14  ✎│  Terminal              │                                                 │
 15  ✓│  Run                   │Lines kept visible above and below the caret.    │
 16  ⟲│  Clipboard             │Applies at once.                                 │

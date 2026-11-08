@@ -124,6 +124,7 @@ sections! {
         highlight_occurrences => Live,
         indent_guides => Live,
         rulers => Live,
+        bracket_pair_colours => Live,
         inline_blame => Live,
         breadcrumbs => Live,
         sticky_scroll => Live,
@@ -270,9 +271,9 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), KEYS.len());
-        // 20 editor, 9 ui, 3 git, 2 worktree, 1 keymap, 4 files, 2 clipboard,
+        // 21 editor, 9 ui, 3 git, 2 worktree, 1 keymap, 4 files, 2 clipboard,
         // 3 format, 3 run, 3 terminal, 11 lsp, 2 debug, 5 local_history, 2 index.
-        assert_eq!(KEYS.len(), 70);
+        assert_eq!(KEYS.len(), 71);
     }
 
     #[test]

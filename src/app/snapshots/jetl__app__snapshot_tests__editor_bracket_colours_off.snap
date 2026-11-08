@@ -1,0 +1,15 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+50x8 cursor=(7,1)
+00   brackets.rs ×
+01   1  ▾ fn f(a: [u8; 2]) -> u8 {
+02   2    │   let s = "("; // )
+03   3    │   g(h(a[0]), {1})
+04   4    }
+05   5
+06
+07
+-- marks: C=caret S=selection F=fold O=occurrence 1=bracket 1 2=bracket 2 3=bracket 3
+01        OO

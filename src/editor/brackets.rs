@@ -3,6 +3,8 @@
 //! inside strings and comments are ignored; without one a nesting scan over
 //! the text is used.
 
+use std::ops::Range;
+
 use ropey::Rope;
 use tree_sitter::{Node, Tree};
 
@@ -121,16 +123,94 @@ pub fn in_literal_at(rope: &Rope, tree: &Tree, pos: usize) -> bool {
     tree.root_node().descendant_for_byte_range(b, b + 1).is_some_and(in_literal)
 }
 
+fn literal_kind(kind: &str) -> bool {
+    kind.contains("string") || kind.contains("comment") || kind == "char_literal"
+}
+
+/// Nodes `depths` does not look into: literals, and Markdown's `inline`
+/// (prose and link text, whose grammar makes tokens of its parentheses and
+/// brackets).
+fn uncoloured_kind(kind: &str) -> bool {
+    literal_kind(kind) || kind == "inline"
+}
+
 fn in_literal(node: Node) -> bool {
     let mut n = Some(node);
     while let Some(x) = n {
-        let k = x.kind();
-        if k.contains("string") || k.contains("comment") || k == "char_literal" {
+        if literal_kind(x.kind()) {
             return true;
         }
         n = x.parent();
     }
     false
+}
+
+/// `Some(true)` for an opening and `Some(false)` for a closing bracket token
+/// (a one-byte leaf whose kind is `(`, `)`, `[`, `]`, `{` or `}`).
+fn bracket_token(node: Node) -> Option<bool> {
+    if node.child_count() != 0 || node.end_byte() != node.start_byte() + 1 {
+        return None;
+    }
+    let mut k = node.kind().chars();
+    match (k.next(), k.next()) {
+        (Some(c), None) => partner(c).map(|(_, opens)| opens),
+        _ => None,
+    }
+}
+
+/// Appends the bracket tokens of `tree` that start in `bytes` to `out`, as
+/// (char, nesting depth), in text order. Each tree level counts the
+/// brackets opened and not yet closed among its own children, starting at
+/// its parent's count where it begins: a pair's two brackets share a depth,
+/// and a stray bracket inside a node never shifts the colours after it.
+/// Strings and comments are skipped. Visits the nodes that meet `bytes` and
+/// the siblings before them on the path from the root, never the text.
+pub fn depths(rope: &Rope, tree: &Tree, bytes: Range<usize>, out: &mut Vec<(usize, usize)>) {
+    let mut cur = tree.walk();
+    // Running count per level, from the root's children down to the cursor's.
+    let mut level = vec![0usize];
+    if !cur.goto_first_child() {
+        return;
+    }
+    loop {
+        let node = cur.node();
+        if node.start_byte() >= bytes.end {
+            return; // pre-order: every later node starts at or after this one
+        }
+        let d = level.last_mut().expect("a count per cursor level");
+        let mut down = false;
+        match bracket_token(node) {
+            Some(true) => {
+                if node.start_byte() >= bytes.start {
+                    out.push((rope.byte_to_char(node.start_byte()), *d));
+                }
+                *d += 1;
+            }
+            Some(false) => {
+                *d = d.saturating_sub(1);
+                if node.start_byte() >= bytes.start {
+                    out.push((rope.byte_to_char(node.start_byte()), *d));
+                }
+            }
+            None if node.end_byte() > bytes.start && !uncoloured_kind(node.kind()) => {
+                let base = *d;
+                if cur.goto_first_child() {
+                    level.push(base);
+                    down = true;
+                }
+            }
+            None => {}
+        }
+        if down {
+            continue;
+        }
+        while !cur.goto_next_sibling() {
+            if !cur.goto_parent() {
+                return;
+            }
+            level.pop();
+        }
+    }
 }
 
 /// Nesting scan that only counts the same bracket kind.
@@ -236,5 +316,98 @@ mod tests {
         let open = src.find("g(").unwrap() + 1;
         let close = src.find(") }").unwrap();
         assert_eq!(pair_at(&r, syn.tree_at_char(&r, open), open), Some((open, close)));
+    }
+
+    #[cfg(feature = "lang-rust")]
+    fn rust_depths(src: &str, bytes: Option<Range<usize>>) -> Vec<(usize, usize)> {
+        use crate::config::theme::Theme;
+        let def = super::super::syntax::language_for_name("rust").expect("rust grammar");
+        let mut syn = super::super::syntax::Syntax::new(def, &Theme::default()).unwrap();
+        let r = Rope::from_str(src);
+        syn.reparse(&r);
+        let mut out = Vec::new();
+        depths(&r, syn.tree().unwrap(), bytes.unwrap_or(0..r.len_bytes()), &mut out);
+        out
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn depths_follow_nesting() {
+        let src = "fn f(a: [u8; 2]) { g(h(1), {2}) }\n";
+        let got = rust_depths(src, None);
+        let want_pos: Vec<usize> = src.char_indices().filter(|(_, c)| "()[]{}".contains(*c)).map(|(i, _)| i).collect();
+        assert_eq!(got.iter().map(|e| e.0).collect::<Vec<_>>(), want_pos);
+        assert_eq!(got.iter().map(|e| e.1).collect::<Vec<_>>(), [0, 1, 1, 0, 0, 1, 2, 2, 2, 2, 1, 0]);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn depths_skip_strings_and_comments() {
+        let src = "fn f() { g(\"(\", '[', 1) } // )\n/* { */\n";
+        let got = rust_depths(src, None);
+        let at = |c: &str, n: usize| src.match_indices(c).nth(n).unwrap().0;
+        let want = [(at("(", 0), 0), (at(")", 0), 0), (at("{", 0), 0), (at("(", 1), 1), (at(") }", 0), 1), (at("}", 0), 0)];
+        assert_eq!(got, want);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn a_window_gets_the_whole_file_depths() {
+        let src = "mod m {\n    fn f() {\n        if a {\n            g([1, (2)]);\n        }\n    }\n}\n";
+        let r = Rope::from_str(src);
+        let all = rust_depths(src, None);
+        assert!(all.iter().any(|e| e.1 == 4), "four levels deep somewhere");
+        for l in 0..r.len_lines() {
+            for n in 1..=3 {
+                let last = (l + n).min(r.len_lines());
+                let bytes = r.line_to_byte(l)..if last >= r.len_lines() { r.len_bytes() } else { r.line_to_byte(last) };
+                let chars = r.line_to_char(l)..r.line_to_char(last);
+                let want: Vec<_> = all.iter().copied().filter(|e| chars.contains(&e.0)).collect();
+                assert_eq!(rust_depths(src, Some(bytes)), want, "window {l}+{n}");
+            }
+        }
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn a_stray_bracket_does_not_recolour_later_items() {
+        let src = "fn a() { ( }\nfn b() { g(1) }\n";
+        let got = rust_depths(src, None);
+        let b = src.find("fn b").unwrap();
+        let later: Vec<usize> = got.iter().filter(|e| e.0 >= b).map(|e| e.1).collect();
+        // `fn b`: parameter parens, body brace, call parens, closing brace.
+        assert_eq!(later, [0, 0, 0, 1, 1, 0], "{got:?}");
+    }
+
+    /// A string node that holds bracket tokens of its own (an f-string's
+    /// interpolation) is skipped whole: Rust's literals hold none, so only
+    /// this proves the guard.
+    #[cfg(feature = "lang-python")]
+    #[test]
+    fn depths_skip_bracket_tokens_inside_a_string_node() {
+        use crate::config::theme::Theme;
+        let def = super::super::syntax::language_for_name("python").expect("python grammar");
+        let mut syn = super::super::syntax::Syntax::new(def, &Theme::default()).unwrap();
+        let src = "x = f\"{(1)}\"\ny = (2)\n";
+        let r = Rope::from_str(src);
+        syn.reparse(&r);
+        let mut out = Vec::new();
+        depths(&r, syn.tree().unwrap(), 0..r.len_bytes(), &mut out);
+        let y = src.find("(2").unwrap();
+        assert_eq!(out, [(y, 0), (y + 2, 0)], "only the brackets outside the f-string count");
+    }
+
+    #[cfg(feature = "lang-md")]
+    #[test]
+    fn depths_leave_markdown_prose_alone() {
+        use crate::config::theme::Theme;
+        let def = super::super::syntax::language_for_name("markdown").expect("markdown grammar");
+        let mut syn = super::super::syntax::Syntax::new(def, &Theme::default()).unwrap();
+        let src = "# T\n\nprose (a) [b](http://c.d)\n";
+        let r = Rope::from_str(src);
+        syn.reparse(&r);
+        let mut out = Vec::new();
+        depths(&r, syn.tree().unwrap(), 0..r.len_bytes(), &mut out);
+        assert_eq!(out, [], "no bracket token in prose or link text");
     }
 }

@@ -531,6 +531,30 @@ async fn editor_indent_guides() {
     assert_snapshot!("editor_indent_guides_off", snapshot(&term, &marks, None));
 }
 
+#[cfg(feature = "lang-rust")]
+#[tokio::test]
+async fn editor_bracket_colours() {
+    let mut fx = stable_app("bracket-colours");
+    let app = &mut fx.app;
+    load(app, "brackets.rs", "fn f(a: [u8; 2]) -> u8 {\n    let s = \"(\"; // )\n    g(h(a[0]), {1})\n}\n");
+    let mut c = app.config.clone();
+    c.editor.bracket_pair_colours = true;
+    app.editor.apply_config(&c);
+    let term = draw_editor(app, 50, 8);
+    let mut marks = editor_marks(&app.theme);
+    for (m, name, style) in
+        [('1', "bracket 1", app.theme.bracket_1), ('2', "bracket 2", app.theme.bracket_2), ('3', "bracket 3", app.theme.bracket_3)]
+    {
+        // Bracket cells only: github-dark colours functions and numbers like bracket_2 and bracket_3.
+        marks.push(Mark::style_on(m, name, Style::default().fg(style.fg.unwrap()), "()[]{}"));
+    }
+    assert_snapshot!("editor_bracket_colours", snapshot(&term, &marks, None));
+    c.editor.bracket_pair_colours = false;
+    app.editor.apply_config(&c);
+    let term = draw_editor(app, 50, 8);
+    assert_snapshot!("editor_bracket_colours_off", snapshot(&term, &marks, None));
+}
+
 #[tokio::test]
 async fn editor_rulers() {
     let mut fx = stable_app("rulers");

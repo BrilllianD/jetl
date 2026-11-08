@@ -42,6 +42,9 @@ tab_dirty = "#d29922"
 line_number = "#6e7681"
 line_number_current = "#e6edf3"
 bracket_match = { bg = "#193b25", bold = true }
+bracket_1 = "#e3b341"
+bracket_2 = "#d2a8ff"
+bracket_3 = "#79c0ff"
 secondary_caret = { reverse = true }
 bookmark = "#d29922"
 breakpoint = "#f85149"

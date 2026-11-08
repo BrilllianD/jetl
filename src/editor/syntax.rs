@@ -1008,6 +1008,14 @@ struct Candidate {
 }
 
 /// First start .. last end of sorted ranges.
+/// The byte range of `rows` lines from `first_line`, clamped to the rope.
+fn window_bytes(rope: &Rope, first_line: usize, rows: usize) -> Range<usize> {
+    let last_line = (first_line + rows).min(rope.len_lines());
+    let start_byte = rope.line_to_byte(first_line.min(rope.len_lines()));
+    let end_byte = if last_line >= rope.len_lines() { rope.len_bytes() } else { rope.line_to_byte(last_line) };
+    start_byte..end_byte
+}
+
 fn span(bytes: &[Range<usize>]) -> Range<usize> {
     match (bytes.first(), bytes.last()) {
         (Some(a), Some(b)) => a.start..b.end,
@@ -1270,6 +1278,8 @@ pub struct Syntax {
     dirty: bool,
     /// Highlights of the last queried window, keyed by first line and rows.
     cache: Option<(u64, Highlights)>,
+    /// Bracket depths of the last queried window, keyed like `cache`.
+    bracket_cache: Option<(u64, Vec<(usize, usize)>)>,
     /// Parses the injections (its language and included ranges are set per parse).
     inner: Parser,
     /// Sorted by start, disjoint.
@@ -1304,6 +1314,7 @@ impl Syntax {
             styles: styles_for(def, theme),
             dirty: true,
             cache: None,
+            bracket_cache: None,
             inner: Parser::new(),
             injections: Vec::new(),
             inner_styles: inner_styles_for(def, theme),
@@ -1319,6 +1330,7 @@ impl Syntax {
         self.styles = styles_for(self.def, theme);
         self.inner_styles = inner_styles_for(self.def, theme);
         self.cache = None;
+        self.bracket_cache = None;
     }
 
     #[cfg(test)]
@@ -1330,6 +1342,7 @@ impl Syntax {
     pub fn note_change(&mut self, rope: &Rope, at: usize, _old_len: usize, new_len: usize, old: &str, new: &str) {
         self.dirty = true;
         self.cache = None;
+        self.bracket_cache = None;
         let start_byte = rope.char_to_byte(at.min(rope.len_chars()));
         let start_row = rope.byte_to_line(start_byte);
         let start_col = start_byte - rope.line_to_byte(start_row);
@@ -1519,9 +1532,7 @@ impl Syntax {
         }
         self.reparse(rope);
         let Some(tree) = &self.tree else { return Highlights::default() };
-        let last_line = (first_line + rows).min(rope.len_lines());
-        let start_byte = rope.line_to_byte(first_line.min(rope.len_lines()));
-        let end_byte = if last_line >= rope.len_lines() { rope.len_bytes() } else { rope.line_to_byte(last_line) };
+        let Range { start: start_byte, end: end_byte } = window_bytes(rope, first_line, rows);
         let mut spans = query_spans(&self.def.query, &self.styles, tree, rope, start_byte..end_byte, None);
         for inj in &self.injections {
             let s = span(&inj.bytes);
@@ -1543,8 +1554,39 @@ impl Syntax {
         h
     }
 
+    /// The `()[]{}` tokens of `rows` lines from `first_line`, outside strings
+    /// and comments, as (char, nesting depth), sorted: the host tree's, then
+    /// those of the injections that meet the window. Cached like `highlights`.
+    pub fn bracket_depths(&mut self, rope: &Rope, first_line: usize, rows: usize) -> Vec<(usize, usize)> {
+        let key = (first_line as u64) << 32 | rows as u64;
+        if let Some((k, d)) = &self.bracket_cache
+            && *k == key
+            && !self.dirty
+        {
+            return d.clone();
+        }
+        self.reparse(rope);
+        let Some(tree) = &self.tree else { return Vec::new() };
+        let bytes = window_bytes(rope, first_line, rows);
+        let mut out = Vec::new();
+        super::brackets::depths(rope, tree, bytes.clone(), &mut out);
+        for inj in &self.injections {
+            let s = span(&inj.bytes);
+            if s.end <= bytes.start || s.start >= bytes.end {
+                continue;
+            }
+            super::brackets::depths(rope, &inj.tree, s.start.max(bytes.start)..s.end.min(bytes.end), &mut out);
+        }
+        // Stable: on a char both trees mark, the host's entry stays.
+        out.sort_by_key(|&(p, _)| p);
+        out.dedup_by_key(|e| e.0);
+        self.bracket_cache = Some((key, out.clone()));
+        out
+    }
+
     pub fn invalidate(&mut self) {
         self.cache = None;
+        self.bracket_cache = None;
     }
 }
 
@@ -2629,6 +2671,21 @@ mod tests {
     }
 
     /// Style at byte `at` of `src`, highlighted as `file`.
+    #[cfg(all(feature = "lang-md", feature = "lang-rust"))]
+    #[test]
+    fn bracket_depths_cover_injections() {
+        let src = "# T\n\n```rust\nfn f() { g(1) }\n```\n";
+        let (mut syn, rope) = md_syntax(src);
+        let want: Vec<(usize, usize)> = [("(", 0, 0), (")", 0, 0), ("{", 0, 0), ("(", 1, 1), (")", 1, 1), ("}", 0, 0)]
+            .iter()
+            .map(|&(c, n, d)| (rope.byte_to_char(src.match_indices(c).nth(n).unwrap().0), d))
+            .collect();
+        assert_eq!(syn.bracket_depths(&rope, 0, rope.len_lines()), want);
+        assert_eq!(syn.bracket_depths(&rope, 0, rope.len_lines()), want, "cached");
+        syn.invalidate();
+        assert_eq!(syn.bracket_depths(&rope, 0, rope.len_lines()), want, "recomputed");
+    }
+
     #[cfg(all(feature = "lang-md", feature = "lang-rust"))]
     fn style_at(file: &str, src: &str, at: usize) -> Option<Style> {
         let theme = Theme::default();

@@ -628,6 +628,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bracket_pair_colours_reload_live() {
+        let (mut app, dir) = test_app("reload-bracket-colours");
+        assert_eq!(reload::class_of("editor.bracket_pair_colours"), Some(ReloadClass::Live));
+        write(&app, "config.toml", &format!("[editor]\nbracket_pair_colours = true\n{NO_LSP}"));
+        reload(&mut app, &[ConfigFile::Config]);
+        assert!(app.config.editor.bracket_pair_colours);
+        assert!(app.editor.bracket_pair_colours(), "the editor took it");
+        write(&app, "config.toml", &format!("[editor]\n{NO_LSP}"));
+        reload(&mut app, &[ConfigFile::Config]);
+        assert!(!app.config.editor.bracket_pair_colours);
+        assert!(!app.editor.bracket_pair_colours());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn semantic_tokens_reload_live() {
         let (mut app, dir) = test_app("reload-semantic");
         crate::app::tests::load(&mut app, "a.rs", "fn main() {}\n");

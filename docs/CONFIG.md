@@ -117,6 +117,7 @@ auto_close = true              # type brackets and quotes in pairs, step over cl
 highlight_occurrences = true   # highlight the word at the caret (or the selected text) elsewhere on screen; with a language server that offers document highlight, its read and write accesses instead
 indent_guides = true           # a │ at each indent stop in a line's leading whitespace (theme style indent_guide)
 rulers = []                    # a │ (theme style ruler) after each of these columns on rows whose text does not reach it, e.g. [80, 100]; 0 is ignored
+bracket_pair_colours = false   # colour (), [] and {} by nesting depth (theme styles bracket_1..bracket_3); needs a tree-sitter grammar; sticky scroll header lines stay uncoloured
 inline_blame = false           # author, date and summary of the caret line's commit after its text (theme style inline_blame)
 breadcrumbs = false            # a row at the bottom of each editor pane naming the definitions around the caret, e.g. "impl Point › fn new"; click one to go there (theme style breadcrumbs)
 sticky_scroll = false          # pin the header lines of the definitions scrolled past at the top of each pane; click one to go there (theme style sticky_scroll)
@@ -1290,7 +1291,7 @@ and a resolved change with `merge_resolved_bg`.
 
 Style fields: `border border_focused title title_focused strip_item
 strip_item_active strip_drop status_accent tab tab_active tab_dirty line_number
-line_number_current bracket_match secondary_caret bookmark breakpoint breakpoint_unverified debug_execution_arrow fold_placeholder git_added git_modified git_deleted git_untracked
+line_number_current bracket_match bracket_1 bracket_2 bracket_3 secondary_caret bookmark breakpoint breakpoint_unverified debug_execution_arrow fold_placeholder git_added git_modified git_deleted git_untracked
 git_conflicted git_ignored popup_border list_selected list_selected_unfocused
 dim error warn info diag_error diag_warn diag_info diag_hint lightbulb indent_guide ruler inlay_hint inline_blame breadcrumbs sticky_scroll splitter`.
 `strip_drop` marks the drop target while a tool strip button is dragged; fg and bg are used.
@@ -1299,6 +1300,7 @@ dim error warn info diag_error diag_warn diag_info diag_hint lightbulb indent_gu
 `indent_guide` colours the indent guides (`editor.indent_guides`); only its
 foreground is used.
 `ruler` colours the column rulers (`editor.rulers`); only its foreground is used.
+`bracket_1`, `bracket_2` and `bracket_3` colour brackets by nesting depth when `editor.bracket_pair_colours` is on: depth 0 takes `bracket_1`, depth 1 `bracket_2`, depth 2 `bracket_3`, depth 3 `bracket_1` again; only the foreground is used. Only `()`, `[]` and `{}` tokens that the grammar parses outside strings and comments are coloured (also in fenced code and other injections, but not in Markdown prose or link text); the caret's matched pair keeps its `bracket_match` background over the colour. Sticky scroll header lines, breadcrumbs, previews, diff and patch tabs, and files without a grammar are not coloured.
 `inlay_hint` draws the language server's inlay hints (`[lsp] inlay_hints`) and the debugger's inline values (`[debug] inline_values`); fg and
 bg are used.
 `inline_blame` colours the inline blame after the caret line (`editor.inline_blame`); only its foreground is used.

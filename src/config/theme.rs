@@ -235,6 +235,12 @@ theme_fields! {
         line_number,
         line_number_current,
         bracket_match,
+        /// Bracket pair colours (`editor.bracket_pair_colours`), depth 0, 3, 6…: only the foreground is used.
+        bracket_1,
+        /// Bracket pair colours, depth 1, 4, 7…: only the foreground is used.
+        bracket_2,
+        /// Bracket pair colours, depth 2, 5, 8…: only the foreground is used.
+        bracket_3,
         /// The carets other than the primary one (which is the terminal cursor).
         secondary_caret,
         /// Gutter glyph of a bookmarked line (◆, or a numbered one's digit
@@ -928,8 +934,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn indent_guide_and_ruler_differ_from_the_backgrounds() {
+    /// Every builtin theme and both Omarchy fixtures, in both colour modes.
+    fn every_test_theme() -> Vec<(&'static str, bool, Theme)> {
         use crate::config::omarchy::fixtures;
         let mut themes = Vec::new();
         for b in BUILTIN_THEMES {
@@ -947,6 +953,12 @@ mod tests {
                 themes.push((name, ansi256, t));
             }
         }
+        themes
+    }
+
+    #[test]
+    fn indent_guide_and_ruler_differ_from_the_backgrounds() {
+        let themes = every_test_theme();
         for (name, ansi256, t) in themes {
             let fg = t.indent_guide.fg.unwrap_or_else(|| panic!("{name} ansi256={ansi256}: no indent_guide fg"));
             assert_ne!(fg, t.bg, "{name} ansi256={ansi256}");
@@ -954,6 +966,22 @@ mod tests {
             let rfg = t.ruler.fg.unwrap_or_else(|| panic!("{name} ansi256={ansi256}: no ruler fg"));
             assert_ne!(rfg, t.bg, "{name} ansi256={ansi256} ruler");
             assert_ne!(rfg, t.current_line_bg, "{name} ansi256={ansi256} ruler");
+        }
+    }
+
+    #[test]
+    fn bracket_colours_are_set_distinct_and_readable() {
+        for (name, ansi256, t) in every_test_theme() {
+            let fgs = [t.bracket_1.fg, t.bracket_2.fg, t.bracket_3.fg];
+            for (i, fg) in fgs.iter().enumerate() {
+                let fg = fg.unwrap_or_else(|| panic!("{name} ansi256={ansi256}: no bracket_{} fg", i + 1));
+                assert_ne!(fg, t.bg, "{name} ansi256={ansi256} bracket_{}", i + 1);
+                assert_ne!(fg, t.current_line_bg, "{name} ansi256={ansi256} bracket_{}", i + 1);
+            }
+            assert!(
+                fgs[0] != fgs[1] && fgs[1] != fgs[2] && fgs[0] != fgs[2],
+                "{name} ansi256={ansi256}: bracket fgs {fgs:?} not pairwise different"
+            );
         }
     }
 

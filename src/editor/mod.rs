@@ -158,6 +158,8 @@ pub struct Editor {
     indent_guides: bool,
     /// `editor.rulers` as applied (cleaned: no 0, ascending, no duplicates).
     rulers: Vec<usize>,
+    /// `editor.bracket_pair_colours` as applied.
+    bracket_pair_colours: bool,
     /// `editor.inline_blame` as applied.
     inline_blame: bool,
     breadcrumbs: bool,
@@ -277,6 +279,7 @@ impl Editor {
             highlight_occurrences: false,
             indent_guides: false,
             rulers: Vec::new(),
+            bracket_pair_colours: false,
             inline_blame: false,
             breadcrumbs: false,
             sticky_scroll: false,
@@ -327,6 +330,7 @@ impl Editor {
             highlight_occurrences,
             indent_guides,
             rulers,
+            bracket_pair_colours,
             inline_blame,
             breadcrumbs,
             sticky_scroll,
@@ -351,6 +355,7 @@ impl Editor {
         self.rulers = rulers.iter().copied().filter(|&c| c > 0).collect();
         self.rulers.sort_unstable();
         self.rulers.dedup();
+        self.bracket_pair_colours = *bracket_pair_colours;
         self.inline_blame = *inline_blame;
         if !self.inline_blame {
             for b in &mut self.buffers {
@@ -555,6 +560,12 @@ impl Editor {
     #[cfg(test)]
     pub fn indent_guides(&self) -> bool {
         self.indent_guides
+    }
+
+    /// `editor.bracket_pair_colours` as applied.
+    #[cfg(test)]
+    pub fn bracket_pair_colours(&self) -> bool {
+        self.bracket_pair_colours
     }
 
     /// `editor.rulers` as applied (cleaned).
@@ -1981,6 +1992,7 @@ impl Editor {
             occurrences: self.highlight_occurrences,
             indent_guides: self.indent_guides && self.buffers[i].preview.is_none(),
             rulers: if self.buffers[i].preview.is_none() && self.buffers[i].patch.is_none() { &self.rulers } else { &[] },
+            bracket_colours: self.bracket_pair_colours && self.buffers[i].preview.is_none() && self.buffers[i].patch.is_none(),
             fold_marks: self.buffers[i].preview.is_none(),
             inline_blame: self.inline_blame,
             theme,

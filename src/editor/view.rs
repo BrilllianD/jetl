@@ -489,6 +489,8 @@ pub struct RenderOpts<'a> {
     pub indent_guides: bool,
     /// Columns after which a ruler is drawn, on 0-based cell n, where the text leaves it empty (`editor.rulers`, cleaned: no 0, ascending).
     pub rulers: &'a [usize],
+    /// Colour bracket tokens by nesting depth (`editor.bracket_pair_colours`); off for previews and patch tabs.
+    pub bracket_colours: bool,
     /// Draw the fold arrows in the gutter.
     pub fold_marks: bool,
     /// Paint the caret line's blame after its text (`editor.inline_blame`).
@@ -637,6 +639,13 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         let chars = rope.line_to_char(window.start.min(last))..rope.line_to_char(last);
         hl.overlay(buf.semantic.in_range(chars).filter_map(|(r, name)| theme.capture_style(name).map(|s| (r, s))));
     }
+    // Bracket pair colours: the window's bracket tokens and their depths.
+    let depths = if o.bracket_colours && buf.preview.is_none() {
+        buf.syntax.as_mut().map(|s| s.bracket_depths(rope, window.start, window.len())).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let bracket_fg = [theme.bracket_1.fg, theme.bracket_2.fg, theme.bracket_3.fg];
     let search = buf.view.search.as_ref();
     let pair =
         super::brackets::pair_at(rope, buf.syntax.as_ref().and_then(|s| s.tree_at_char(rope, buf.view.sel().head)), buf.view.sel().head);
@@ -844,6 +853,11 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
             }
             let x = x as u16;
             let mut style = hl.style_at(c.char_idx).unwrap_or(Style::default().fg(theme.fg));
+            if let Ok(i) = depths.binary_search_by_key(&c.char_idx, |&(p, _)| p)
+                && let Some(fg) = bracket_fg[depths[i].1 % 3]
+            {
+                style = style.fg(fg);
+            }
             if underlines {
                 let t = marks.tags_at(c.char_idx);
                 if t.unnecessary {
@@ -1180,6 +1194,7 @@ mod tests {
             occurrences: false,
             indent_guides: false,
             rulers: &[],
+            bracket_colours: false,
             fold_marks: true,
             inline_blame: false,
             theme: &theme,
@@ -1220,6 +1235,7 @@ mod tests {
                 occurrences: false,
                 indent_guides: false,
                 rulers: &[],
+                bracket_colours: false,
                 fold_marks: true,
                 inline_blame: false,
                 theme: &theme,
@@ -1282,6 +1298,7 @@ mod tests {
             occurrences: false,
             indent_guides: false,
             rulers: &[],
+            bracket_colours: false,
             fold_marks: true,
             inline_blame: false,
             theme: &theme,
@@ -1328,6 +1345,7 @@ mod tests {
             occurrences: false,
             indent_guides: false,
             rulers: &[],
+            bracket_colours: false,
             fold_marks: true,
             inline_blame: false,
             theme,
@@ -2045,6 +2063,97 @@ mod tests {
             "an unresolved capture keeps tree-sitter's style"
         );
         assert_ne!(screen[(x0 + 7, 0)].fg, Color::Magenta);
+    }
+
+    #[cfg(feature = "lang-rust")]
+    fn rust_buf(text: &str, theme: &Theme) -> Buffer {
+        let path = std::path::PathBuf::from("/tmp/brk.rs");
+        let mut buf = Buffer::from_text(1, Some(path.clone()), text, false);
+        buf.syntax = crate::editor::syntax::Syntax::for_path(&path, theme);
+        buf
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn bracket_colours_paint_by_depth() {
+        use ratatui::style::Modifier;
+        let theme = Theme::default();
+        let text = "fn f() { g(h([1])) }\n";
+        let mut buf = rust_buf(text, &theme);
+        buf.view.set_sel(Selection::point(text.chars().count() - 1));
+        let on = RenderOpts { bracket_colours: true, ..resize_opts(&theme) };
+        let (screen, ta) = draw_with(&mut buf, &on, 40, 3);
+        let x0 = ta.x;
+        let rainbow = [theme.bracket_1.fg.unwrap(), theme.bracket_2.fg.unwrap(), theme.bracket_3.fg.unwrap()];
+        // (char index, depth) of every bracket, from the depth rule.
+        let brackets = [(4, 0), (5, 0), (7, 0), (10, 1), (12, 2), (13, 3), (15, 3), (16, 2), (17, 1), (19, 0)];
+        for (i, d) in brackets {
+            let cell = &screen[(x0 + i as u16, 0)];
+            assert_eq!(cell.fg, rainbow[d % 3], "char {i} depth {d}");
+        }
+        let braces = [7u16, 19];
+        for x in braces {
+            let cell = &screen[(x0 + x, 0)];
+            assert_eq!(cell.bg, theme.bracket_match.bg.unwrap(), "pair background at {x}");
+            assert!(cell.modifier.contains(Modifier::BOLD), "pair bold at {x}");
+        }
+        let off = RenderOpts { bracket_colours: false, ..resize_opts(&theme) };
+        let (plain, _) = draw_with(&mut buf, &off, 40, 3);
+        for (i, _) in brackets {
+            assert!(!rainbow.contains(&plain[(x0 + i as u16, 0)].fg), "off: char {i}");
+        }
+        for x in [3u16, 9, 11] {
+            assert_eq!(screen[(x0 + x, 0)].fg, plain[(x0 + x, 0)].fg, "non-bracket char {x} keeps its syntax fg");
+        }
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn bracket_colours_follow_an_edit() {
+        use crate::editor::undo::TxKind;
+        let theme = Theme::default();
+        let mut buf = rust_buf("fn f() { g(1) }\n", &theme);
+        buf.view.set_sel(Selection::point(0));
+        let on = RenderOpts { bracket_colours: true, follow: false, ..resize_opts(&theme) };
+        let (before, ta) = draw_with(&mut buf, &on, 40, 3);
+        let x0 = ta.x;
+        let rainbow = [theme.bracket_1.fg.unwrap(), theme.bracket_2.fg.unwrap(), theme.bracket_3.fg.unwrap()];
+        assert_eq!(before[(x0 + 10, 0)].fg, rainbow[1], "g's ( is at depth 1");
+        buf.view.set_sel(Selection::point(9));
+        buf.insert("let _ = (); ", TxKind::Typing);
+        let (after, _) = draw_with(&mut buf, &on, 40, 3);
+        // The same text in a fresh buffer: nothing stale from the first frame.
+        let mut fresh = rust_buf("fn f() { let _ = (); g(1) }\n", &theme);
+        fresh.view.set_sel(Selection::point(9));
+        let (want, _) = draw_with(&mut fresh, &on, 40, 3);
+        for x in 0..40 - x0 {
+            assert_eq!(after[(x0 + x, 0)].fg, want[(x0 + x, 0)].fg, "cell {x}");
+        }
+        assert_eq!(after[(x0 + 22, 0)].symbol(), "(", "g's ( moved to cell 22");
+        assert_eq!(after[(x0 + 22, 0)].fg, rainbow[1]);
+        assert_eq!(after[(x0 + 17, 0)].fg, rainbow[1], "the new ( is a paren at depth 1");
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn bracket_colours_keep_selection_and_diagnostics() {
+        use crate::lsp::diagnostics::{DiagMarks, Severity, Tags, tests::diag};
+        let theme = Theme::default();
+        let text = "fn f() { g(1) }\n";
+        let mut buf = rust_buf(text, &theme);
+        buf.view.set_sel(Selection { anchor: 0, head: text.chars().count(), ..Selection::point(0) });
+        let on = RenderOpts { bracket_colours: true, ..resize_opts(&theme) };
+        let (screen, ta) = draw_with(&mut buf, &on, 40, 3);
+        let cell = &screen[(ta.x + 10, 0)];
+        assert_eq!(cell.fg, theme.bracket_2.fg.unwrap(), "the rainbow fg stays under the selection");
+        assert_eq!(cell.bg, theme.selection_bg);
+        // Unnecessary code is faded: the dim fg wins over the bracket fg.
+        let mut d = diag(0, 9, 0, 13, Severity::Hint, "unused");
+        d.tags = Tags { unnecessary: true, deprecated: false };
+        buf.diag_marks = DiagMarks::build(&[d], &buf.rope);
+        buf.view.set_sel(Selection::point(0));
+        let (screen, ta) = draw_with(&mut buf, &on, 40, 3);
+        assert_eq!(screen[(ta.x + 10, 0)].fg, theme.dim.fg.unwrap());
     }
 
     #[test]
