@@ -677,9 +677,11 @@ impl App {
     /// `main.rs` then calls [`App::finish_after_error`].
     pub async fn run(&mut self, term: &mut Term) -> Result<()> {
         self.event_loop(term).await?;
-        self.hot_exit_on_exit();
-        // Quitting on purpose: a panic from here on writes nothing.
-        self.recorder.clear();
+        // Quitting on purpose: a panic from here on writes nothing (unless
+        // hot exit failed and the crash dump is all that keeps the text).
+        if self.hot_exit_on_exit() {
+            self.recorder.clear();
+        }
         self.shutdown().await;
         Ok(())
     }

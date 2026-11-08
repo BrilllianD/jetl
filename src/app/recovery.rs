@@ -108,17 +108,28 @@ impl App {
         Ok(n)
     }
 
-    /// The run loop ended: write the dirty buffers again when hot exit is on
-    /// and they were not discarded, so text that changed after
-    /// [`App::request_quit`] wrote (late messages) and quits that never
-    /// asked (the terminal closed its event stream) are kept too.
-    pub(crate) fn hot_exit_on_exit(&mut self) {
-        if self.config.files.hot_exit
-            && !self.quit_discards
-            && self.editor.has_dirty()
-            && let Err(e) = self.hot_exit_write()
-        {
-            tracing::error!("hot exit: {e}");
+    /// The run loop ended, hot exit on and nothing discarded: write the dirty
+    /// buffers again, so text that changed after [`App::request_quit`] wrote
+    /// (late messages) and quits that never asked (the terminal closed its
+    /// event stream) are kept too. With nothing dirty, a dump this process
+    /// wrote earlier is stale (late messages saved everything) and goes.
+    /// A failed write falls back to a crash dump ([`App::dump_after_error`])
+    /// and returns false: the caller must then keep the recorder armed.
+    pub(crate) fn hot_exit_on_exit(&mut self) -> bool {
+        if !self.config.files.hot_exit || self.quit_discards {
+            return true;
+        }
+        if !self.editor.has_dirty() {
+            crate::recovery::remove_own_hot_exit(&self.paths.hot_exit_dir(), &self.workspace.root, std::process::id());
+            return true;
+        }
+        match self.hot_exit_write() {
+            Ok(_) => true,
+            Err(e) => {
+                tracing::error!("hot exit: {e}");
+                self.dump_after_error();
+                false
+            }
         }
     }
 
@@ -129,7 +140,23 @@ impl App {
     pub(crate) fn restore_hot_exit(&mut self) {
         let Some(found) = crate::recovery::take_hot_exit(&self.paths.hot_exit_dir(), &self.workspace.root) else { return };
         let active = self.editor.active_buffer().map(|b| b.id);
-        let n = found.entries.iter().filter(|e| self.restore_recovered(e)).count();
+        let mut moved = Vec::new();
+        let mut n = 0;
+        for e in &found.entries {
+            if !self.restore_recovered(e) {
+                continue;
+            }
+            n += 1;
+            if let Some(path) = &e.path
+                && let Some(i) = self.editor.index_of(path)
+                && let Some(m) = crate::editor::buffer::file_mtime(path)
+                && m.duration_since(std::time::UNIX_EPOCH).is_ok_and(|d| d.as_secs() > found.time)
+            {
+                // Changed since the dump: an explicit save asks first.
+                self.editor.buffers[i].disk_mtime = Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(found.time));
+                moved.push(e.label(&self.workspace.root));
+            }
+        }
         crate::recovery::remove_dumps(&found.dirs);
         // Restoring is not navigation.
         self.editor.clear_nav();
@@ -142,6 +169,10 @@ impl App {
         }
         if n > 0 {
             self.notify(Level::Info, format!("Restored unsaved changes of {n} {} from the last session", files(n)));
+        }
+        if !moved.is_empty() {
+            let what = if moved.len() <= 3 { moved.join(", ") } else { format!("{} files", moved.len()) };
+            self.notify(Level::Warn, format!("Changed on disk since the last session: {what}; saving asks before overwriting"));
         }
         self.dirty_frame = true;
     }
@@ -752,6 +783,112 @@ pub(crate) mod tests {
         answer(&mut app, DialogId::Recover, DialogResult::Button(0));
         assert_eq!(buffer(&app, "a.txt").text(), "hot\n", "the hot-exit text is not overwritten by the crash dump");
         assert_eq!(buffer(&app, "a.txt (recovered)").text(), "crash\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn failed_write_at_loop_end_keeps_a_crash_dump_and_the_recorder() {
+        let (mut app, dir) = test_app("hot-exit-loop-fail");
+        dirty_a_and_notes(&mut app);
+        std::fs::create_dir_all(&app.paths.state_dir).unwrap();
+        std::fs::write(app.paths.hot_exit_dir(), "not a directory").unwrap();
+        // The terminal closed its event stream: no request_quit ran.
+        app.should_quit = true;
+        assert!(!app.hot_exit_on_exit(), "the recorder must stay armed");
+        let m = crate::recovery::read_manifest(&app.recorder.dir).expect("a crash dump");
+        assert_eq!(m.buffers.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn text_saved_after_the_quit_wrote_drops_the_stale_dump() {
+        let (mut app, dir) = test_app("hot-exit-late-save");
+        dirty_a_and_notes(&mut app);
+        app.perform(Action::App(crate::actions::AppAction::Quit));
+        assert!(app.should_quit && hot_dir(&app).exists());
+        // A late message (format result, LSP edit) saved everything.
+        app.perform(Action::Editor(EditorAction::Save));
+        app.editor.force_close_all();
+        assert!(!app.editor.has_dirty());
+        assert!(app.hot_exit_on_exit());
+        assert!(!hot_dir(&app).exists(), "the dump would restore older text over the saved file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_dump_of_another_process_stays_when_nothing_is_dirty() {
+        let (mut app, dir) = test_app("hot-exit-other-pid");
+        let root = app.workspace.root.clone();
+        let snap = RecoverySnapshot {
+            root: root.clone(),
+            buffers: vec![SnapBuffer {
+                id: 1,
+                path: None,
+                name: "n".into(),
+                version: 1,
+                saved_state: 0,
+                text: ropey::Rope::from_str("x\n"),
+            }],
+        };
+        crate::recovery::write_hot_exit(&app.paths.hot_exit_dir(), &app.paths.recovery_dir(), &snap, DEAD_PID, 100).unwrap();
+        assert!(app.hot_exit_on_exit());
+        assert!(hot_dir(&app).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Hot-exit dump of `a.txt` with `text`, written at `time`.
+    fn seed_hot(app: &App, time: u64, text: &str) {
+        let root = app.workspace.root.clone();
+        let snap = RecoverySnapshot {
+            root: root.clone(),
+            buffers: vec![SnapBuffer {
+                id: 1,
+                path: Some(root.join("a.txt")),
+                name: "a.txt".into(),
+                version: 1,
+                saved_state: 0,
+                text: ropey::Rope::from_str(text),
+            }],
+        };
+        crate::recovery::write_hot_exit(&app.paths.hot_exit_dir(), &app.paths.recovery_dir(), &snap, DEAD_PID, time).unwrap();
+    }
+
+    fn warns(app: &App) -> Vec<String> {
+        app.notifications
+            .iter()
+            .filter(|n| n.level == crate::event::Level::Warn && n.text.starts_with("Changed on disk"))
+            .map(|n| n.text.clone())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn restore_of_a_file_changed_since_the_dump_asks_before_saving() {
+        let (mut app, dir) = test_app("hot-exit-changed");
+        std::fs::write(app.workspace.root.join("a.txt"), "pulled\n").unwrap();
+        // The dump is older than the file on disk.
+        seed_hot(&app, 100, "mine\n");
+        app.handle_msg(session_with(&app, &["a.txt"]));
+        assert_eq!(buffer(&app, "a.txt").text(), "mine\n");
+        assert!(buffer(&app, "a.txt").recovered);
+        assert_eq!(warns(&app).len(), 1);
+        assert!(warns(&app)[0].contains("a.txt"), "{:?}", warns(&app));
+        app.perform(Action::Editor(EditorAction::Save));
+        assert_eq!(app.dialog.as_ref().map(|d| matches!(d.id, DialogId::OverwriteExternal(_))), Some(true));
+        assert_eq!(std::fs::read_to_string(app.workspace.root.join("a.txt")).unwrap(), "pulled\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn restore_of_an_unchanged_file_saves_without_asking() {
+        let (mut app, dir) = test_app("hot-exit-unchanged");
+        std::fs::write(app.workspace.root.join("a.txt"), "disk\n").unwrap();
+        // The dump is newer than the file.
+        seed_hot(&app, crate::recent_projects::now() + 1000, "mine\n");
+        app.handle_msg(session_with(&app, &["a.txt"]));
+        assert!(warns(&app).is_empty(), "{:?}", warns(&app));
+        app.perform(Action::Editor(EditorAction::Save));
+        assert!(app.dialog.is_none());
+        assert_eq!(std::fs::read_to_string(app.workspace.root.join("a.txt")).unwrap(), "mine\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

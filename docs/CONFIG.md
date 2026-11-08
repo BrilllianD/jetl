@@ -302,7 +302,13 @@ setting decides only what quitting does. With two jetl processes on one
 project, the last one to quit owns the directory and the earlier one's text
 is offered by crash recovery ("Recover Unsaved Changes") instead. Dumps of
 projects that never open again are not removed; delete their directories
-under `state/hot_exit/` to drop them. With `hot_exit = false` quitting asks
+under `state/hot_exit/` to drop them (a dump that a later quit moved to
+`state/recovery/` is pruned after 30 days with the crash dumps). A file that
+changed on disk after the dump was written (a `git pull` between sessions)
+is restored with your text, but its tab remembers the dump's time as the
+file's version, so Ctrl+S asks Overwrite / Reload / Cancel instead of
+overwriting silently, and one warning names such files (the count past
+three). With `hot_exit = false` quitting asks
 Save all and exit / Discard and exit / Cancel. Closing the terminal window
 (SIGHUP) kills jetl without running any of this, as before.
 

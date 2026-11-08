@@ -821,6 +821,11 @@ Then, one start each:
   `/tmp/tm.sh kill-server; run`: `*b.txt` is restored silently with
   `SECOND alpha`, and "Recover Unsaved Changes" lists notes.txt; Enter
   restores it too.
+- Changed on disk: start, type `HOT `, Ctrl+Q; `sleep 2; printf 'pulled\n' > $T/notes.txt`
+  (newer than the dump); start again: the text is `HOT one` as before and a
+  Warn toast says "Changed on disk since the last session: notes.txt; saving
+  asks before overwriting". Ctrl+S: the "File changed on disk" dialog with
+  Overwrite, Reload, Cancel; Cancel leaves the file `pulled`.
 - Terminal closed: start, type, then `/tmp/tm.sh kill-session -t jetl`
   (SIGHUP). jetl has no signal handler, so nothing is kept (as for crash
   recovery); the next start shows no dialog and the original text.
