@@ -4,7 +4,8 @@
 //! as raw JSON on disk, so one this build cannot read survives every write; a
 //! file that is not valid JSON is never overwritten, and every write is a
 //! read-modify-write under a process-wide lock published by `write_atomic`, so
-//! two jetl processes never drop each other's macros.
+//! two jetl processes never drop each other's macros unless they save within
+//! the same few milliseconds (the lock is per process, as in `layouts.rs`).
 
 use std::path::Path;
 use std::sync::Mutex;

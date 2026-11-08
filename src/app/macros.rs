@@ -489,7 +489,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn save_as_reports_left_out_steps_and_refuses_an_empty_result() {
+    async fn save_as_refuses_an_empty_result_and_a_blank_name() {
         let (mut app, dir) = test_app("macro-leftout");
         load(&mut app, "a.txt", "one\n");
         let run = Action::Run(crate::actions::RunAction::Select("t".into()));
@@ -626,11 +626,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_record_chord_is_the_one_the_keymap_shows() {
+    async fn the_macro_chords_are_the_ones_the_keymap_shows() {
         let (app, dir) = test_app("macro-chord");
-        let chord = [KeyCombo::normalize(KeyCode::F(5), CS)];
-        let got = app.keymap.table("global").and_then(|t| t.bindings.get(chord.as_slice()));
-        assert_eq!(got, Some(&Action::Editor(EditorAction::MacroPlay)));
+        let bound = |code| {
+            let chord = [KeyCombo::normalize(code, CS)];
+            app.keymap.table("global").and_then(|t| t.bindings.get(chord.as_slice())).cloned()
+        };
+        assert_eq!(bound(KeyCode::F(4)), Some(Action::Editor(EditorAction::MacroRecord)));
+        assert_eq!(bound(KeyCode::F(5)), Some(Action::Editor(EditorAction::MacroPlay)));
         let _ = std::fs::remove_dir_all(dir);
     }
 }
