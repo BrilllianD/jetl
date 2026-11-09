@@ -100,6 +100,8 @@ struct Index {
     version: u64,
     next_id: u64,
     rows: Vec<serde_json::Value>,
+    /// Top-level keys this build does not know (a newer build wrote them).
+    extra: serde_json::Map<String, serde_json::Value>,
 }
 
 fn read_index(dir: &Path) -> Result<Index, String> {
@@ -107,7 +109,7 @@ fn read_index(dir: &Path) -> Result<Index, String> {
     let text = match std::fs::read_to_string(&file) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(Index { version: u64::from(FORMAT), next_id: 1, rows: Vec::new() });
+            return Ok(Index { version: u64::from(FORMAT), next_id: 1, rows: Vec::new(), extra: serde_json::Map::new() });
         }
         Err(e) => return Err(format!("Cannot read {}: {e}", file.display())),
     };
@@ -120,7 +122,16 @@ fn read_index(dir: &Path) -> Result<Index, String> {
         None => Vec::new(),
         Some(e) => e.as_array().cloned().ok_or_else(|| format!("Cannot read {}: entries is not a list", file.display()))?,
     };
-    Ok(Index { version, next_id: v["next_id"].as_u64().unwrap_or(1), rows })
+    let extra = v
+        .as_object()
+        .map(|o| {
+            o.iter()
+                .filter(|(k, _)| !matches!(k.as_str(), "version" | "next_id" | "entries"))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(Index { version, next_id: v["next_id"].as_u64().unwrap_or(1), rows, extra })
 }
 
 fn row_id(v: &serde_json::Value) -> Option<u64> {
@@ -146,7 +157,10 @@ fn live_rows(dir: &Path, rows: Vec<serde_json::Value>) -> Vec<serde_json::Value>
 /// Write `rows` back; `next_id` rises to cover every row and patch.
 fn write_index(dir: &Path, old: &Index, rows: &[serde_json::Value]) -> Result<(), String> {
     let next_id = rows.iter().filter_map(row_id).chain(patch_numbers(dir)).max().map_or(1, |m| m + 1).max(old.next_id);
-    let doc = serde_json::json!({"version": old.version.max(u64::from(FORMAT)), "next_id": next_id, "entries": rows});
+    let mut doc = old.extra.clone();
+    doc.insert("version".into(), old.version.max(u64::from(FORMAT)).into());
+    doc.insert("next_id".into(), next_id.into());
+    doc.insert("entries".into(), rows.into());
     let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
     match write_atomic(&index_path(dir), &text) {
         Err(e) => Err(format!("Cannot write {}: {e}", index_path(dir).display())),
@@ -192,23 +206,30 @@ pub fn list(dir: &Path) -> (u64, Result<Vec<ShelfEntry>, String>) {
     (version, list_locked(dir))
 }
 
-/// Store `patch` as a new entry. Nothing is left behind on failure.
-pub fn add(dir: &Path, name: &str, time: u64, files: &[String], patch: &[u8]) -> Result<ShelfEntry, String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("Cannot create {}: {e}", dir.display()))?;
-    // An unreadable index is refused before anything is written.
-    let index = read_index(dir)?;
-    let mut id = (1 + index.rows.iter().filter_map(row_id).chain(patch_numbers(dir)).max().unwrap_or(0)).max(index.next_id);
+/// Create the first free `<n>.patch` for `n >= first` and open it for writing.
+/// `create_new` makes the claim atomic, so two adds never share a file.
+fn create_patch(dir: &Path, first: u64) -> Result<(u64, std::fs::File), String> {
+    let mut id = first;
     let mut tries = 0;
-    let mut file = loop {
+    loop {
         match std::fs::OpenOptions::new().write(true).create_new(true).open(patch_path(dir, id)) {
-            Ok(f) => break f,
+            Ok(f) => return Ok((id, f)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && tries < 100 => {
                 tries += 1;
                 id += 1;
             }
             Err(e) => return Err(format!("Cannot write {}: {e}", patch_path(dir, id).display())),
         }
-    };
+    }
+}
+
+/// Store `patch` as a new entry. Nothing is left behind on failure.
+pub fn add(dir: &Path, name: &str, time: u64, files: &[String], patch: &[u8]) -> Result<ShelfEntry, String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("Cannot create {}: {e}", dir.display()))?;
+    // An unreadable index is refused before anything is written.
+    let index = read_index(dir)?;
+    let first = (1 + index.rows.iter().filter_map(row_id).chain(patch_numbers(dir)).max().unwrap_or(0)).max(index.next_id);
+    let (id, mut file) = create_patch(dir, first)?;
     let undo = |msg: String| {
         let _ = std::fs::remove_file(patch_path(dir, id));
         Err(msg)
@@ -440,6 +461,13 @@ pub async fn shelve(root: PathBuf, dir: PathBuf, name: String, what: ShelveWhat,
         return (false, "Nothing to shelve: no changes against HEAD in the selected files".into());
     }
     let files = patch_files(&patch);
+    // The patch must undo cleanly from the work tree, or the revert below would
+    // drop what it does not hold (a textconv driver, say). Nothing is stored or reverted otherwise.
+    match run(&top, &cli::apply_check_reverse_args(), Some(patch.clone())).await {
+        Ok(o) if o.ok => {}
+        Ok(o) => return (false, format!("Cannot shelve: the patch does not match the work tree, nothing changed: {}", o.combined())),
+        Err(e) => return (false, format!("Cannot shelve: {e}")),
+    }
     let stored = {
         let (dir, name, files) = (dir.clone(), name.clone(), files.clone());
         tokio::task::spawn_blocking(move || add(&dir, &name, time, &files, &patch)).await
@@ -737,5 +765,100 @@ mod tests {
         assert_eq!(patch_files(quoted.as_bytes()), files(&["tab\there.txt", "caf\u{e9}.txt", "q\"uote"]));
         let gone = b"diff --git a/x b//dev/null\n";
         assert_eq!(patch_files(gone), files(&["x"]));
+    }
+
+    #[test]
+    fn create_patch_never_takes_an_existing_file() {
+        let t = Tmp::new("create");
+        std::fs::create_dir_all(&t.0).unwrap();
+        std::fs::write(t.0.join("5.patch"), b"old bytes").unwrap();
+        let (id, mut f) = create_patch(&t.0, 5).unwrap();
+        assert_eq!(id, 6);
+        f.write_all(b"new").unwrap();
+        drop(f);
+        assert_eq!(std::fs::read(t.0.join("5.patch")).unwrap(), b"old bytes");
+        assert_eq!(std::fs::read(t.0.join("6.patch")).unwrap(), b"new");
+    }
+
+    #[test]
+    fn unknown_top_level_keys_survive_a_rewrite() {
+        let t = Tmp::new("topkeys");
+        std::fs::create_dir_all(&t.0).unwrap();
+        std::fs::write(t.0.join("index.json"), r#"{"version":2,"entries":[],"future":{"a":[1,2]}}"#).unwrap();
+        let e = add(&t.0, "new", 1, &[], b"n").unwrap();
+        let read = || -> serde_json::Value { serde_json::from_str(&std::fs::read_to_string(t.0.join("index.json")).unwrap()).unwrap() };
+        assert_eq!(read()["future"], serde_json::json!({"a": [1, 2]}));
+        let _ = delete(&t.0, e.id);
+        assert_eq!(read()["future"], serde_json::json!({"a": [1, 2]}));
+        assert_eq!(read()["version"], 2);
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// A repo with a textconv driver (repo-local config) for `*.bin`, one commit of `t.bin` and `plain.txt`.
+    fn textconv_repo(name: &str) -> (Tmp, PathBuf) {
+        let t = Tmp::new(name);
+        let repo = t.0.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git_in(&repo, &["init", "-q"]);
+        git_in(&repo, &["config", "user.name", "t"]);
+        git_in(&repo, &["config", "user.email", "t@example.com"]);
+        git_in(&repo, &["config", "diff.conv.textconv", "tr a-z A-Z <"]);
+        std::fs::write(repo.join(".gitattributes"), "*.bin diff=conv\n").unwrap();
+        std::fs::write(repo.join("t.bin"), b"alpha\nbeta\n").unwrap();
+        std::fs::write(repo.join("plain.txt"), b"one\n").unwrap();
+        git_in(&repo, &["add", "."]);
+        git_in(&repo, &["commit", "-qm", "init"]);
+        (t, repo)
+    }
+
+    fn file(rel: &str, untracked: bool) -> ShelveFile {
+        ShelveFile { rel: rel.into(), paths: vec![rel.into()], untracked }
+    }
+
+    #[tokio::test]
+    async fn textconv_files_shelve_and_unshelve_byte_for_byte() {
+        let (t, repo) = textconv_repo("textconv");
+        let dir = t.0.join("shelf");
+        let tracked = b"alpha\nBETA changed\n\x01\xff tail\n".to_vec();
+        let untracked = b"gamma\ndelta\n".to_vec();
+        std::fs::write(repo.join("t.bin"), &tracked).unwrap();
+        std::fs::write(repo.join("new.bin"), &untracked).unwrap();
+        let what = ShelveWhat::Files(vec![file("t.bin", false), file("new.bin", true)]);
+        let (ok, msg) = shelve(repo.clone(), dir.clone(), "tc".into(), what, 1).await;
+        assert!(ok, "{msg}");
+        assert_eq!(std::fs::read(repo.join("t.bin")).unwrap(), b"alpha\nbeta\n");
+        assert!(!repo.join("new.bin").exists());
+        let (ok, msg) = unshelve(repo.clone(), dir, 1, "tc".into(), None).await;
+        assert!(ok, "{msg}");
+        assert_eq!(std::fs::read(repo.join("t.bin")).unwrap(), tracked);
+        assert_eq!(std::fs::read(repo.join("new.bin")).unwrap(), untracked);
+    }
+
+    #[tokio::test]
+    async fn a_patch_that_does_not_undo_reverts_nothing_and_stores_nothing() {
+        let (t, repo) = textconv_repo("verify");
+        let dir = t.0.join("shelf");
+        std::fs::write(repo.join("plain.txt"), b"one\ntwo\n").unwrap();
+        git_in(&repo, &["add", "plain.txt"]);
+        // The stored patch claims a line the work tree does not hold.
+        let stored = "diff --git a/plain.txt b/plain.txt\n--- a/plain.txt\n+++ b/plain.txt\n@@ -1 +1,2 @@\n one\n+other\n".to_string();
+        let revert = stored.clone();
+        let what = ShelveWhat::Part { rel: "plain.txt".into(), stored, revert };
+        let (ok, msg) = shelve(repo.clone(), dir.clone(), "bad".into(), what, 1).await;
+        assert!(!ok);
+        assert!(msg.contains("nothing changed"), "{msg}");
+        assert_eq!(std::fs::read(repo.join("plain.txt")).unwrap(), b"one\ntwo\n");
+        assert_eq!(patch_numbers(&dir), Vec::<u64>::new());
+        assert_eq!(listed(&dir), vec![]);
     }
 }

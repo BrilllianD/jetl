@@ -223,6 +223,8 @@ pub struct GitPanel {
     stash_rect: Rect,
     stash_files_rect: Rect,
     shelf_rect: Rect,
+    /// The rows of the shelf list: `shelf_rect` below the error line, if one is shown.
+    shelf_rows_rect: Rect,
     shelf_files_rect: Rect,
     console_rect: Rect,
 }
@@ -300,6 +302,7 @@ impl GitPanel {
             stash_rect: Rect::default(),
             stash_files_rect: Rect::default(),
             shelf_rect: Rect::default(),
+            shelf_rows_rect: Rect::default(),
             shelf_files_rect: Rect::default(),
             console_rect: Rect::default(),
         }
@@ -886,6 +889,7 @@ impl GitPanel {
             &mut self.stash_rect,
             &mut self.stash_files_rect,
             &mut self.shelf_rect,
+            &mut self.shelf_rows_rect,
             &mut self.shelf_files_rect,
             &mut self.console_rect,
         ] {
@@ -935,7 +939,7 @@ impl GitPanel {
             put(buf, &mut x, r.y, r.right(), &label, theme.warn.bg(theme.panel_bg));
             x += 1;
         }
-        // As many tools as fit, Refresh (F5) dropped first (Skip, then Abort, while an operation is in progress).
+        // As many tools as fit. Idle: Refresh (F5) goes first. An operation in progress: Skip goes first, then Abort, and Continue stays.
         let all: Vec<(Btn, &str)> = match self.in_progress().filter(|ip| ip.kind.args(ProgressAction::Continue).is_some()) {
             Some(ip) => {
                 let mut v = vec![(Btn::Progress(ProgressAction::Continue), " Continue ")];
@@ -950,7 +954,6 @@ impl GitPanel {
         let mut tools = all;
         let width = |tools: &[(Btn, &str)]| -> u16 { tools.iter().map(|(_, l)| l.width() as u16 + 1).sum() };
         while !tools.is_empty() && r.right() <= x + width(&tools) {
-            // Of an operation in progress's buttons Continue stays longest: Skip goes first, then Abort.
             let drop =
                 [ProgressAction::Skip, ProgressAction::Abort].iter().find_map(|a| tools.iter().position(|(b, _)| *b == Btn::Progress(*a)));
             tools.remove(drop.unwrap_or(0));

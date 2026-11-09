@@ -1396,6 +1396,26 @@ async fn git_window_rebasing() {
     assert_snapshot!("git_window_rebasing", snapshot(&term, &marks, None));
 }
 
+/// A rebase header at 84 columns: Skip is dropped for want of room, Abort and Continue stay.
+#[tokio::test]
+async fn git_window_rebasing_skip_dropped() {
+    use crate::git::model::{InProgress, InProgressKind};
+    let mut fx = stable_app("git-rebasing-narrow");
+    let app = &mut fx.app;
+    git_commit_fixture(app);
+    let mut status = crate::git::repo::status(&app.workspace.root).unwrap();
+    status.branch = None;
+    status.head = Some(sha('a'));
+    status.in_progress = Some(InProgress { kind: InProgressKind::Rebase, step: Some((2, 5)) });
+    app.handle_msg(AppMsg::Git(GitMsg::Status { generation: app.git.generation, seq: 2, result: Ok(status) }));
+    app.dialog = None;
+    let term = draw_app(app, 84, 24);
+    let header = crate::ui::snapshot::row_text(term.backend().buffer(), app.layout.rects.bottom.y + 1, 84);
+    assert!(header.contains("Continue") && header.contains("Abort") && !header.contains("Skip"), "{header}");
+    let marks = [Mark::style('w', "in progress (Git window)", app.theme.warn.bg(app.theme.panel_bg))];
+    assert_snapshot!("git_window_rebasing_skip_dropped", snapshot(&term, &marks, None));
+}
+
 /// At 80 columns the diff header is cut before the layout toggles instead
 /// of running under them.
 #[tokio::test]
@@ -3379,20 +3399,61 @@ async fn git_shelf_tab() {
     assert_snapshot!("git_shelf_tab", snapshot(&term, &marks, Some(bottom)));
 }
 
+/// With a list error shown above the rows, a click selects the row under the pointer, not the one above it.
+#[tokio::test]
+async fn git_shelf_click_with_an_error_shown() {
+    use crate::git::shelf::ShelfEntry;
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut fx = stable_app("git-shelf-click");
+    let app = &mut fx.app;
+    app.toggle_tool_window(ToolWindowId::Git);
+    app.set_git_tab(crate::git::panel::GitTab::Shelf);
+    let g = app.git.generation;
+    let entry = |id: u64, name: &str| ShelfEntry { id, name: name.into(), time: 1_700_000_000_000, files: vec!["a.txt".into()] };
+    let entries = vec![entry(3, "Third"), entry(2, "Second"), entry(1, "First")];
+    app.handle_msg(AppMsg::Git(GitMsg::Shelf { generation: g, version: 1, result: Ok(entries), done: None }));
+    app.handle_msg(AppMsg::Git(GitMsg::Shelf { generation: g, version: 2, result: Err("Cannot read index.json".into()), done: None }));
+    let term = draw_app(app, 100, 24);
+    let row_of = |text: &str| (0..24u16).find(|y| crate::ui::snapshot::row_text(term.backend().buffer(), *y, 100).contains(text)).unwrap();
+    assert!(row_of("Cannot read index.json") < row_of("Third"));
+    let y = row_of("Second");
+    app.handle_mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: 20, row: y, modifiers: KeyModifiers::NONE });
+    assert_eq!(app.git_panel.selected_shelf_name().as_deref(), Some("Second"));
+    // The error line itself selects nothing.
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 20,
+        row: row_of("Cannot read"),
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(app.git_panel.selected_shelf_name().as_deref(), Some("Second"));
+}
+
 #[tokio::test]
 async fn git_shelve_dialog() {
-    use crate::git::shelf::{ShelveFile, ShelveWhat};
+    use crate::git::model::{ChangeEntry, FileStatus, Section};
     let mut fx = stable_app("git-shelve-dialog");
     let app = &mut fx.app;
-    let what = ShelveWhat::Files(vec![ShelveFile { rel: "notes.txt".into(), paths: vec!["notes.txt".into()], untracked: false }]);
-    app.dialog = Some(crate::ui::dialog::Dialog::input(
-        crate::ui::dialog::DialogId::ShelveName(what),
-        "Shelve Changes",
-        "Name of the shelf entry:",
-        "Changes to notes.txt",
-        "Shelve",
-    ));
+    app.toggle_tool_window(ToolWindowId::Git);
+    let root = app.workspace.root.clone();
+    let status = StatusSnapshot {
+        workdir: root.clone(),
+        entries: vec![ChangeEntry {
+            section: Section::Unstaged,
+            status: FileStatus::Modified,
+            rel: "notes.txt".into(),
+            abs: root.join("notes.txt"),
+            old_rel: None,
+        }],
+        branch: Some("main".into()),
+        ..Default::default()
+    };
+    app.handle_msg(AppMsg::Git(GitMsg::Status { generation: app.git.generation, seq: 1, result: Ok(status) }));
+    app.focus.set(PanelId::Git);
+    app.perform(Action::Git(crate::actions::GitAction::Down));
+    app.perform(Action::Git(crate::actions::GitAction::Shelve));
     let term = draw_app(app, 80, 24);
+    assert!(app.dialog.is_some(), "Shelve asks for a name");
     assert_snapshot!("git_shelve_dialog", snapshot(&term, &[], None));
 }
 

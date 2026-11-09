@@ -247,6 +247,11 @@ pub fn apply_args(cached: bool, reverse: bool) -> Vec<String> {
     v
 }
 
+/// Whether a patch on stdin takes out of the work tree cleanly (changes nothing).
+pub fn apply_check_reverse_args() -> Vec<String> {
+    args(&["apply", "--check", "--reverse", "--whitespace=nowarn", "-"])
+}
+
 /// The `a/` and `b/` path prefixes the shelf reads back, whatever the user's
 /// `diff.mnemonicPrefix` or `diff.noprefix` say.
 fn prefix_args() -> Vec<String> {
@@ -256,7 +261,7 @@ fn prefix_args() -> Vec<String> {
 /// `git diff` of `paths` against HEAD as a patch `git apply` can replay
 /// (full blob ids, binary files, renames detected).
 pub fn shelf_diff_args(paths: &[String]) -> Vec<String> {
-    let mut v = args(&["diff", "-M", "--full-index", "--binary", "--no-color", "--no-ext-diff"]);
+    let mut v = args(&["diff", "-M", "--full-index", "--binary", "--no-color", "--no-ext-diff", "--no-textconv", "--submodule=short"]);
     v.extend(prefix_args());
     v.extend(args(&["HEAD", "--"]));
     v.extend(paths.iter().map(|p| format!(":(literal){p}")));
@@ -265,7 +270,8 @@ pub fn shelf_diff_args(paths: &[String]) -> Vec<String> {
 
 /// The patch that adds the untracked file `rel` (exit status 1 means "differs").
 pub fn untracked_diff_args(rel: &str) -> Vec<String> {
-    let mut v = args(&["diff", "--no-index", "--full-index", "--binary", "--no-color", "--no-ext-diff"]);
+    let mut v =
+        args(&["diff", "--no-index", "--full-index", "--binary", "--no-color", "--no-ext-diff", "--no-textconv", "--submodule=short"]);
     v.extend(prefix_args());
     v.extend(args(&["--", "/dev/null"]));
     v.push(rel.to_string());
@@ -444,6 +450,8 @@ mod tests {
                 "--binary",
                 "--no-color",
                 "--no-ext-diff",
+                "--no-textconv",
+                "--submodule=short",
                 "--src-prefix=a/",
                 "--dst-prefix=b/",
                 "HEAD",

@@ -54,6 +54,11 @@ impl GitPanel {
         self.shelf.iter().map(|e| e.name.clone()).collect()
     }
 
+    #[cfg(test)]
+    pub(crate) fn selected_shelf_name(&self) -> Option<String> {
+        self.selected_shelf().map(|e| e.name.clone())
+    }
+
     pub(super) fn selected_shelf(&self) -> Option<&ShelfEntry> {
         self.shelf.get(self.shelf_list.selected)
     }
@@ -95,7 +100,7 @@ impl GitPanel {
     }
 
     pub(super) fn click_shelf_tab(&mut self, m: &Mouse, p: Position, cx: &mut Ctx) {
-        if let Some(i) = self.shelf_list.hit(self.shelf_rect, m.x, m.y) {
+        if let Some(i) = self.shelf_list.hit(self.shelf_rows_rect, m.x, m.y) {
             self.area = Area::Shelves;
             if i != self.shelf_list.selected {
                 self.shelf_list.select(i);
@@ -145,6 +150,7 @@ impl GitPanel {
             buf.set_stringn(r.x, r.y, crate::util::text::fit(e, r.width as usize), r.width as usize, theme.error);
             top += 1;
         }
+        self.shelf_rows_rect = Rect::new(r.x, top, r.width, r.bottom().saturating_sub(top));
         if self.shelf.is_empty() {
             let text = "No shelved changes (Alt+Shift+V in the Commit tab shelves the selected files)";
             buf.set_stringn(r.x, top, crate::util::text::fit(text, r.width as usize), r.width as usize, theme.dim);
