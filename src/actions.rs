@@ -1088,7 +1088,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.next_method" => "Go to the next method or function", Editor(E::NextMethod);
         "editor.prev_method" => "Go to the previous method or function", Editor(E::PrevMethod);
         "editor.toggle_blame" => "Annotate with git blame (show or hide)", Editor(E::ToggleBlame);
-        "editor.pipe_selection" => "Pipe the selection (or the caret line) through a shell command and replace it with the output", Editor(E::PipeSelection);
+        "editor.pipe_selection" => "Pipe Through Command: run the selection (or the caret line) through a shell command and replace it with the output", Editor(E::PipeSelection);
         "editor.format" => "Reformat code or the selection ([format] command, else the language server)", Editor(E::Format);
 
         "tree.up" => "Tree: up", Tree(TreeAction::Up);

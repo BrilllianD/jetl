@@ -631,7 +631,8 @@ impl Dialog {
                         let pos = match (key.code, h.pos) {
                             (KeyCode::Up, None) => {
                                 h.draft.clone_from(&input.text);
-                                Some(0)
+                                // The text already is the newest entry (as the dialog opens): go one older.
+                                Some(usize::from(input.text == h.items[0] && h.items.len() > 1))
                             }
                             (KeyCode::Up, Some(p)) => Some((p + 1).min(h.items.len() - 1)),
                             (_, None) => return None,
@@ -1258,6 +1259,9 @@ mod tests {
             assert_eq!(text(&d), want, "after {code:?}");
         }
         assert!(matches!(d.handle_key(key(KeyCode::Enter)), Some(DialogResult::Text(t)) if t == "x"));
+        let mut d = Dialog::input(DialogId::Info, "T", "", "", "Run").with_history(vec!["b".into(), "a".into()]);
+        d.handle_key(key(KeyCode::Up));
+        assert_eq!(text(&d), "a", "the first Up from the prefilled newest entry shows an older one");
         let mut d = Dialog::input(DialogId::Info, "T", "", "keep", "Run");
         d.handle_key(key(KeyCode::Up));
         assert_eq!(text(&d), "keep", "no history, no change");

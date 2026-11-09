@@ -715,7 +715,7 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `editor.line_ending_crlf` | Convert line endings to CRLF |
 | `editor.set_language` | Set the file's language (highlighting) |
 | `editor.toggle_blame` | Annotate with git blame (show or hide) |
-| `editor.pipe_selection` | Pipe the selection (or the caret line) through a shell command and replace it with the output |
+| `editor.pipe_selection` | Pipe Through Command: run the selection (or the caret line) through a shell command and replace it with the output |
 | `tree.new_file` | Tree: new file |
 | `tree.new_dir` | Tree: new directory |
 | `tree.new_from_template` | Tree: new file from a template |

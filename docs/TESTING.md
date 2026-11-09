@@ -4029,13 +4029,13 @@ At 80x24 and 120x40 (yman 466), private socket `/tmp/tm27.sh` = `exec /usr/bin/t
 7. Two processes on the same root and `XDG_STATE_HOME`: shelve in each; both entries are in `index.json`, after F5 in the Shelf tab of both.
 8. Kill the server; `pgrep -f jetl27` finds nothing.
 
-### Scenario: Pipe Through Command
+### Scenario: Pipe Through Command (yman 470)
 
-At 80x24 and 120x40 (yman 470), private socket `jetl470`, everything under `/tmp/jetl-470`: `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME` there, project `proj` with `notes.txt` = `pear\napple\nfig\n` and `multi.txt` = `x one\nx two\n`, config `[lsp] enabled = false` and `[format] timeout_ms = 1000`. Open the prompt with F1, `Pipe the sel` (Find Action matches the action's description, not the menu label), Enter.
+At 80x24 and 120x40 (yman 470), private socket `jetl470`, everything under `/tmp/jetl-470`: `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME` there, project `proj` with `notes.txt` = `pear\napple\nfig\n` and `multi.txt` = `x one\nx two\n`, config `[lsp] enabled = false` and `[format] timeout_ms = 1000`. Open the prompt with F1, `Pipe Through`, Enter.
 
 1. Ctrl+A, prompt: title `Pipe Through Command`, `Replace the selection with the output of this command (sh -c, in the project root):`, empty field, `Run`. Type `sort`, Enter: `apple`, `fig`, `pear`. Ctrl+Z: the original order back (one undo step).
 2. Escape, a pause, Ctrl+Home (sent together tmux makes it Alt+[ and types `1;5H`), prompt: `the caret line`, the field reads `sort`, selected. Type `tr a-z A-Z`, Enter: only line 1 is `PEAR`.
-3. Prompt (the field starts with `tr a-z A-Z`, the newest), Up: still `tr a-z A-Z` (the first Up leaves the typed text for the newest entry), Up again: `sort`. Down: `tr a-z A-Z`.
+3. Prompt (the field starts with `tr a-z A-Z`, the newest), Up: `sort` (the field already shows the newest, so the first Up goes one older). Down: `tr a-z A-Z`.
 4. `echo boom >&2; exit 3`: warning ``Pipe `echo boom >&2; exit 3`: sh: boom``, text unchanged.
 5. `sleep 5`: warning `sh did not finish within 1000 ms`, `pgrep -f 'sleep 5'` prints nothing (the process group is killed).
 6. `sleep 0.8; tr a-z A-Z`, then type `q` at once: warning `notes.txt changed while ... ran; nothing replaced`, the text has `q` and is not uppercased. A command that never exits and prints without end (`yes`) is drained until the timeout, so it reports the timeout, not the 16 MiB cap.

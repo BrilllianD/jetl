@@ -13,7 +13,7 @@ expression: "snapshot(&term, &marks, None)"
 07   │ Split down (the tab in a new group below)  editor.split_down       Alt+- │
 08   │ Local History: back to the snapshot list  local_history.left        Left │
 09   │ Run: build the SCIP index with [index] scip_command, then load it  run.b │
-10   │ Pipe the selection (or the caret line) through a shell command and repla │
+10   │ Pipe Through Command: run the selection (or the caret line) through a sh │
 11   │ Unsplit (merge the group into the one beside it)  editor.unsplit         │
 12  ◉│ Unsplit all (one group)  editor.unsplit_all                Alt+W Shift+U │
 13  ⋔│ Local history of the file (editor) or the selected entry (Project tree;  │

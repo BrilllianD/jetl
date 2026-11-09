@@ -299,8 +299,10 @@ impl App {
         let task = tokio::spawn(async move {
             let work = async {
                 let mut outs = Vec::with_capacity(n);
+                // The outer budget below always fires first, so its toast is the one shown.
+                let each = timeout + std::time::Duration::from_secs(1);
                 for (k, input) in inputs.into_iter().enumerate() {
-                    match crate::util::format::pipe(&command, &root, input.clone(), timeout).await {
+                    match crate::util::format::pipe(&command, &root, input.clone(), each).await {
                         Ok(o) => outs.push(fit_output(&input, &o)),
                         Err(mut f) => {
                             if n > 1 {
@@ -1117,8 +1119,16 @@ mod pipe_tests {
         assert_eq!(app.notifications.len(), notes, "no toast");
         assert_eq!(app.format.pipes.len(), 1, "the dropped answers did not end the run");
 
+        let old = app.format.pipes.values().next().unwrap().task.clone();
         run_pipe(&mut app, "echo new");
         assert_eq!(app.format.pipes.len(), 1, "the old run is replaced");
+        for _ in 0..100 {
+            if old.is_finished() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(old.is_finished(), "the old run is aborted, not left to finish its `sleep 2`");
         handle_next(&mut app, piped).await;
         assert_eq!(text(&app), "new\n");
         assert!(app.format.pipes.is_empty());
