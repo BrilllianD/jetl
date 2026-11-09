@@ -234,6 +234,23 @@ mod tests {
     }
 
     #[test]
+    fn chord_open_ends_with_the_timeout() {
+        let mut km = Keymap::default();
+        km.merge_toml("[editor]\n\"ctrl-k ctrl-x\" = \"app.quit\"\n").unwrap();
+        let mut d = Dispatcher::new(false);
+        assert!(!d.chord_open());
+        d.dispatch(key(KeyCode::Char('k'), KeyModifiers::CONTROL), &["editor", "global"], Some(Mode::Insert), &km);
+        assert!(d.chord_open(), "half a chord waits for its next key");
+        d.chord_timeout = Duration::ZERO;
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(!d.chord_open(), "a timed-out chord no longer owns the next key");
+        d.chord_timeout = Duration::from_secs(60);
+        d.dispatch(key(KeyCode::Char('k'), KeyModifiers::CONTROL), &["editor", "global"], Some(Mode::Insert), &km);
+        d.dispatch(key(KeyCode::Char('x'), KeyModifiers::CONTROL), &["editor", "global"], Some(Mode::Insert), &km);
+        assert!(!d.chord_open(), "a finished chord is closed");
+    }
+
+    #[test]
     fn modal_tables_only_when_enabled() {
         let km = default_keymap();
         let mut d = Dispatcher::new(false);

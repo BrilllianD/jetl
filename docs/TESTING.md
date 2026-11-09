@@ -1090,13 +1090,11 @@ sleep 2; /tmp/tm.sh send-keys -t jetl C-M-s; sleep 0.3; /tmp/tm.sh capture-pane 
 ### Scenario: mnemonic bookmarks and groups
 
 At 80x24 and at 120x40 (`new-session -d -s jetl -x 80 -y 24`, then `-x 120 -y 40`),
-on the scratch project `$T=/tmp/jt22` above with an 80-line `docs/notes.md`
-(`seq 1 80 | sed 's/^/line /' > $T/docs/notes.md`), opened as
-`jetl $T/docs/notes.md`, with `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and
-`XDG_CACHE_HOME` under `/tmp/jt22-home` and a `config.toml` holding `[lsp]`
-`enabled = false` and `[ui]` `toolbar = false`. `/tmp/tm.sh` is
-`exec /usr/bin/tmux -L jetl-s22 "$@"`. tmux does not pass Ctrl+digit, so the
-jumps use Alt+B then the mnemonic:
+with `/tmp/tm.sh` as in "Run it", `[lsp]` `enabled = false` and `[ui]` `toolbar = false` in
+`$H/config/jetl/config.toml`, a scratch project `$T` as in "Run it" plus an 80-line `docs/notes.md`
+(`seq 1 80 | sed 's/^/line /' > $T/docs/notes.md`), `XDG_CONFIG_HOME=$H/config`,
+`XDG_STATE_HOME=$H/state`, `XDG_CACHE_HOME=$H/cache` (`H=/tmp/jt-home`), and jetl started as
+`jetl $T/docs/notes.md`. tmux does not pass Ctrl+digit, so the jumps use Alt+B then the mnemonic:
 
 1. `C-g`, `20`, `Enter`, `C-F11`: the title is `Mnemonic Bookmark`, the message
    names digits and letters, and the ten buttons fit.
@@ -1108,13 +1106,14 @@ jumps use Alt+B then the mnemonic:
    `Bookmarks: K docs/notes.md:20 line 20` and `API: 3 docs/notes.md:40 line 40`; Escape.
 6. F1, `rename bookmark group`, Enter, Enter on `API`, Ctrl+A, type `Net`, Enter:
    Shift+F11 now reads `Net: 3 ...`; Escape.
-7. `C-w` closes notes.md; `M-b` `k` reopens it at `Ln 20` with its `K`; `C-q`.
-8. Start jetl again on `$T` (notes.md closed): `M-b` `3` opens notes.md at line 40;
+7. `C-w` closes notes.md; `M-b` `k` reopens it at `Ln 20` with its `K`. `C-w` closes it again; `C-q`.
+8. In the session file under `$H/state/jetl/sessions/` (notes.md is closed, so its marks sit in the
+   closed-file fields), `jq` shows `closed_bookmark_letters` `[{"letter":"K","path":".../docs/notes.md","line":19}]`,
+   `closed_bookmarks` (digit 3, line 39), `closed_bookmark_groups` (`Net`, line 39) and
+   `closed_plain_bookmarks` (lines `[19]`).
+9. Start jetl again on `$T` (notes.md closed): `M-b` `3` opens notes.md at line 40;
    Shift+F11 still shows `Net: 3 ...` and `Bookmarks: K ...`.
-9. In the session file under `$XDG_STATE_HOME/jetl/sessions/`, `jq` shows lines 19 and 39
-   in `files[0].bookmarks`, `bookmark_letters` `[["K",19]]`, `bookmark_digits` `[[3,39]]`
-   and `bookmark_groups` `[["Net",39]]`.
-10. `/tmp/tm.sh kill-server`; no `tmux -L jetl-s22` and no `jetl` process is left.
+10. `/tmp/tm.sh kill-server`; no `tmux -L jetl` server and no `jetl` process is left.
 
 Ctrl+F11 then the same mnemonic on its line removes the bookmark; the same
 letter on another line moves it there.

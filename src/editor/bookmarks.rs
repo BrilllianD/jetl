@@ -854,6 +854,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Alt+B then `q` with `focus` set by `setup`: the letter is the keymap's, not the window's field.
+    fn jump_from(app: &mut App, name: &str, setup: impl Fn(&mut App)) {
+        app.perform(Action::Editor(EditorAction::NavBack));
+        goto(app, 2);
+        assert_eq!(here(app), ("b.txt".into(), 2), "{name}: start");
+        setup(app);
+        key(app, KeyCode::Char('b'), KeyModifiers::ALT);
+        key(app, KeyCode::Char('q'), KeyModifiers::NONE);
+        assert_eq!(here(app), ("a.txt".into(), 20), "{name}: the jump");
+        assert!(app.focus.is(PanelId::Editor), "{name}: focus");
+    }
+
+    #[tokio::test]
+    async fn alt_b_letter_jumps_from_every_window_with_a_field() {
+        let (mut app, dir) = test_app("bookmark-letter-fields");
+        open(&mut app, "a.txt", &"a\n".repeat(30));
+        goto(&mut app, 20);
+        mnemonic(&mut app, KeyCode::Char('q'), KeyModifiers::NONE);
+        open(&mut app, "b.txt", "b0\nb1\nb2\n");
+        goto(&mut app, 2);
+        key(&mut app, KeyCode::Char('b'), KeyModifiers::ALT);
+        key(&mut app, KeyCode::Char('q'), KeyModifiers::NONE);
+        assert_eq!(here(&app), ("a.txt".into(), 20));
+        jump_from(&mut app, "find window", |a| a.focus.set(PanelId::Find));
+        jump_from(&mut app, "project", |a| a.focus.set(PanelId::Project));
+        jump_from(&mut app, "local history", |a| {
+            let (path, root) = (a.workspace.root.join("b.txt"), a.workspace.root.clone());
+            a.history_panel.set_target(path, &root);
+            a.focus.set(PanelId::LocalHistory);
+        });
+        jump_from(&mut app, "tasks", |a| a.focus.set(PanelId::Tasks));
+        // The editor's find bar and the commit message box type everything else.
+        jump_from(&mut app, "find bar", |a| {
+            a.perform(Action::Editor(EditorAction::Find));
+            assert!(a.editor.find_focused());
+        });
+        jump_from(&mut app, "commit message", |a| {
+            a.perform(Action::Git(crate::actions::GitAction::FocusMessage));
+            assert!(a.git_panel.message_focused());
+        });
+        assert!(app.git_panel.message.text.is_empty(), "the letter did not reach the box");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn groups_move_rename_and_list() {
         let (mut app, dir) = test_app("bookmark-groups");

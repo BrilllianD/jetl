@@ -1067,9 +1067,16 @@ impl App {
             self.terminal_key(key);
             return;
         }
+        // The panels and boxes below take typed keys for their filters and fields; the second key of a chord is the
+        // keymap's (Alt+B then a letter, also in the find bar and the commit message box).
+        let chord_open = self.dispatcher.chord_open();
         // The find bar consumes its editing keys before the keymap; anything
         // it does not use (Ctrl+S, F3, Alt+1) falls through.
-        if self.focus.is(PanelId::Editor) && self.editor.find_focused() && key.kind != crossterm::event::KeyEventKind::Release {
+        if self.focus.is(PanelId::Editor)
+            && self.editor.find_focused()
+            && !chord_open
+            && key.kind != crossterm::event::KeyEventKind::Release
+        {
             let mut cx = ctx!(self);
             let used = self.editor.handle_find_key(key, &mut cx);
             let fx = cx.effects;
@@ -1081,7 +1088,11 @@ impl App {
             }
         }
         // Same for the commit message box.
-        if self.focus.is(PanelId::Git) && self.git_panel.message_focused() && key.kind != crossterm::event::KeyEventKind::Release {
+        if self.focus.is(PanelId::Git)
+            && self.git_panel.message_focused()
+            && !chord_open
+            && key.kind != crossterm::event::KeyEventKind::Release
+        {
             let mut cx = ctx!(self);
             let used = self.git_panel.handle_message_key(key, &mut cx);
             let fx = cx.effects;
@@ -1091,9 +1102,6 @@ impl App {
                 return;
             }
         }
-        // The panels below take typed keys for their filters and fields; the second key of a chord is the
-        // keymap's (Alt+B then a letter from the Project window).
-        let chord_open = self.dispatcher.chord_open();
         // And for the Find window's query and replacement fields.
         if self.focus.is(PanelId::Find) && key.kind != crossterm::event::KeyEventKind::Release && !chord_open {
             let mut cx = ctx!(self);

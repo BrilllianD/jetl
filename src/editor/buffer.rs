@@ -240,11 +240,12 @@ pub struct Buffer {
     /// The file changed on disk under unsaved edits; no autosave until an
     /// explicit save.
     pub autosave_conflict: bool,
-    /// Bookmarked lines (F11) and their mnemonic digit, if any (Ctrl+F11;
-    /// the editor keeps each digit unique across buffers). Every applied
-    /// change (edits, undo, redo) carries them along with their text; lines
-    /// deleted outright drop out, and of two marks merged into one line a
-    /// digit wins over none.
+    /// Bookmarked lines (F11), each with its mnemonic (a digit or a letter, if
+    /// any; Ctrl+F11, the editor keeps each mnemonic unique across buffers) and
+    /// its group (the default group when `None`). Every applied change (edits,
+    /// undo, redo) carries them along with their text; lines deleted outright
+    /// drop out, and two marks merged into one line become one by
+    /// `Bookmark::merge` (one with a mnemonic replaces one without, group included).
     pub bookmarks: BTreeMap<usize, super::bookmarks::Bookmark>,
     /// Breakpoint lines (Ctrl+F8). Like bookmarks they follow every applied
     /// change with their text; of two marks merged into one line the lower
