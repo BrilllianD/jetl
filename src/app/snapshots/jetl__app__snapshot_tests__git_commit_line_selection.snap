@@ -19,7 +19,7 @@ expression: "snapshot(&term, &marks, Some(bottom))"
 13    └──────────────────────────────┘│
 14  ✓ ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 15  8 ┌ Git: main ────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-16  ⟲ │ Commit   Log   Stash   Console                                                     Refresh   Fetch   Pull   Push  │
+16  ⟲ │ Commit   Log   Stash   Shelf   Console                                             Refresh   Fetch   Pull   Push  │
 17  5 │▾ Unstaged (1)                                │ main.rs  (staged ↔ working tree)             [Unified] [x] Collapse│
 18  ⚑ │  [ ] M main.rs                               │  1   1  fn main() {                                                │
 19  9 │▾ Untracked (1)                               │  2     -    println!("hello");                                     │

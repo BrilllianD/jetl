@@ -247,6 +247,45 @@ pub fn apply_args(cached: bool, reverse: bool) -> Vec<String> {
     v
 }
 
+/// The `a/` and `b/` path prefixes the shelf reads back, whatever the user's
+/// `diff.mnemonicPrefix` or `diff.noprefix` say.
+fn prefix_args() -> Vec<String> {
+    args(&["--src-prefix=a/", "--dst-prefix=b/"])
+}
+
+/// `git diff` of `paths` against HEAD as a patch `git apply` can replay
+/// (full blob ids, binary files, renames detected).
+pub fn shelf_diff_args(paths: &[String]) -> Vec<String> {
+    let mut v = args(&["diff", "-M", "--full-index", "--binary", "--no-color", "--no-ext-diff"]);
+    v.extend(prefix_args());
+    v.extend(args(&["HEAD", "--"]));
+    v.extend(paths.iter().map(|p| format!(":(literal){p}")));
+    v
+}
+
+/// The patch that adds the untracked file `rel` (exit status 1 means "differs").
+pub fn untracked_diff_args(rel: &str) -> Vec<String> {
+    let mut v = args(&["diff", "--no-index", "--full-index", "--binary", "--no-color", "--no-ext-diff"]);
+    v.extend(prefix_args());
+    v.extend(args(&["--", "/dev/null"]));
+    v.push(rel.to_string());
+    v
+}
+
+/// `git apply` of a shelf patch from stdin: plain, or `--3way` (which stages
+/// what it merges), optionally only the files matching the glob `include`.
+pub fn unshelve_args(three_way: bool, include: Option<&str>) -> Vec<String> {
+    let mut v = args(&["apply", "--whitespace=nowarn"]);
+    if three_way {
+        v.push("--3way".into());
+    }
+    if let Some(glob) = include {
+        v.push(format!("--include={glob}"));
+    }
+    v.push("-".into());
+    v
+}
+
 /// Arguments for one page of the log. The graph is drawn from the parents
 /// (`git::graph`); `--parents` rewrites them past commits a path filter
 /// leaves out, and `--date-order` lists no parent before its children.
@@ -392,6 +431,33 @@ pub async fn commits_diff(root: &Path, spans: &[super::model::DiffSpan]) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shelf_argument_lists() {
+        let diff = shelf_diff_args(&["a b.txt".into(), "c.txt".into()]);
+        assert_eq!(
+            diff,
+            args(&[
+                "diff",
+                "-M",
+                "--full-index",
+                "--binary",
+                "--no-color",
+                "--no-ext-diff",
+                "--src-prefix=a/",
+                "--dst-prefix=b/",
+                "HEAD",
+                "--",
+                ":(literal)a b.txt",
+                ":(literal)c.txt"
+            ])
+        );
+        let untracked = untracked_diff_args("n.txt");
+        assert_eq!(untracked.iter().rev().take(3).rev().cloned().collect::<Vec<_>>(), args(&["--", "/dev/null", "n.txt"]));
+        assert!(untracked.starts_with(&args(&["diff", "--no-index", "--full-index", "--binary"])));
+        assert_eq!(unshelve_args(false, None), args(&["apply", "--whitespace=nowarn", "-"]));
+        assert_eq!(unshelve_args(true, Some("a\\*.txt")), args(&["apply", "--whitespace=nowarn", "--3way", "--include=a\\*.txt", "-"]));
+    }
 
     #[test]
     fn push_steps_lease_only() {

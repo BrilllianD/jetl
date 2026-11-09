@@ -482,7 +482,7 @@
 "alt-l" = "git.tab_log"
 "alt-o" = "git.tab_console"
 "alt-t" = "git.tab_stash"
-# Next and previous tab, wrapping (Commit, Log, Stash, Console); the
+# Next and previous tab, wrapping (Commit, Log, Stash, Shelf, Console); the
 # commit message box keeps Alt+Left/Right for its caret.
 "alt-right" = "tool_window.next_tab"
 "alt-left" = "tool_window.prev_tab"
@@ -491,6 +491,11 @@
 "alt-p" = "git.stash_pop"
 "alt-a" = "git.stash_apply"
 "delete" = "git.stash_drop"
+# Shelve the selected files or diff change (Commit tab) as a patch, and unshelve
+# an entry. In the Shelf tab "delete" and "alt-a" act on the shelf entry
+# (git.delete_shelf_entry, git.unshelve) instead of on a stash.
+"alt-shift-v" = "git.shelve"
+"alt-shift-u" = "git.unshelve"
 "ctrl-alt-n" = "git.new_branch"
 "esc" = "git.escape"
 

@@ -22,14 +22,14 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 16    │ │  Terminal                │    Merge: save the result, stage it and close the resolver           merge.apply│
 17    │ │  Run                     │ ^      Alt+Enter                                                                │
 18  ◉ │ │  Clipboard               │        Ctrl+Enter                                                               │
-19    │ │  Local History           │  ▾ Unbound (6)                                                                  │
-20  ⋔ │ │Language Servers          │    Switch to a saved tool window layout…               tool_window.switch_layout│
-21    │ │Dependencies              │    Save the tool window layout as a new named layout…                           │
-22  ✎ │ │                          │    Save changes in the current tool window layout                               │
-23    │ │                          │    Rename a saved tool window layout…                  tool_window.rename_layout│
-24  ✓ │ │                          │    Delete a saved tool window layout…                  tool_window.delete_layout│
-25  8 │ │                          │    Save the last macro as…                                  editor.macro_save_as│
-26  ⟲ │ │                          │                                                                                 │
+19    │ │  Local History           │  ▾ Git (1)                                                                      │
+20  ⋔ │ │Language Servers          │    Git: shelve the selected changes (save as a patch and revert them)           │
+21    │ │Dependencies              │        Alt+Shift+V                                                              │
+22  ✎ │ │                          │  ▾ Unbound (6)                                                                  │
+23    │ │                          │    Switch to a saved tool window layout…               tool_window.switch_layout│
+24  ✓ │ │                          │    Save the tool window layout as a new named layout…                           │
+25  8 │ │                          │    Save changes in the current tool window layout                               │
+26  ⟲ │ │                          │    Rename a saved tool window layout…                  tool_window.rename_layout│
 27  5 │ │                          │                                                                                 │
 28  ⚑ │ │                          │Action: editor.save                                                              │
 29  9 │ │                          │Context: global                                                                  │

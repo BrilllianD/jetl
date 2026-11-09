@@ -456,6 +456,9 @@ pub enum GitAction {
     StashPop,
     StashApply,
     StashDrop,
+    Shelve,
+    Unshelve,
+    DeleteShelfEntry,
     Up,
     Down,
     ExtendUp,
@@ -1152,6 +1155,9 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "git.stash_pop" => "Git: pop the selected stash", Git(GitAction::StashPop);
         "git.stash_apply" => "Git: apply the selected stash", Git(GitAction::StashApply);
         "git.stash_drop" => "Git: drop the selected stash", Git(GitAction::StashDrop);
+        "git.shelve" => "Git: shelve the selected changes (save as a patch and revert them)", Git(GitAction::Shelve);
+        "git.unshelve" => "Git: unshelve the selected shelf entry (or file)", Git(GitAction::Unshelve);
+        "git.delete_shelf_entry" => "Git: delete the selected shelf entry", Git(GitAction::DeleteShelfEntry);
         "git.up" => "Git: up", Git(GitAction::Up);
         "git.down" => "Git: down", Git(GitAction::Down);
         "git.extend_selection_up" => "Git: in the Log, select the commit above too (elsewhere: up)", Git(GitAction::ExtendUp);

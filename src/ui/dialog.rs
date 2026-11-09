@@ -148,6 +148,13 @@ pub enum DialogId {
     StashDrop {
         oid: String,
     },
+    /// The name of a new shelf entry; the answer shelves this.
+    ShelveName(crate::git::shelf::ShelveWhat),
+    /// Delete the shelf entry with this id (its name is for the message).
+    ShelfDelete {
+        id: u64,
+        name: String,
+    },
     /// Reverse-apply this patch (one diff block) to the work tree.
     DiscardHunk {
         patch: String,

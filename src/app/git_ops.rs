@@ -31,6 +31,11 @@ fn progress_steps(kind: InProgressKind, action: ProgressAction, args: Vec<String
 }
 
 impl App {
+    /// The shelf directory of this project root (`git::shelf::root_dir`).
+    pub(super) fn shelf_dir(&self) -> std::path::PathBuf {
+        crate::git::shelf::root_dir(&self.paths.shelf_dir(), &self.workspace.root)
+    }
+
     /// Git > Continue / Skip / Abort Operation.
     pub(super) fn progress_request(&mut self, action: ProgressAction) {
         let Some(ip) = self.in_progress() else {
@@ -156,8 +161,18 @@ impl App {
             }
             (DialogId::PushOptions { tags, force_lease }, DialogResult::Button(1)) => self.push_dialog(!*tags, *force_lease, 1),
             (DialogId::PushOptions { tags, force_lease }, DialogResult::Button(2)) => self.push_dialog(*tags, !*force_lease, 2),
+            (DialogId::ShelveName(what), DialogResult::Text(t)) => {
+                let name = t.trim();
+                let name = if name.is_empty() { what.fallback_name() } else { name.to_string() };
+                self.git_request(GitRequest::Shelve { name, what: what.clone() });
+            }
+            (DialogId::ShelfDelete { id, name }, DialogResult::Button(0)) => {
+                self.git_request(GitRequest::ShelfDelete { id: *id, name: name.clone() });
+            }
             (
-                DialogId::PushOptions { .. }
+                DialogId::ShelveName(_)
+                | DialogId::ShelfDelete { .. }
+                | DialogId::PushOptions { .. }
                 | DialogId::ContinueWithConflicts { .. }
                 | DialogId::AbortOperation(_)
                 | DialogId::ResetMode { .. }

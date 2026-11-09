@@ -3909,3 +3909,16 @@ Recorded: keymap actions, typed text, bracketed pastes into the editor and the f
 6. Two processes: start another jetl on another root with the same `XDG_STATE_HOME`; save `first` in one and `second` in the other. The file lists both, and Find Action in the first lists `Play macro 'second'` without a restart.
 7. Corrupt store: write `{bad` to the file, start, Save As `z`: a warning starting `macros ` and containing `not valid JSON`, and the file still reads `{bad`.
 8. Restart: Ctrl+Shift+F5 says `No macro recorded yet` (the unnamed macro is not kept); Find Action still lists `Play macro 'bang'`.
+
+### Scenario: shelf
+
+At 80x24 and 120x40 (yman 466), private socket `/tmp/tm27.sh` = `exec /usr/bin/tmux -L jetl27 "$@"`, `XDG_CONFIG_HOME` and `XDG_STATE_HOME` under `/tmp`, project `/tmp/jt-shelf` (`git init`, one commit) with `a.txt` = `1\n2\n3\n4\n5\n` and `notes.txt` = `n\n`, `[lsp] enabled = false`. The shelf lives in `$XDG_STATE_HOME/jetl/shelf/<16 hex>/`.
+
+1. Change `a.txt` (`one` on line 1), open the Git window (Alt+9), select `a.txt`, Alt+Shift+V: dialog `Shelve Changes` with `Changes to a.txt`. Type `wip`, Enter: toast `Shelved 'wip' (1 file)`, `a.txt` is back at HEAD, `1.patch` and `index.json` exist.
+2. Add untracked `new.txt`, select the Unversioned header, Alt+Shift+V, Enter: the file is gone from the disk and listed in the entry. Local History of `a.txt` has `Before shelve 'wip'`; say whether it holds the untracked file.
+3. Alt+Right to the Shelf tab: toolbar `[Unshelve] [Show Patch] [Delete]`, entries newest first with time and file count, the files on the right (list on the left 3/5 at 70+ columns). Ctrl+D opens the patch in a `Patch` tab.
+4. Unshelve (Alt+Shift+U): toast `Unshelved 'wip'`, the change is back unstaged, the entry stays.
+5. Commit a different change to the same line, Unshelve again: warning `The shelved changes conflict with your files: ...`, the Resolve Conflicts dialog opens, the entry stays.
+6. Delete: dialog `Delete shelf entry 'wip'?`; Cancel keeps the patch file, Delete removes it and toasts `Deleted shelf entry 'wip'`.
+7. Two processes on the same root and `XDG_STATE_HOME`: shelve in each; both entries are in `index.json`, after F5 in the Shelf tab of both.
+8. Kill the server; `pgrep -f jetl27` finds nothing.

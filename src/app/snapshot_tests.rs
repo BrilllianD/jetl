@@ -3355,6 +3355,48 @@ async fn git_stash_tab() {
 }
 
 #[tokio::test]
+async fn git_shelf_tab() {
+    use crate::git::shelf::ShelfEntry;
+    let mut fx = stable_app("git-shelf");
+    let app = &mut fx.app;
+    app.git_panel.shelf_offset = |_| 0;
+    app.toggle_tool_window(ToolWindowId::Git);
+    app.set_git_tab(crate::git::panel::GitTab::Shelf);
+    let g = app.git.generation;
+    let entries = vec![
+        ShelfEntry {
+            id: 2,
+            name: "Parser work".into(),
+            time: 1_700_000_000_000,
+            files: vec!["src/parser.rs".into(), "src/lexer.rs".into()],
+        },
+        ShelfEntry { id: 1, name: "Changes to notes.txt".into(), time: 1_699_990_000_000, files: vec!["notes.txt".into()] },
+    ];
+    app.handle_msg(AppMsg::Git(GitMsg::Shelf { generation: g, version: 1, result: Ok(entries), done: None }));
+    let term = draw_app(app, 100, 24);
+    let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap())];
+    let bottom = app.layout.rects.bottom;
+    assert_snapshot!("git_shelf_tab", snapshot(&term, &marks, Some(bottom)));
+}
+
+#[tokio::test]
+async fn git_shelve_dialog() {
+    use crate::git::shelf::{ShelveFile, ShelveWhat};
+    let mut fx = stable_app("git-shelve-dialog");
+    let app = &mut fx.app;
+    let what = ShelveWhat::Files(vec![ShelveFile { rel: "notes.txt".into(), paths: vec!["notes.txt".into()], untracked: false }]);
+    app.dialog = Some(crate::ui::dialog::Dialog::input(
+        crate::ui::dialog::DialogId::ShelveName(what),
+        "Shelve Changes",
+        "Name of the shelf entry:",
+        "Changes to notes.txt",
+        "Shelve",
+    ));
+    let term = draw_app(app, 80, 24);
+    assert_snapshot!("git_shelve_dialog", snapshot(&term, &[], None));
+}
+
+#[tokio::test]
 async fn git_console_tab() {
     let mut fx = stable_app("git-console");
     let app = &mut fx.app;

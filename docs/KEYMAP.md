@@ -360,6 +360,8 @@ position report.
 | `Alt+P` | `git.stash_pop` | Git: pop the selected stash |
 | `Alt+A` | `git.stash_apply` | Git: apply the selected stash |
 | `Delete` | `git.stash_drop` | Git: drop the selected stash |
+| `Alt+Shift+V` | `git.shelve` | Git: shelve the selected changes (save as a patch and revert them) |
+| `Alt+Shift+U` | `git.unshelve` | Git: unshelve the selected shelf entry (or file) |
 | `Up` | `git.up` | Git: up |
 | `Down` | `git.down` | Git: down |
 | `Shift+Up` | `git.extend_selection_up` | Git: in the Log, select the commit above too (elsewhere: up) |
@@ -728,6 +730,7 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `git.push_options` | Git: push with options (tags, force with lease) |
 | `git.fetch` | Git: fetch |
 | `git.stash_include_untracked` | Git: include untracked files in the next stash (toggle) |
+| `git.delete_shelf_entry` | Git: delete the selected shelf entry |
 | `git.focus_message` | Git: focus commit message |
 | `merge.accept_all_left` | Merge: take yours for the whole file |
 | `merge.accept_all_right` | Merge: take theirs for the whole file |

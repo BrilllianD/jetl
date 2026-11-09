@@ -244,6 +244,8 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("New Branch…", "git.new_branch"),
             Sep,
             Item("Stash Changes…", "git.stash_push"),
+            Item("Shelve Changes…", "git.shelve"),
+            Item("Unshelve Changes…", "git.unshelve"),
             Item("Resolve Conflicts…", "git.resolve_conflicts"),
             Item("Continue Operation", "git.continue_operation"),
             Item("Skip Commit", "git.skip_operation"),

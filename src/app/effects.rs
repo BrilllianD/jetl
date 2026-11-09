@@ -64,6 +64,7 @@ impl App {
         if lists {
             self.git.load_branches();
             self.git.load_stashes();
+            self.git.load_shelf(self.shelf_dir());
             self.git.load_worktrees();
         }
         // F5 and Refresh also list commits made outside jetl in a shown Log.
@@ -176,6 +177,15 @@ impl App {
                 }
             }
             GitRequest::LoadStashes => self.git.load_stashes(),
+            GitRequest::Shelve { name, what } => {
+                self.git.shelve(self.shelf_dir(), name, what);
+            }
+            GitRequest::Unshelve { id, name, file } => {
+                self.git.unshelve(self.shelf_dir(), id, name, file);
+            }
+            GitRequest::ShelfDelete { id, name } => self.git.delete_shelf_entry(self.shelf_dir(), id, name),
+            GitRequest::LoadShelf => self.git.load_shelf(self.shelf_dir()),
+            GitRequest::ShelfPatch { id, title } => self.git.load_shelf_patch(self.shelf_dir(), id, title),
             GitRequest::LoadBlame(path, fallback) => self.git.load_blame(path, fallback),
             GitRequest::CheckoutCommit(sha) => {
                 self.git.run_cli(GitOp::Checkout(sha.clone()), vec!["switch".into(), "--detach".into(), sha]);

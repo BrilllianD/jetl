@@ -244,6 +244,22 @@ impl App {
                 let fx = cx.effects;
                 self.apply_effects(fx);
             }
+            GitMsg::Shelf { version, result, done, .. } => {
+                let mut cx = ctx!(self);
+                self.git_panel.set_shelf(version, result, &mut cx);
+                let fx = cx.effects;
+                self.apply_effects(fx);
+                if let Some(text) = done {
+                    self.notify(Level::Info, text);
+                }
+            }
+            GitMsg::ShelfPatch { id, title, result, .. } => match result {
+                Ok(text) => {
+                    let top = format!("shelf:{}:{id}", self.shelf_dir().display());
+                    self.open_patch(title, vec![crate::git::model::DiffSpan { base: None, top, header: String::new() }], text);
+                }
+                Err(e) => self.notify(Level::Error, e),
+            },
             GitMsg::Conflict { path, result, .. } => self.conflict_loaded(path, result),
             GitMsg::OpDone { op, label, ok, output, .. } => self.git_op_done(op, label, ok, output),
         }
@@ -306,7 +322,7 @@ impl App {
                 GitOp::DeleteBranch { name, .. } => self.notify(Level::Info, format!("Deleted branch {name}")),
                 GitOp::Tag(t) => self.notify(Level::Info, format!("Created tag {t}")),
                 GitOp::DeleteTag(t) => self.notify(Level::Info, format!("Deleted tag {t}")),
-                GitOp::Discard | GitOp::Stash => self.notify(Level::Info, output.clone()),
+                GitOp::Discard | GitOp::Stash | GitOp::Shelve(_) | GitOp::Unshelve(_) => self.notify(Level::Info, output.clone()),
                 GitOp::Resolve(rel) => {
                     if !output.is_empty() {
                         self.notify(Level::Info, output.clone());
@@ -336,6 +352,13 @@ impl App {
             let msg = format!("Branch '{name}' is not fully merged.\nDelete it anyway? Commits only it has may be lost.");
             let id = DialogId::DeleteBranch { name: name.clone(), force: true };
             self.dialog = Some(Dialog::confirm(id, "Delete Branch", &msg, &["Force Delete", "Cancel"]));
+        } else if matches!(op, GitOp::Unshelve(_)) && output.contains("with conflicts") {
+            // Git left conflict markers and U files; the next status opens Resolve Conflicts.
+            self.notify(
+                Level::Warn,
+                "The shelved changes conflict with your files: resolve the U files (Git > Resolve Conflicts); the shelf entry is kept",
+            );
+            self.pending_conflicts = true;
         } else if matches!(
             op,
             GitOp::Merge(_)
@@ -365,7 +388,10 @@ impl App {
             };
             self.notify(Level::Warn, what);
             self.pending_conflicts = true;
-        } else if matches!(op, GitOp::Commit { .. } | GitOp::Stage | GitOp::Unstage | GitOp::Discard | GitOp::Stash) {
+        } else if matches!(
+            op,
+            GitOp::Commit { .. } | GitOp::Stage | GitOp::Unstage | GitOp::Discard | GitOp::Stash | GitOp::Shelve(_) | GitOp::Unshelve(_)
+        ) {
             self.notify(Level::Error, error_line(&output));
         } else {
             self.notify(Level::Error, format!("{label}: {}", error_line(&output)));
@@ -374,6 +400,7 @@ impl App {
         self.git.refresh_status();
         self.git.load_branches();
         self.git.load_stashes();
+        self.git.load_shelf(self.shelf_dir());
         // Branch switches and worktree operations both change the list.
         self.git.load_worktrees();
         if self.git_panel.log_loaded() && !matches!(op, GitOp::Stage | GitOp::Unstage) {
@@ -400,6 +427,7 @@ impl App {
         self.git.load_branches();
         self.git.load_messages();
         self.git.load_stashes();
+        self.git.load_shelf(self.shelf_dir());
         for (p, base) in self.editor.open_bases() {
             self.git.load_blob(p, BlobWhich::Head, base);
         }

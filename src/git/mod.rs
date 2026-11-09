@@ -15,6 +15,7 @@ pub mod model;
 pub mod panel;
 pub mod rebase;
 pub mod repo;
+pub mod shelf;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,6 +40,10 @@ pub enum GitOp {
     Discard,
     /// Stash push, pop, apply or drop.
     Stash,
+    /// Shelve changes as a patch (carries the entry name).
+    Shelve(String),
+    /// Apply a shelf entry (carries the entry name).
+    Unshelve(String),
     Commit {
         push: bool,
         amend: bool,
@@ -99,6 +104,8 @@ impl GitOp {
                 | GitOp::NewBranch(_)
                 | GitOp::Discard
                 | GitOp::Stash
+                | GitOp::Shelve(_)
+                | GitOp::Unshelve(_)
                 | GitOp::Checkout(_)
                 | GitOp::CherryPick(_)
                 | GitOp::Revert(_)
@@ -173,6 +180,21 @@ pub enum GitMsg {
         generation: u64,
         result: Result<Vec<StashEntry>>,
     },
+    /// The shelf of the project; the app drops one whose `version` is not newer
+    /// than the one it holds. `done` is a toast for the operation that answered.
+    Shelf {
+        generation: u64,
+        version: u64,
+        result: Result<Vec<shelf::ShelfEntry>, String>,
+        done: Option<String>,
+    },
+    /// The patch of a shelf entry, to open in a patch tab.
+    ShelfPatch {
+        generation: u64,
+        id: u64,
+        title: String,
+        result: Result<String, String>,
+    },
     /// The HEAD commit message, to prefill the box when amend turns on.
     HeadMessage {
         generation: u64,
@@ -244,6 +266,8 @@ impl GitMsg {
             | GitMsg::RebasePlan { generation, .. }
             | GitMsg::HeadMessage { generation, .. }
             | GitMsg::Stashes { generation, .. }
+            | GitMsg::Shelf { generation, .. }
+            | GitMsg::ShelfPatch { generation, .. }
             | GitMsg::Blame { generation, .. }
             | GitMsg::CommitMessages { generation, .. }
             | GitMsg::Conflict { generation, .. }
@@ -272,6 +296,28 @@ pub enum GitRequest {
     LoadHeadMessage,
     Stash(repo::StashOp),
     LoadStashes,
+    /// Shelve changes under a name (the dialog has been answered).
+    Shelve {
+        name: String,
+        what: shelf::ShelveWhat,
+    },
+    /// Apply a shelf entry, or one file of it.
+    Unshelve {
+        id: u64,
+        name: String,
+        file: Option<String>,
+    },
+    /// Confirmed already (`DialogId::ShelfDelete`).
+    ShelfDelete {
+        id: u64,
+        name: String,
+    },
+    LoadShelf,
+    /// Open a shelf entry's patch in a patch tab titled `title`.
+    ShelfPatch {
+        id: u64,
+        title: String,
+    },
     LoadBlame(PathBuf, Option<PathBuf>),
     CheckoutCommit(String),
     CherryPick(String),
@@ -387,6 +433,8 @@ impl GitRequest {
                         | GitRequest::InteractiveRebase(_)
                         | GitRequest::LoadRebasePlan(_)
                         | GitRequest::CheckoutTracking(_)
+                        | GitRequest::Shelve { .. }
+                        | GitRequest::Unshelve { .. }
                 )
     }
 }
@@ -751,23 +799,77 @@ impl GitService {
         id
     }
 
-    /// `git stash pop|apply` of the stash with commit `oid` (see
-    /// [`cli::stash_apply`]); answers as a [`GitOp::Stash`] result.
-    pub fn stash_apply(&mut self, oid: String, pop: bool, label: String) -> u64 {
+    /// Run `work` as the operation `op`: the Local History snapshot of an
+    /// operation that rewrites the work tree first, then the renames it made,
+    /// answered as a [`GitMsg::OpDone`].
+    fn spawn_op(&mut self, op: GitOp, label: String, work: impl std::future::Future<Output = (bool, String)> + Send + 'static) -> u64 {
         let id = self.start(&label);
-        let pre = self.before(&GitOp::Stash, &label);
-        let track = GitOp::Stash.touches_worktree() && self.history.enabled();
+        let pre = self.before(&op, &label);
+        let track = op.touches_worktree() && self.history.enabled();
         let (root, generation, tx) = (self.root.clone(), self.generation, self.tx.clone());
         tokio::spawn(async move {
             if let Some(ack) = pre {
                 let _ = tokio::task::spawn_blocking(move || ack.wait()).await;
             }
             let base = base_of(root.clone(), track).await;
-            let (ok, output) = cli::stash_apply(&root, &oid, pop).await.unwrap_or_else(|e| (false, format!("{e:#}")));
+            let (ok, output) = work.await;
             let renames = renames_after(root, base).await;
-            let _ = tx.send(AppMsg::Git(GitMsg::OpDone { generation, id, op: GitOp::Stash, label, ok, output, renames }));
+            let _ = tx.send(AppMsg::Git(GitMsg::OpDone { generation, id, op, label, ok, output, renames }));
         });
         id
+    }
+
+    /// `git stash pop|apply` of the stash with commit `oid` (see
+    /// [`cli::stash_apply`]); answers as a [`GitOp::Stash`] result.
+    pub fn stash_apply(&mut self, oid: String, pop: bool, label: String) -> u64 {
+        let root = self.root.clone();
+        let work = async move { cli::stash_apply(&root, &oid, pop).await.unwrap_or_else(|e| (false, format!("{e:#}"))) };
+        self.spawn_op(GitOp::Stash, label, work)
+    }
+
+    /// Store `what` in the shelf `dir` as `name` and take it out of the work
+    /// tree (see [`shelf::shelve`]); answers as a [`GitOp::Shelve`] result.
+    pub fn shelve(&mut self, dir: PathBuf, name: String, what: shelf::ShelveWhat) -> u64 {
+        let time =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(0));
+        let label = format!("shelve '{name}'");
+        let work = shelf::shelve(self.root.clone(), dir, name.clone(), what, time);
+        self.spawn_op(GitOp::Shelve(name), label, work)
+    }
+
+    /// Apply a shelf entry (see [`shelf::unshelve`]); answers as a [`GitOp::Unshelve`] result.
+    pub fn unshelve(&mut self, dir: PathBuf, id: u64, name: String, file: Option<String>) -> u64 {
+        let label = format!("unshelve '{name}'");
+        let work = shelf::unshelve(self.root.clone(), dir, id, name.clone(), file);
+        self.spawn_op(GitOp::Unshelve(name), label, work)
+    }
+
+    /// Read the shelf `dir`, answered with [`GitMsg::Shelf`].
+    pub fn load_shelf(&self, dir: PathBuf) {
+        let (generation, tx) = (self.generation, self.tx.clone());
+        tokio::task::spawn_blocking(move || {
+            let (version, result) = shelf::list(&dir);
+            let _ = tx.send(AppMsg::Git(GitMsg::Shelf { generation, version, result, done: None }));
+        });
+    }
+
+    /// Delete a shelf entry, answered with the new list.
+    pub fn delete_shelf_entry(&self, dir: PathBuf, id: u64, name: String) {
+        let (generation, tx) = (self.generation, self.tx.clone());
+        tokio::task::spawn_blocking(move || {
+            let (version, result) = shelf::delete(&dir, id);
+            let done = result.is_ok().then(|| format!("Deleted shelf entry '{name}'"));
+            let _ = tx.send(AppMsg::Git(GitMsg::Shelf { generation, version, result, done }));
+        });
+    }
+
+    /// Read the patch of a shelf entry, answered with [`GitMsg::ShelfPatch`].
+    pub fn load_shelf_patch(&self, dir: PathBuf, id: u64, title: String) {
+        let (generation, tx) = (self.generation, self.tx.clone());
+        tokio::task::spawn_blocking(move || {
+            let result = shelf::read_patch(&dir, id).map(|b| String::from_utf8_lossy(&b).into_owned());
+            let _ = tx.send(AppMsg::Git(GitMsg::ShelfPatch { generation, id, title, result }));
+        });
     }
 
     /// `git rebase -i` with jetl's todo (see [`rebase::prepare`]); answers as a
@@ -1053,6 +1155,8 @@ mod tests {
             GitOp::NewBranch("b".into()),
             GitOp::Discard,
             GitOp::Stash,
+            GitOp::Shelve("n".into()),
+            GitOp::Unshelve("n".into()),
             GitOp::Checkout("x".into()),
             GitOp::CherryPick("x".into()),
             GitOp::Revert("x".into()),
@@ -1102,8 +1206,18 @@ mod tests {
             GitRequest::InteractiveRebase(rebase::RebasePlan { base: None, head: "h".into(), entries: Vec::new() }),
             GitRequest::LoadRebasePlan("x".into()),
             GitRequest::CheckoutTracking("o/b".into()),
+            GitRequest::Shelve { name: "n".into(), what: shelf::ShelveWhat::Files(Vec::new()) },
+            GitRequest::Unshelve { id: 1, name: "n".into(), file: None },
         ];
-        let never = [GitRequest::Refresh, GitRequest::Stage(vec![]), GitRequest::Fetch, GitRequest::Progress(ProgressAction::Abort)];
+        let never = [
+            GitRequest::Refresh,
+            GitRequest::Stage(vec![]),
+            GitRequest::Fetch,
+            GitRequest::Progress(ProgressAction::Abort),
+            GitRequest::LoadShelf,
+            GitRequest::ShelfDelete { id: 1, name: "n".into() },
+            GitRequest::ShelfPatch { id: 1, title: "t".into() },
+        ];
         for kind in [
             InProgressKind::Merge,
             InProgressKind::Rebase,
@@ -1120,5 +1234,219 @@ mod tests {
                 assert!(!req.refused_mid_operation(kind), "{req:?} during {kind:?}");
             }
         }
+    }
+
+    // ---- shelf -----------------------------------------------------------
+
+    fn read(dir: &Path, rel: &str) -> String {
+        std::fs::read_to_string(dir.join(rel)).unwrap()
+    }
+
+    /// The next `OpDone` as `(ok, output)`.
+    async fn op_result(rx: &mut UnboundedReceiver<AppMsg>) -> (bool, String) {
+        match next_git(rx).await {
+            GitMsg::OpDone { ok, output, .. } => (ok, output),
+            other => panic!("expected OpDone, got {other:?}"),
+        }
+    }
+
+    fn shelved(rel: &str, untracked: bool) -> shelf::ShelveFile {
+        shelf::ShelveFile { rel: rel.into(), paths: vec![rel.into()], untracked }
+    }
+
+    fn lines(n: usize) -> String {
+        (1..=n).map(|i| format!("line {i}\n")).collect()
+    }
+
+    /// `lines(n)` with line `at` (1-based) replaced.
+    fn with_line(n: usize, at: usize, text: &str) -> String {
+        (1..=n).map(|i| if i == at { format!("{text}\n") } else { format!("line {i}\n") }).collect()
+    }
+
+    async fn unshelve_entry(
+        svc: &mut GitService,
+        rx: &mut UnboundedReceiver<AppMsg>,
+        dir: &Path,
+        name: &str,
+        file: Option<&str>,
+    ) -> (bool, String) {
+        let id = shelf::list(dir).1.unwrap().iter().find(|e| e.name == name).expect("entry").id;
+        svc.unshelve(dir.to_path_buf(), id, name.into(), file.map(String::from));
+        op_result(rx).await
+    }
+
+    #[tokio::test]
+    async fn shelve_files_round_trip() {
+        let r = repo("shelve-rt");
+        r.write("b.txt", "b\n");
+        git(&r.dir, &["add", "-A"]);
+        git(&r.dir, &["commit", "-qm", "second"]);
+        r.write("a.txt", "a staged\n");
+        git(&r.dir, &["add", "a.txt"]);
+        r.write("b.txt", "b unstaged\n");
+        r.write("c.txt", "c new\n");
+        let store = TmpDir(std::env::temp_dir().join(format!("jetl-test-shelf-rt-{}", std::process::id())));
+        let (mut svc, mut rx) = service(&r.dir, 1);
+        let what = shelf::ShelveWhat::Files(vec![shelved("a.txt", false), shelved("b.txt", false), shelved("c.txt", true)]);
+        svc.shelve(store.0.clone(), "wip".into(), what);
+        assert_eq!(svc.busy[0].1, "shelve 'wip'");
+        let (ok, out) = op_result(&mut rx).await;
+        assert!(ok, "{out}");
+        assert_eq!(out, "Shelved 'wip' (3 files)");
+        assert_eq!(git(&r.dir, &["status", "--porcelain"]), "");
+        assert_eq!(read(&r.dir, "a.txt"), "a\n");
+        let list = shelf::list(&store.0).1.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!((list[0].name.as_str(), list[0].files.clone()), ("wip", vec!["a.txt".to_string(), "b.txt".into(), "c.txt".into()]));
+
+        let (ok, out) = unshelve_entry(&mut svc, &mut rx, &store.0, "wip", None).await;
+        assert!(ok, "{out}");
+        assert_eq!(out, "Unshelved 'wip'");
+        assert_eq!(
+            (read(&r.dir, "a.txt"), read(&r.dir, "b.txt"), read(&r.dir, "c.txt")),
+            ("a staged\n".into(), "b unstaged\n".into(), "c new\n".into())
+        );
+        assert_eq!(shelf::list(&store.0).1.unwrap().len(), 1, "the entry is kept");
+    }
+
+    #[tokio::test]
+    async fn unshelve_falls_back_to_3way() {
+        let r = repo("shelve-3way");
+        r.write("a.txt", &lines(6));
+        git(&r.dir, &["commit", "-qam", "six"]);
+        r.write("a.txt", &with_line(6, 2, "TWO"));
+        let store = TmpDir(std::env::temp_dir().join(format!("jetl-test-shelf-3way-{}", std::process::id())));
+        let (mut svc, mut rx) = service(&r.dir, 1);
+        svc.shelve(store.0.clone(), "n".into(), shelf::ShelveWhat::Files(vec![shelved("a.txt", false)]));
+        assert!(op_result(&mut rx).await.0);
+        // An unrelated change near enough to break the plain apply's context.
+        r.write("a.txt", &with_line(6, 5, "FIVE"));
+        git(&r.dir, &["commit", "-qam", "other"]);
+        let (ok, out) = unshelve_entry(&mut svc, &mut rx, &store.0, "n", None).await;
+        assert!(ok, "{out}");
+        assert_eq!(out, "Unshelved 'n'; 3-way merged, the result is staged");
+        let want = with_line(6, 2, "TWO").replace("line 5", "FIVE");
+        assert_eq!(read(&r.dir, "a.txt"), want);
+        assert_eq!(git(&r.dir, &["status", "--porcelain"]), "M  a.txt");
+    }
+
+    #[tokio::test]
+    async fn unshelve_conflict_keeps_entry() {
+        let r = repo("shelve-conflict");
+        r.write("a.txt", &lines(6));
+        git(&r.dir, &["commit", "-qam", "six"]);
+        r.write("a.txt", &with_line(6, 2, "mine"));
+        let store = TmpDir(std::env::temp_dir().join(format!("jetl-test-shelf-conflict-{}", std::process::id())));
+        let (mut svc, mut rx) = service(&r.dir, 1);
+        svc.shelve(store.0.clone(), "n".into(), shelf::ShelveWhat::Files(vec![shelved("a.txt", false)]));
+        assert!(op_result(&mut rx).await.0);
+        r.write("a.txt", &with_line(6, 2, "theirs"));
+        git(&r.dir, &["commit", "-qam", "other"]);
+        let (ok, out) = unshelve_entry(&mut svc, &mut rx, &store.0, "n", None).await;
+        assert!(!ok, "{out}");
+        assert!(out.contains("with conflicts"), "{out}");
+        assert!(read(&r.dir, "a.txt").contains("<<<<<<<"));
+        assert!(git(&r.dir, &["status", "--porcelain"]).starts_with("UU a.txt"));
+        assert_eq!(shelf::list(&store.0).1.unwrap().len(), 1);
+    }
+
+    /// The first changed block of `new` against `old` as a `Part` of `rel`.
+    fn part(rel: &str, old: &str, new: &str, block: usize) -> shelf::ShelveWhat {
+        let doc = diff::DiffDoc::build(old.as_bytes(), new.as_bytes(), 4);
+        let p = doc.block_patch(block, rel, rel, 3).unwrap();
+        shelf::ShelveWhat::Part { rel: rel.into(), stored: p.clone(), revert: p }
+    }
+
+    #[tokio::test]
+    async fn shelve_part_keeps_the_other_hunk() {
+        let r = repo("shelve-part");
+        r.write("a.txt", &lines(30));
+        git(&r.dir, &["commit", "-qam", "thirty"]);
+        let changed = with_line(30, 3, "THREE").replace("line 25", "TWENTY-FIVE");
+        r.write("a.txt", &changed);
+        let store = TmpDir(std::env::temp_dir().join(format!("jetl-test-shelf-part-{}", std::process::id())));
+        let (mut svc, mut rx) = service(&r.dir, 1);
+        svc.shelve(store.0.clone(), "first block".into(), part("a.txt", &lines(30), &changed, 0));
+        let (ok, out) = op_result(&mut rx).await;
+        assert!(ok, "{out}");
+        assert_eq!(out, "Shelved 'first block' (1 file)");
+        // Line 3 is back to HEAD; line 25 keeps its change.
+        assert_eq!(read(&r.dir, "a.txt"), with_line(30, 25, "TWENTY-FIVE"));
+        // Commit a change to a context line of the shelved block, with an unchanged line between
+        // them: the plain apply no longer fits, a 3-way merge does.
+        let now = read(&r.dir, "a.txt").replace("line 5\n", "FIVE\n");
+        r.write("a.txt", &now);
+        git(&r.dir, &["commit", "-qam", "next to it"]);
+        let (ok, out) = unshelve_entry(&mut svc, &mut rx, &store.0, "first block", None).await;
+        assert!(ok, "{out}");
+        assert!(out.ends_with("; 3-way merged, the result is staged"), "{out}");
+        let want = now.replace("line 3\n", "THREE\n");
+        assert_eq!(read(&r.dir, "a.txt"), want);
+    }
+
+    #[tokio::test]
+    async fn unshelve_one_file_with_include() {
+        let r = repo("shelve-include");
+        r.write("b.txt", "b\n");
+        git(&r.dir, &["add", "-A"]);
+        git(&r.dir, &["commit", "-qm", "second"]);
+        r.write("a.txt", "a2\n");
+        r.write("b.txt", "b2\n");
+        let store = TmpDir(std::env::temp_dir().join(format!("jetl-test-shelf-include-{}", std::process::id())));
+        let (mut svc, mut rx) = service(&r.dir, 1);
+        svc.shelve(store.0.clone(), "both".into(), shelf::ShelveWhat::Files(vec![shelved("a.txt", false), shelved("b.txt", false)]));
+        assert!(op_result(&mut rx).await.0);
+        let (ok, out) = unshelve_entry(&mut svc, &mut rx, &store.0, "both", Some("b.txt")).await;
+        assert!(ok, "{out}");
+        assert_eq!(out, "Unshelved b.txt from 'both'");
+        assert_eq!((read(&r.dir, "a.txt"), read(&r.dir, "b.txt")), ("a\n".into(), "b2\n".into()));
+    }
+
+    #[tokio::test]
+    async fn shelve_in_a_subdirectory_project() {
+        let r = repo("shelve-subdir");
+        r.write("sub/s.txt", "s\n");
+        git(&r.dir, &["add", "-A"]);
+        git(&r.dir, &["commit", "-qm", "sub"]);
+        r.write("sub/s.txt", "s2\n");
+        r.write("a.txt", "a2\n");
+        let store = TmpDir(std::env::temp_dir().join(format!("jetl-test-shelf-subdir-{}", std::process::id())));
+        let (mut svc, mut rx) = service(&r.dir.join("sub"), 1);
+        svc.shelve(store.0.clone(), "x".into(), shelf::ShelveWhat::Files(vec![shelved("sub/s.txt", false), shelved("a.txt", false)]));
+        let (ok, out) = op_result(&mut rx).await;
+        assert!(ok, "{out}");
+        assert_eq!(git(&r.dir, &["status", "--porcelain"]), "");
+        assert_eq!(shelf::list(&store.0).1.unwrap()[0].files, vec!["a.txt".to_string(), "sub/s.txt".into()]);
+        let (ok, out) = unshelve_entry(&mut svc, &mut rx, &store.0, "x", None).await;
+        assert!(ok, "{out}");
+        assert_eq!((read(&r.dir, "sub/s.txt"), read(&r.dir, "a.txt")), ("s2\n".into(), "a2\n".into()));
+    }
+
+    #[tokio::test]
+    async fn nothing_to_shelve() {
+        let r = repo("shelve-nothing");
+        let store = TmpDir(std::env::temp_dir().join(format!("jetl-test-shelf-nothing-{}", std::process::id())));
+        let (mut svc, mut rx) = service(&r.dir, 1);
+        svc.shelve(store.0.clone(), "x".into(), shelf::ShelveWhat::Files(vec![shelved("a.txt", false)]));
+        let (ok, out) = op_result(&mut rx).await;
+        assert!(!ok);
+        assert_eq!(out, "Nothing to shelve: no changes against HEAD in the selected files");
+        assert!(!store.0.exists(), "nothing is stored");
+    }
+
+    #[tokio::test]
+    async fn store_failure_reverts_nothing() {
+        let r = repo("shelve-nostore");
+        r.write("a.txt", "mine\n");
+        // A file where the shelf directory would go: the store cannot be created.
+        let blocker = TmpDir(std::env::temp_dir().join(format!("jetl-test-shelf-blocker-{}", std::process::id())));
+        std::fs::write(&blocker.0, "not a directory").unwrap();
+        let (mut svc, mut rx) = service(&r.dir, 1);
+        svc.shelve(blocker.0.join("store"), "x".into(), shelf::ShelveWhat::Files(vec![shelved("a.txt", false)]));
+        let (ok, out) = op_result(&mut rx).await;
+        assert!(!ok);
+        assert!(out.starts_with("Cannot shelve: "), "{out}");
+        assert_eq!(read(&r.dir, "a.txt"), "mine\n", "the work tree is untouched");
+        let _ = std::fs::remove_file(&blocker.0);
     }
 }

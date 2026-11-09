@@ -91,6 +91,11 @@ impl Paths {
         self.state_dir.join("recovery")
     }
 
+    /// Shelved changes (`git/shelf.rs`): `<key>/<n>.patch` and `<key>/index.json` per project root.
+    pub fn shelf_dir(&self) -> PathBuf {
+        self.state_dir.join("shelf")
+    }
+
     /// Unsaved buffers kept by a quit (hot exit), one directory per root (`recovery.rs`).
     pub fn hot_exit_dir(&self) -> PathBuf {
         self.state_dir.join("hot_exit")

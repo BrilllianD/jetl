@@ -379,6 +379,93 @@ impl GitPanel {
         cx.effects.push(Effect::Dialog(Dialog::confirm(DialogId::GitDiscard(items), "Discard Changes", &msg, &["Discard", "Cancel"])));
     }
 
+    /// Ask for a name, then shelve (Alt+Shift+V): the selected diff block or
+    /// lines of a modified text file when the diff has the focus, else the
+    /// selected files (a section header takes its whole section).
+    pub(super) fn shelve_selected(&mut self, cx: &mut Ctx) {
+        use crate::git::shelf::{ShelveFile, ShelveWhat};
+        if self.tab != GitTab::Commit {
+            self.set_tab(GitTab::Commit, cx);
+            cx.notify(Level::Info, "Select the files or the change to shelve in the Commit tab");
+            return;
+        }
+        let part = self.area == Area::Diff
+            && self
+                .selected_entry()
+                .is_some_and(|e| e.status == FileStatus::Modified && e.section != Section::Untracked && e.old_rel.is_none())
+            && self.diff.doc.as_ref().is_some_and(|d| !d.binary && !d.lossy);
+        if part {
+            let Some(e) = self.selected_entry() else { return };
+            if e.section == Section::Staged {
+                cx.notify(Level::Error, "Unstage the change first (Space), then shelve it");
+                return;
+            }
+            let rel = e.rel.clone();
+            let Some(doc) = &self.diff.doc else { return };
+            let (stored, revert) = if self.diff.line.is_some() {
+                let Some(rows) = self.diff.selected_lines() else { return };
+                if rows.end > if self.diff.unified { doc.unified.len() } else { doc.rows.len() } {
+                    return;
+                }
+                let (o, n) = doc.row_lines(self.diff.unified, rows);
+                (doc.lines_patch(o.clone(), n.clone(), &rel, &rel, 3, false), doc.lines_patch(o, n, &rel, &rel, 3, true))
+            } else {
+                let p = doc.block_patch(self.diff.block, &rel, &rel, 3);
+                (p.clone(), p)
+            };
+            let (Some(stored), Some(revert)) = (stored, revert) else {
+                cx.notify(Level::Info, "No change selected in the diff");
+                return;
+            };
+            let what = ShelveWhat::Part { rel, stored, revert };
+            let name = what.fallback_name();
+            self.diff.line = None;
+            self.diff.line_anchor = None;
+            return self.ask_shelve_name(what, &name, cx);
+        }
+        let Some(row) = self.rows.get(self.list.selected).copied() else {
+            cx.notify(Level::Info, "No changes selected");
+            return;
+        };
+        let Some(s) = &self.snapshot else { return };
+        let entries: Vec<&ChangeEntry> = match row {
+            ListRow::Entry(i) => vec![&s.entries[i]],
+            ListRow::Header(sec, _) => s.entries.iter().filter(|e| e.section == sec).collect(),
+        };
+        if entries.iter().any(|e| e.status == FileStatus::Conflicted) {
+            cx.notify(Level::Error, "Cannot shelve a conflicted file; resolve it first");
+            return;
+        }
+        // A file both staged and unstaged is listed twice: shelve it once.
+        let mut files: Vec<ShelveFile> = Vec::new();
+        for e in entries {
+            let untracked = e.section == Section::Untracked;
+            match files.iter_mut().find(|f| f.rel == e.rel) {
+                Some(f) => {
+                    for p in e.paths() {
+                        if !f.paths.contains(&p) {
+                            f.paths.push(p);
+                        }
+                    }
+                }
+                None => files.push(ShelveFile { rel: e.rel.clone(), paths: e.paths(), untracked }),
+            }
+        }
+        if files.is_empty() {
+            cx.notify(Level::Info, "No changes selected");
+            return;
+        }
+        let what = ShelveWhat::Files(files);
+        let first = self.message.text.lines().next().unwrap_or("").trim();
+        let name = if first.is_empty() { what.fallback_name() } else { first.to_string() };
+        self.ask_shelve_name(what, &name, cx);
+    }
+
+    fn ask_shelve_name(&mut self, what: crate::git::shelf::ShelveWhat, default: &str, cx: &mut Ctx) {
+        let d = Dialog::input(DialogId::ShelveName(what), "Shelve Changes", "Name of the shelf entry:", default, "Shelve");
+        cx.effects.push(Effect::Dialog(d));
+    }
+
     /// Open the selected entry's file; a conflicted one opens the
     /// conflict resolver.
     pub(super) fn open_selected_file(&mut self, cx: &mut Ctx) {

@@ -541,6 +541,7 @@ impl App {
         app.git.load_worktrees();
         app.git.load_messages();
         app.git.load_stashes();
+        app.git.load_shelf(app.shelf_dir());
         app.restore_session();
         app.start_watcher();
         // The symbol index follows the file index.
@@ -3444,7 +3445,7 @@ pub(crate) mod tests {
         app.toggle_tool_window(ToolWindowId::Git);
         assert!(app.focus.is(PanelId::Git));
         assert_eq!(app.git_panel.tab, GitTab::Commit);
-        for want in [GitTab::Log, GitTab::Stash, GitTab::Console, GitTab::Commit] {
+        for want in [GitTab::Log, GitTab::Stash, GitTab::Shelf, GitTab::Console, GitTab::Commit] {
             app.handle_key(alt(KeyCode::Right));
             assert_eq!(app.git_panel.tab, want);
         }
@@ -3991,6 +3992,162 @@ pub(crate) mod tests {
         feed_status(&mut app, 1);
         let d = app.dialog.take().expect("Resolve Conflicts");
         assert_eq!(d.id, DialogId::ResolveConflictPick(vec!["a.txt".into()]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn shelf_msg(m: &AppMsg) -> bool {
+        matches!(m, AppMsg::Git(GitMsg::Shelf { .. }))
+    }
+
+    /// Select the first changed file in the Commit tab (past its section header).
+    fn focus_first_change(app: &mut App) {
+        app.focus.set(PanelId::Git);
+        app.perform(Action::Git(crate::actions::GitAction::Down));
+    }
+
+    #[tokio::test]
+    async fn shelve_asks_for_a_name_then_snapshots_and_reverts() {
+        use crate::actions::GitAction;
+        let (mut app, dir) = test_app("shelve");
+        with_history(&mut app);
+        init_repo(&app, &[("a.txt", "a\n")]);
+        let a = app.workspace.root.join("a.txt");
+        std::fs::write(&a, "mine\n").unwrap();
+        feed_status(&mut app, 1);
+        focus_first_change(&mut app);
+        app.perform(Action::Git(GitAction::Shelve));
+        let d = app.dialog.take().expect("asks for a name");
+        assert!(matches!(d.id, DialogId::ShelveName(_)), "{:?}", d.id);
+        let crate::ui::dialog::DialogKind::Input { input, .. } = &d.kind else { panic!("input dialog") };
+        assert_eq!(input.text, "Changes to a.txt");
+        app.finish_dialog(d.id, DialogResult::Text("wip".into()));
+        handle_next(&mut app, git_op_done).await;
+        assert_eq!(app.notifications.iter().map(|n| n.text.as_str()).find(|t| t.starts_with("Shelved")), Some("Shelved 'wip' (1 file)"));
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "a\n");
+        let rows = crate::app::history::tests::snapshots(&app, &a);
+        assert!(rows.iter().any(|(label, text)| label == "Before shelve 'wip'" && text == "mine\n"), "{rows:?}");
+        handle_next(&mut app, shelf_msg).await;
+        assert_eq!(app.git_panel.shelf_count(), 1);
+        app.set_git_tab(crate::git::panel::GitTab::Shelf);
+        assert_eq!(app.git_panel.shelf_names(), vec!["wip".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn unshelve_conflict_warns_and_sets_pending_conflicts() {
+        use crate::actions::GitAction;
+        let (mut app, dir) = test_app("unshelve-conflict");
+        init_repo(&app, &[("a.txt", "a\n")]);
+        let root = app.workspace.root.clone();
+        std::fs::write(root.join("a.txt"), "mine\n").unwrap();
+        feed_status(&mut app, 1);
+        focus_first_change(&mut app);
+        app.perform(Action::Git(GitAction::Shelve));
+        let d = app.dialog.take().unwrap();
+        app.finish_dialog(d.id, DialogResult::Text("wip".into()));
+        handle_next(&mut app, git_op_done).await;
+        handle_next(&mut app, shelf_msg).await;
+        std::fs::write(root.join("a.txt"), "head\n").unwrap();
+        crate::git::repo::stage_all(&root).unwrap();
+        crate::git::repo::commit(&root, "second").unwrap();
+        app.set_git_tab(crate::git::panel::GitTab::Shelf);
+        app.perform(Action::Git(GitAction::Unshelve));
+        handle_next(&mut app, git_op_done).await;
+        let n = app.notifications.last().expect("a warning");
+        assert_eq!(n.level, Level::Warn, "{}", n.text);
+        assert!(n.text.contains("conflict"), "{}", n.text);
+        assert!(app.pending_conflicts);
+        assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap().lines().next(), Some("<<<<<<< ours"));
+        assert_eq!(app.git_panel.shelf_count(), 1, "the entry is kept");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn delete_shelf_entry_asks_first() {
+        use crate::actions::GitAction;
+        let (mut app, dir) = test_app("shelf-delete");
+        init_repo(&app, &[("a.txt", "a\n")]);
+        let root = app.workspace.root.clone();
+        std::fs::write(root.join("a.txt"), "mine\n").unwrap();
+        feed_status(&mut app, 1);
+        focus_first_change(&mut app);
+        app.perform(Action::Git(GitAction::Shelve));
+        let d = app.dialog.take().unwrap();
+        app.finish_dialog(d.id, DialogResult::Text("wip".into()));
+        handle_next(&mut app, git_op_done).await;
+        handle_next(&mut app, shelf_msg).await;
+        let dir_of = app.shelf_dir();
+        let patches = |d: &std::path::Path| {
+            std::fs::read_dir(d).unwrap().flatten().filter(|e| e.path().extension().is_some_and(|x| x == "patch")).count()
+        };
+        assert_eq!(patches(&dir_of), 1);
+        app.set_git_tab(crate::git::panel::GitTab::Shelf);
+        app.perform(Action::Git(GitAction::DeleteShelfEntry));
+        let d = app.dialog.take().expect("confirm");
+        assert_eq!(d.title, "Delete Shelf Entry");
+        assert_eq!(d.message, "Delete shelf entry 'wip'?\nIts patch is removed. This cannot be undone.");
+        let crate::ui::dialog::DialogKind::Confirm { buttons, .. } = &d.kind else { panic!("confirm") };
+        assert_eq!(buttons, &["Delete", "Cancel"]);
+        app.finish_dialog(d.id.clone(), DialogResult::Button(1));
+        assert_eq!(patches(&dir_of), 1, "Cancel keeps the patch");
+        app.perform(Action::Git(GitAction::DeleteShelfEntry));
+        let d = app.dialog.take().unwrap();
+        app.finish_dialog(d.id, DialogResult::Button(0));
+        // Skip the list the tab switch asked for: wait for the delete's answer.
+        handle_next(&mut app, |m| matches!(m, AppMsg::Git(GitMsg::Shelf { done: Some(_), .. }))).await;
+        assert_eq!(patches(&dir_of), 0);
+        assert_eq!(app.git_panel.shelf_count(), 0);
+        assert!(app.notifications.iter().any(|n| n.text == "Deleted shelf entry 'wip'"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn staged_part_is_refused() {
+        use crate::actions::GitAction;
+        use crate::git::Section;
+        let (mut app, dir) = test_app("shelve-staged-part");
+        let base: String = (1..=12).map(|i| format!("{i}\n")).collect();
+        init_repo(&app, &[("f.txt", &base)]);
+        let f = app.workspace.root.join("f.txt");
+        std::fs::write(&f, base.replacen("2\n", "two\n", 1)).unwrap();
+        crate::git::repo::stage_all(&app.workspace.root).unwrap();
+        feed_status(&mut app, 1);
+        focus_first_change(&mut app);
+        feed_change_diff(&mut app, Section::Staged, "f.txt");
+        app.perform(Action::Git(GitAction::NextSection));
+        app.perform(Action::Git(GitAction::Shelve));
+        assert!(app.dialog.is_none(), "no name dialog");
+        let n = app.notifications.last().unwrap();
+        assert_eq!((n.level, n.text.as_str()), (Level::Error, "Unstage the change first (Space), then shelve it"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn default_name_is_the_commit_message_first_line() {
+        use crate::actions::GitAction;
+        let (mut app, dir) = test_app("shelve-name");
+        init_repo(&app, &[("a.txt", "a\n")]);
+        std::fs::write(app.workspace.root.join("a.txt"), "mine\n").unwrap();
+        feed_status(&mut app, 1);
+        app.git_panel.message.set_text("Parser work\nmore");
+        focus_first_change(&mut app);
+        app.perform(Action::Git(GitAction::Shelve));
+        let d = app.dialog.take().expect("asks for a name");
+        let crate::ui::dialog::DialogKind::Input { input, .. } = &d.kind else { panic!("input dialog") };
+        assert_eq!(input.text, "Parser work");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn stale_shelf_version_is_dropped() {
+        use crate::git::shelf::ShelfEntry;
+        let (mut app, dir) = test_app("shelf-stale");
+        let e = |id: u64, name: &str| ShelfEntry { id, name: name.into(), time: 0, files: vec!["a.txt".into()] };
+        let g = app.git.generation;
+        app.handle_msg(AppMsg::Git(GitMsg::Shelf { generation: g, version: 3, result: Ok(vec![e(1, "three")]), done: None }));
+        app.handle_msg(AppMsg::Git(GitMsg::Shelf { generation: g, version: 2, result: Ok(vec![e(1, "two"), e(2, "two b")]), done: None }));
+        assert_eq!(app.git_panel.shelf_count(), 1);
+        assert_eq!(app.git_panel.shelf_names(), vec!["three".to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

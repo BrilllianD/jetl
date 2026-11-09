@@ -1,14 +1,15 @@
-//! Git tool window (bottom): tabs Commit | Log | Stash | Console.
+//! Git tool window (bottom): tabs Commit | Log | Stash | Shelf | Console.
 //!
 //! Commit: change list grouped Staged / Unstaged / Untracked with stage
 //! checkboxes, the diff of the selected entry, and the commit message box.
 //! Log: a branch tree (HEAD, Local, Remote), `git log --graph` rows, details of the selected commit, and a diff
 //! of a file in it. Stash: the stash list, files of a stash and their diff.
+//! Shelf: the shelved patches and the files of one.
 //! Console: output of CLI operations.
 //!
 //! This module holds the shared state, input routing, the header, the
 //! console and the diff renderer (`diff_view.rs`, also used by the Local
-//! History window); `commit.rs`, `log.rs` and `stash.rs` hold the tabs.
+//! History window); `commit.rs`, `log.rs`, `stash.rs` and `shelf.rs` hold the tabs.
 //!
 //! The panel only holds state; all git work is requested through
 //! `Effect::Git` and the results are fed back by the app.
@@ -42,6 +43,7 @@ mod commit;
 mod diff_view;
 mod file_tree;
 mod log;
+mod shelf;
 mod stash;
 
 pub(crate) use diff_view::{DiffOpts, DiffPane, DiffToggle, render_diff, render_diff_header};
@@ -58,12 +60,13 @@ pub enum GitTab {
     Log,
     Console,
     Stash,
+    Shelf,
 }
 
 impl GitTab {
     /// The tabs in on-screen order (`render_header`), which is not the
     /// variant order: variants are stored in sessions.
-    pub const ORDER: [GitTab; 4] = [GitTab::Commit, GitTab::Log, GitTab::Stash, GitTab::Console];
+    pub const ORDER: [GitTab; 5] = [GitTab::Commit, GitTab::Log, GitTab::Stash, GitTab::Shelf, GitTab::Console];
 
     /// The next tab to the right, or to the left, wrapping around.
     pub fn step(self, forward: bool) -> GitTab {
@@ -87,6 +90,9 @@ enum Area {
     Stashes,
     StashFiles,
     StashDiff,
+    /// The Shelf tab's entry list.
+    Shelves,
+    ShelfFiles,
     Console,
 }
 
@@ -109,6 +115,9 @@ enum Btn {
     StashPop,
     StashApply,
     StashDrop,
+    ShelfUnshelve,
+    ShelfShow,
+    ShelfDelete,
     Diff(DiffToggle),
     LogClearFilter,
     LogFilter(LogFilterPart),
@@ -183,6 +192,16 @@ pub struct GitPanel {
     stash_details_error: Option<String>,
     stash_files: ListState,
     stash_diff: DiffPane,
+    shelf: Vec<crate::git::shelf::ShelfEntry>,
+    /// The formatted time of each entry of `shelf`.
+    shelf_when: Vec<String>,
+    shelf_error: Option<String>,
+    /// Version of the shelf list held; an older answer is dropped.
+    shelf_version: u64,
+    /// Local time offset in seconds (tests set a fixed one).
+    pub shelf_offset: fn(i64) -> i64,
+    shelf_list: ListState,
+    shelf_files: ListState,
     /// Layout of every diff pane (Alt+U, Alt+F, or the header toggles).
     diff_opts: DiffOpts,
     console: Vec<(ConsoleKind, String)>,
@@ -203,6 +222,8 @@ pub struct GitPanel {
     files_rect: Rect,
     stash_rect: Rect,
     stash_files_rect: Rect,
+    shelf_rect: Rect,
+    shelf_files_rect: Rect,
     console_rect: Rect,
 }
 
@@ -255,6 +276,13 @@ impl GitPanel {
             stash_details_error: None,
             stash_files: ListState::default(),
             stash_diff: DiffPane::new(true),
+            shelf: Vec::new(),
+            shelf_when: Vec::new(),
+            shelf_error: None,
+            shelf_version: 0,
+            shelf_offset: crate::ui::event_log::local_offset,
+            shelf_list: ListState::default(),
+            shelf_files: ListState::default(),
             diff_opts: DiffOpts { unified: None, collapse: true },
             console: Vec::new(),
             console_scroll: 0,
@@ -271,6 +299,8 @@ impl GitPanel {
             files_rect: Rect::default(),
             stash_rect: Rect::default(),
             stash_files_rect: Rect::default(),
+            shelf_rect: Rect::default(),
+            shelf_files_rect: Rect::default(),
             console_rect: Rect::default(),
         }
     }
@@ -282,7 +312,9 @@ impl GitPanel {
         let console = std::mem::take(&mut self.console);
         let tab = self.tab;
         let (log_page, log_all) = (self.log_page, self.log_all);
+        let shelf_offset = self.shelf_offset;
         *self = Self::new();
+        self.shelf_offset = shelf_offset;
         self.log_all = log_all;
         self.message = message;
         self.console = console;
@@ -343,6 +375,7 @@ impl GitPanel {
             GitTab::Commit => Area::Changes,
             GitTab::Log => Area::Log,
             GitTab::Stash => Area::Stashes,
+            GitTab::Shelf => Area::Shelves,
             GitTab::Console => Area::Console,
         }
     }
@@ -394,6 +427,9 @@ impl GitPanel {
         if tab == GitTab::Console {
             self.console_scroll = 0;
         }
+        if tab == GitTab::Shelf {
+            cx.effects.push(Effect::Git(GitRequest::LoadShelf));
+        }
     }
 
     /// The Git window's diff layout options (a new diff tab starts with them).
@@ -419,6 +455,7 @@ impl GitPanel {
             (GitTab::Log, Area::LogDiff) => self.log_diff.key.clone(),
             (GitTab::Stash, Area::StashFiles) => self.stash_file_key(),
             (GitTab::Stash, Area::StashDiff) => self.stash_diff.key.clone(),
+            (GitTab::Shelf, _) => return self.show_shelf_patch(cx),
             _ => None,
         };
         match key {
@@ -430,7 +467,12 @@ impl GitPanel {
     pub fn handle_action(&mut self, a: &GitAction, cx: &mut Ctx) -> bool {
         use GitAction as G;
         match a {
-            G::Refresh => cx.effects.push(Effect::Git(GitRequest::Refresh)),
+            G::Refresh => {
+                cx.effects.push(Effect::Git(GitRequest::Refresh));
+                if self.tab == GitTab::Shelf {
+                    cx.effects.push(Effect::Git(GitRequest::LoadShelf));
+                }
+            }
             G::ToggleStage => match (self.tab, self.area) {
                 (GitTab::Commit, Area::Diff) => self.hunk_op(false, cx),
                 (GitTab::Log, Area::Branches) => self.activate_branch_row(cx),
@@ -532,6 +574,12 @@ impl GitPanel {
             G::TabStash => self.set_tab(GitTab::Stash, cx),
             G::StashPush => self.stash_push(cx),
             G::StashIncludeUntracked => self.stash_untracked = !self.stash_untracked,
+            G::Shelve => self.shelve_selected(cx),
+            G::Unshelve | G::StashApply if self.tab == GitTab::Shelf => self.unshelve_selected(cx),
+            G::DeleteShelfEntry | G::StashDrop if self.tab == GitTab::Shelf => self.delete_shelf_selected(cx),
+            G::StashPop if self.tab == GitTab::Shelf => {}
+            G::Unshelve => self.set_tab(GitTab::Shelf, cx),
+            G::DeleteShelfEntry => self.set_tab(GitTab::Shelf, cx),
             G::StashPop | G::StashApply | G::StashDrop => {
                 if self.tab != GitTab::Stash {
                     // Pick a stash first; Delete elsewhere does nothing.
@@ -566,8 +614,9 @@ impl GitPanel {
                 Area::LogDiff => self.close_log_diff(),
                 Area::StashFiles => self.area = Area::Stashes,
                 Area::StashDiff => self.close_stash_diff(),
+                Area::ShelfFiles => self.area = Area::Shelves,
                 Area::Log if self.branches_rect.width > 0 => self.area = Area::Branches,
-                Area::Changes | Area::Message | Area::Branches | Area::Log | Area::Stashes | Area::Console => {}
+                Area::Changes | Area::Message | Area::Branches | Area::Log | Area::Stashes | Area::Shelves | Area::Console => {}
             },
             G::Right => match self.area {
                 Area::Changes if self.diff.key.is_some() => self.area = Area::Diff,
@@ -576,6 +625,7 @@ impl GitPanel {
                 Area::Files => self.files_right(cx),
                 Area::Stashes if self.stash_details.is_some() => self.area = Area::StashFiles,
                 Area::StashFiles => self.open_stash_file(cx),
+                Area::Shelves if self.selected_shelf().is_some_and(|e| !e.files.is_empty()) => self.area = Area::ShelfFiles,
                 _ => {}
             },
             G::OpenFile => match self.area {
@@ -593,6 +643,12 @@ impl GitPanel {
                     }
                 }
                 Area::StashFiles => self.open_stash_file(cx),
+                Area::Shelves => {
+                    if self.selected_shelf().is_some_and(|e| !e.files.is_empty()) {
+                        self.area = Area::ShelfFiles;
+                    }
+                }
+                Area::ShelfFiles => self.show_shelf_patch(cx),
                 Area::Message | Area::LogDiff | Area::StashDiff | Area::Console => {}
             },
             G::NextSection => {
@@ -606,6 +662,8 @@ impl GitPanel {
                     Area::Branches => Area::Log,
                     Area::Stashes => Area::StashFiles,
                     Area::StashFiles => Area::Stashes,
+                    Area::Shelves => Area::ShelfFiles,
+                    Area::ShelfFiles => Area::Shelves,
                     a => a,
                 }
             }
@@ -619,6 +677,7 @@ impl GitPanel {
                 Area::Message | Area::Diff => self.area = Area::Changes,
                 Area::Files | Area::Branches => self.area = Area::Log,
                 Area::StashFiles => self.area = Area::Stashes,
+                Area::ShelfFiles => self.area = Area::Shelves,
                 _ => cx.focus(PanelId::Editor),
             },
         }
@@ -636,6 +695,8 @@ impl GitPanel {
             Area::Stashes => self.stash_list.viewport,
             Area::StashFiles => self.stash_files.viewport,
             Area::StashDiff => self.stash_diff.page,
+            Area::Shelves => self.shelf_list.viewport,
+            Area::ShelfFiles => self.shelf_files.viewport,
             Area::Console | Area::Message => self.console_rect.height as usize,
         };
         rows.saturating_sub(1).max(1)
@@ -670,6 +731,14 @@ impl GitPanel {
             }
             Area::StashFiles => step(&mut self.stash_files),
             Area::StashDiff => self.stash_diff.scroll_by(delta),
+            Area::Shelves => {
+                let before = self.shelf_list.selected;
+                step(&mut self.shelf_list);
+                if self.shelf_list.selected != before {
+                    self.sync_shelf_files();
+                }
+            }
+            Area::ShelfFiles => step(&mut self.shelf_files),
             Area::Console => self.console_scroll = self.console_scroll.saturating_add_signed(-delta).min(self.console.len()),
             Area::Message => {}
         }
@@ -702,6 +771,10 @@ impl GitPanel {
                     self.stash_list.scroll(d as i32);
                 } else if self.stash_files_rect.contains(p) {
                     self.stash_files.scroll(d as i32);
+                } else if self.shelf_rect.contains(p) {
+                    self.shelf_list.scroll(d as i32);
+                } else if self.shelf_files_rect.contains(p) {
+                    self.shelf_files.scroll(d as i32);
                 } else if self.branches_rect.contains(p) {
                     self.branch_list.scroll(d as i32);
                 } else if self.log_rect.contains(p) {
@@ -733,6 +806,7 @@ impl GitPanel {
             GitTab::Commit => self.click_commit_tab(m, p, cx),
             GitTab::Log => self.click_log_tab(m, p, cx),
             GitTab::Stash => self.click_stash_tab(m, p, cx),
+            GitTab::Shelf => self.click_shelf_tab(m, p, cx),
             GitTab::Console => self.area = Area::Console,
         }
     }
@@ -753,7 +827,7 @@ impl GitPanel {
         match self.tab {
             GitTab::Log => &mut self.log_diff,
             GitTab::Stash => &mut self.stash_diff,
-            GitTab::Commit | GitTab::Console => &mut self.diff,
+            GitTab::Commit | GitTab::Shelf | GitTab::Console => &mut self.diff,
         }
     }
 
@@ -773,6 +847,9 @@ impl GitPanel {
             Btn::StashPop => return self.stash_action(StashAction::Pop, cx),
             Btn::StashApply => return self.stash_action(StashAction::Apply, cx),
             Btn::StashDrop => return self.stash_action(StashAction::Drop, cx),
+            Btn::ShelfUnshelve => return self.unshelve_selected(cx),
+            Btn::ShelfShow => return self.show_shelf_patch(cx),
+            Btn::ShelfDelete => return self.delete_shelf_selected(cx),
             Btn::Diff(DiffToggle::Layout) => return self.toggle_diff_layout(),
             Btn::LogClearFilter => return self.set_log_filter(LogFilter::default(), cx),
             Btn::LogFilter(part) => return self.log_filter_dialog(part, cx),
@@ -808,6 +885,8 @@ impl GitPanel {
             &mut self.files_rect,
             &mut self.stash_rect,
             &mut self.stash_files_rect,
+            &mut self.shelf_rect,
+            &mut self.shelf_files_rect,
             &mut self.console_rect,
         ] {
             *r = Rect::default();
@@ -821,6 +900,7 @@ impl GitPanel {
             GitTab::Commit => self.render_commit_tab(frame, body, focused, theme),
             GitTab::Log => self.render_log_tab(frame, body, focused, theme),
             GitTab::Stash => self.render_stash_tab(frame, body, focused, theme),
+            GitTab::Shelf => self.render_shelf_tab(frame, body, focused, theme),
             GitTab::Console => self.render_console(frame.buffer_mut(), body, theme),
         }
     }
@@ -833,7 +913,17 @@ impl GitPanel {
             0 => " Stash ".to_string(),
             n => format!(" Stash ({n}) "),
         };
-        let tabs = [(GitTab::Commit, " Commit "), (GitTab::Log, " Log "), (GitTab::Stash, stash.as_str()), (GitTab::Console, " Console ")];
+        let shelf = match self.shelf.len() {
+            0 => " Shelf ".to_string(),
+            n => format!(" Shelf ({n}) "),
+        };
+        let tabs = [
+            (GitTab::Commit, " Commit "),
+            (GitTab::Log, " Log "),
+            (GitTab::Stash, stash.as_str()),
+            (GitTab::Shelf, shelf.as_str()),
+            (GitTab::Console, " Console "),
+        ];
         for (tab, label) in tabs {
             let st = if self.tab == tab { theme.tab_active } else { theme.tab };
             let rect = put(buf, &mut x, r.y, r.right(), label, st);
@@ -845,7 +935,7 @@ impl GitPanel {
             put(buf, &mut x, r.y, r.right(), &label, theme.warn.bg(theme.panel_bg));
             x += 1;
         }
-        // As many tools as fit, Refresh (F5) dropped first.
+        // As many tools as fit, Refresh (F5) dropped first (Skip, then Abort, while an operation is in progress).
         let all: Vec<(Btn, &str)> = match self.in_progress().filter(|ip| ip.kind.args(ProgressAction::Continue).is_some()) {
             Some(ip) => {
                 let mut v = vec![(Btn::Progress(ProgressAction::Continue), " Continue ")];
@@ -857,15 +947,18 @@ impl GitPanel {
             }
             None => vec![(Btn::Refresh, " Refresh "), (Btn::Fetch, " Fetch "), (Btn::Pull, " Pull "), (Btn::Push, " Push ")],
         };
-        let mut tools: &[(Btn, &str)] = &all;
+        let mut tools = all;
         let width = |tools: &[(Btn, &str)]| -> u16 { tools.iter().map(|(_, l)| l.width() as u16 + 1).sum() };
-        while !tools.is_empty() && r.right() <= x + width(tools) {
-            tools = &tools[1..];
+        while !tools.is_empty() && r.right() <= x + width(&tools) {
+            // Of an operation in progress's buttons Continue stays longest: Skip goes first, then Abort.
+            let drop =
+                [ProgressAction::Skip, ProgressAction::Abort].iter().find_map(|a| tools.iter().position(|(b, _)| *b == Btn::Progress(*a)));
+            tools.remove(drop.unwrap_or(0));
         }
-        let w = width(tools);
+        let w = width(&tools);
         if !tools.is_empty() {
             let mut tx = r.right() - w;
-            for &(b, label) in tools {
+            for &(b, label) in &tools {
                 let rect = put(buf, &mut tx, r.y, r.right(), label, theme.title.bg(theme.panel_bg));
                 self.hits.push((b, rect));
                 tx += 1;
@@ -914,11 +1007,11 @@ mod step_tests {
     fn git_tab_step_wraps_in_screen_order() {
         let mut t = GitTab::Commit;
         let mut seen = vec![];
-        for _ in 0..4 {
+        for _ in 0..5 {
             t = t.step(true);
             seen.push(t);
         }
-        assert_eq!(seen, [GitTab::Log, GitTab::Stash, GitTab::Console, GitTab::Commit]);
+        assert_eq!(seen, [GitTab::Log, GitTab::Stash, GitTab::Shelf, GitTab::Console, GitTab::Commit]);
         assert_eq!(GitTab::Commit.step(false), GitTab::Console);
     }
 }
