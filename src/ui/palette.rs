@@ -1,6 +1,7 @@
 //! Command palette overlay: Go to File, Go to Symbol, Find Action, Search
-//! Everywhere (tabs All, Classes, Files, Symbols, Actions, Branches), Recent Files, Branches, Recent Projects, Run tasks, Scratch
-//! Files and a language server's locations
+//! Everywhere (tabs All, Classes, Files, Symbols, Actions, Branches), Recent
+//! Files, Branches, Recent Projects, Run tasks, Scratch Files and a language
+//! server's locations
 //! (definitions, usages; grouped by file under headers when they span
 //! several, each usage's range marked). The app
 //! owns it (`App.palette`) and routes all input to it while it is open,
@@ -100,6 +101,12 @@ enum FilterInput {
 enum RowKey {
     File(String),
     Symbol(Arc<str>, usize, usize, Arc<str>),
+    /// An All group header the user selected.
+    Header(Source),
+    /// An All action row, by id.
+    Action(String),
+    /// An All branch row, by name.
+    Branch(String),
 }
 
 /// What a palette tab lists.
@@ -467,19 +474,21 @@ impl Palette {
     }
 
     pub fn set_actions(&mut self, actions: Vec<ActionEntry>) {
+        let key = self.selected_key();
         self.actions = actions;
         match self.source() {
             Source::Actions => self.refilter(false),
-            Source::All => self.refresh_all_small(),
+            Source::All => self.refresh_all_small(key),
             _ => {}
         }
     }
 
     pub fn set_branches(&mut self, branches: Vec<BranchInfo>) {
+        let key = self.selected_key();
         self.branches = branches;
         match self.source() {
             Source::Branches => self.refilter(false),
-            Source::All => self.refresh_all_small(),
+            Source::All => self.refresh_all_small(key),
             _ => {}
         }
     }
@@ -655,6 +664,8 @@ impl Palette {
             });
             return;
         }
+        // Rows ranked at once keep their selected row number; a header the user picked is kept by identity.
+        let key = if reset { None } else { self.selected_key().filter(|k| matches!(k, RowKey::Header(_))) };
         self.rows = self.rank_now(&q, subset);
         self.shown = Shown { files: self.files.clone(), symbols: self.symbols.clone(), query: q, source: self.source() };
         self.list.set_len(self.rows.len());
@@ -663,7 +674,16 @@ impl Palette {
             self.list.select(self.first_row());
             self.list.offset = 0;
         } else {
-            self.leave_header();
+            self.reselect(key);
+        }
+    }
+
+    /// Select the row `key` names among the new rows; without a key (or a match) a selection that sits on an All
+    /// group header the user did not pick moves to the item below.
+    fn reselect(&mut self, key: Option<RowKey>) {
+        match key.and_then(|k| self.rows.iter().position(|&i| self.row_is(i, &k))) {
+            Some(row) => self.list.select(row),
+            None => self.leave_header(),
         }
     }
 
@@ -918,11 +938,13 @@ impl Palette {
     }
 
     /// A new action or branch list on the All tab: rebuild those groups against the shown query, keep the large ones.
-    fn refresh_all_small(&mut self) {
+    /// `key` names the selected row as the old list had it.
+    fn refresh_all_small(&mut self, key: Option<RowKey>) {
         let large = std::mem::take(&mut self.all_large);
         let (q, files, symbols) = (self.shown.query.clone(), self.shown.files.clone(), self.shown.symbols.clone());
         self.rows = self.build_all_rows(&q, large, &files, &symbols);
         self.list.set_len(self.rows.len());
+        self.reselect(key);
     }
 
     /// Show the rows of off-thread filter `seq` if it is still the latest of
@@ -970,7 +992,7 @@ impl Palette {
         }
     }
 
-    /// What the selected row shows (files and symbols only).
+    /// What the selected row shows (files and symbols; on All also headers, actions and branches).
     fn selected_key(&self) -> Option<RowKey> {
         let i = *self.rows.get(self.list.selected)?;
         let file = |i: usize| Some(RowKey::File(self.shown.files.get(i)?.clone()));
@@ -984,7 +1006,12 @@ impl Palette {
             Source::All => match *self.all_rows.get(i)? {
                 AllRow::Item { source: Source::Files, index } => file(index),
                 AllRow::Item { source: Source::Classes | Source::Symbols, index } => symbol(index),
-                _ => None,
+                AllRow::Item { source: Source::Actions, index } => Some(RowKey::Action(self.actions.get(index)?.id.to_string())),
+                AllRow::Item { source: Source::Branches, index } => {
+                    Some(RowKey::Branch(self.branches.get(index.checked_sub(1)?)?.name.clone()))
+                }
+                AllRow::Header { source, .. } => Some(RowKey::Header(source)),
+                AllRow::Item { .. } => None,
             },
             _ => None,
         }
@@ -993,16 +1020,23 @@ impl Palette {
     /// Whether candidate `i` of the shown ones is what `key` names.
     fn row_is(&self, i: usize, key: &RowKey) -> bool {
         let i = if self.shown.source == Source::All {
-            // A header, an action or a branch never matches.
             match (self.all_rows.get(i), key) {
                 (Some(AllRow::Item { source: Source::Files, index }), RowKey::File(_)) => *index,
                 (Some(AllRow::Item { source: Source::Classes | Source::Symbols, index }), RowKey::Symbol(..)) => *index,
+                (Some(AllRow::Header { source, .. }), RowKey::Header(want)) => return source == want,
+                (Some(AllRow::Item { source: Source::Actions, index }), RowKey::Action(id)) => {
+                    return self.actions.get(*index).is_some_and(|a| a.id == id.as_str());
+                }
+                (Some(AllRow::Item { source: Source::Branches, index }), RowKey::Branch(name)) => {
+                    return index.checked_sub(1).and_then(|b| self.branches.get(b)).is_some_and(|b| b.name == *name);
+                }
                 _ => return false,
             }
         } else {
             i
         };
         match key {
+            RowKey::Header(_) | RowKey::Action(_) | RowKey::Branch(_) => false,
             RowKey::File(f) => self.shown.files.get(i).is_some_and(|x| x == f),
             RowKey::Symbol(path, line, col, name) => self
                 .shown
@@ -2915,5 +2949,100 @@ mod tests {
         p.set_files(Arc::new(vec!["a.txt".to_string()]), false);
         let res = p.handle_action(&PaletteAction::Accept);
         assert_eq!(res, Some(PaletteResult::Accept(Accept::OpenFile(PathBuf::from("/w/a.txt")))));
+    }
+
+    fn branch(name: &str) -> BranchInfo {
+        BranchInfo { name: name.to_string(), upstream: None, ahead: 0, behind: 0, current: false, remote: false }
+    }
+
+    /// The row of the first All header of `source`.
+    fn header_row(p: &Palette, source: Source) -> usize {
+        p.rows.iter().position(|&i| p.all_rows[i] == all_header(source, false) || p.all_rows[i] == all_header(source, true)).unwrap()
+    }
+
+    #[test]
+    fn all_selected_header_survives_a_feed_and_enter_switches_tab() {
+        let mut p = everywhere(PaletteKind::Everywhere);
+        p.set_query("shape");
+        let row = header_row(&p, Source::Files);
+        p.list.select(row);
+        p.set_symbols(Arc::new(shape_symbols()), false);
+        assert_eq!(p.list.selected, row);
+        assert_eq!(p.handle_action(&PaletteAction::Accept), None);
+        assert_eq!((p.source(), p.input.text.as_str()), (Source::Files, "shape"));
+    }
+
+    #[tokio::test]
+    async fn all_selected_header_survives_a_background_feed() {
+        let (mut p, mut rx) = bus_palette(PaletteKind::Everywhere);
+        feed(&mut p);
+        p.set_query("shape");
+        let (seq, rows) = next_filter(&mut rx).await;
+        assert!(p.apply_filter(seq, rows));
+        let row = header_row(&p, Source::Symbols);
+        p.list.select(row);
+        p.set_symbols(Arc::new(shape_symbols()), false);
+        assert!(p.filter_pending());
+        let (seq, rows) = next_filter(&mut rx).await;
+        assert!(p.apply_filter(seq, rows));
+        assert_eq!(p.list.selected, row);
+        assert_eq!(p.handle_action(&PaletteAction::Accept), None);
+        assert_eq!(p.source(), Source::Symbols);
+    }
+
+    #[test]
+    fn all_branch_list_change_keeps_the_selected_item_or_header() {
+        let mut p = everywhere(PaletteKind::Everywhere);
+        p.set_branches(vec![branch("shape-a"), branch("shape-b")]);
+        p.set_query("shape");
+        let row = header_row(&p, Source::Branches);
+        let name_at = |p: &Palette| match p.all_rows[p.rows[p.list.selected]] {
+            AllRow::Item { source: Source::Branches, index } => p.branches[index - 1].name.clone(),
+            _ => String::new(),
+        };
+        p.list.select(row + 2);
+        let picked = name_at(&p);
+        assert!(picked.starts_with("shape-"));
+        // A new branch lands above it: the row number would point elsewhere.
+        p.set_branches(vec![branch("shape-0"), branch("shape-a"), branch("shape-b")]);
+        assert_eq!(name_at(&p), picked);
+        // A selected header stays selected, not moved onto the item below.
+        let row = header_row(&p, Source::Branches);
+        p.list.select(row);
+        p.set_branches(vec![branch("shape-b"), branch("shape-a")]);
+        assert_eq!(p.list.selected, header_row(&p, Source::Branches));
+        let row = header_row(&p, Source::Actions);
+        p.list.select(row + 2);
+        let id = |p: &Palette| match p.all_rows[p.rows[p.list.selected]] {
+            AllRow::Item { source: Source::Actions, index } => p.actions[index].id.to_string(),
+            _ => String::new(),
+        };
+        let picked = id(&p);
+        let mut actions = shape_actions();
+        actions.reverse();
+        p.set_actions(actions);
+        assert_eq!(id(&p), picked);
+    }
+
+    #[test]
+    fn all_lists_branches_without_new_branch_and_accepts_one() {
+        let mut p = everywhere(PaletteKind::Everywhere);
+        let branches = vec![branch("shape-a"), branch("shape-b")];
+        p.set_branches(branches.clone());
+        p.set_query("shape");
+        let items: Vec<usize> = shown_all(&p)
+            .into_iter()
+            .filter_map(|r| match r {
+                AllRow::Item { source: Source::Branches, index } => Some(index),
+                _ => None,
+            })
+            .collect();
+        assert!(!items.is_empty() && items.iter().all(|&i| i != 0), "{items:?}");
+        assert_eq!(items.len(), 2);
+        assert!(shown_all(&p).contains(&all_header(Source::Branches, false)));
+        let row = header_row(&p, Source::Branches);
+        p.list.select(row + 1);
+        let want = branches[items[0] - 1].clone();
+        assert_eq!(p.handle_action(&PaletteAction::Accept), Some(PaletteResult::Accept(Accept::Branch(want))));
     }
 }
