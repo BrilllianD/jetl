@@ -332,6 +332,8 @@ pub struct Palette {
     bus: Option<FilterBus>,
     /// The filter seq: the bus's app-wide one once set, else the palette's own.
     filter_seq: Arc<AtomicU64>,
+    /// The user moved or clicked the selection since the last query edit or tab switch.
+    picked: bool,
     background_min: usize,
     /// What `rows` index into (lags behind while a filter is pending).
     shown: Shown,
@@ -407,6 +409,7 @@ impl Palette {
             matcher: Matcher::default(),
             bus: None,
             filter_seq: Arc::new(AtomicU64::new(0)),
+            picked: false,
             background_min: BACKGROUND_MIN,
             shown: Shown { files: Arc::new(Vec::new()), symbols: Arc::new(Vec::new()), query: String::new(), source: first },
             pending: None,
@@ -627,6 +630,9 @@ impl Palette {
             reset |= p.reset;
             moved = !reset && p.moved;
         }
+        if reset {
+            self.picked = false;
+        }
         let subset = self.subset_for(&q);
         let input = if background { self.background_input(&q, subset.as_ref().map(Vec::len)) } else { None };
         if let Some(input) = input {
@@ -664,8 +670,8 @@ impl Palette {
             });
             return;
         }
-        // Rows ranked at once keep their selected row number; a header the user picked is kept by identity.
-        let key = if reset { None } else { self.selected_key().filter(|k| matches!(k, RowKey::Header(_))) };
+        // Rows ranked at once keep their selected row number, unless the user picked the row: then it is kept by identity.
+        let key = if reset || !self.picked { None } else { self.selected_key() };
         self.rows = self.rank_now(&q, subset);
         self.shown = Shown { files: self.files.clone(), symbols: self.symbols.clone(), query: q, source: self.source() };
         self.list.set_len(self.rows.len());
@@ -1057,6 +1063,7 @@ impl Palette {
 
     /// The user picked a row among the shown ones while a filter runs.
     fn moved(&mut self) {
+        self.picked = true;
         if let Some(p) = &mut self.pending {
             p.moved = true;
         }
@@ -2951,6 +2958,12 @@ mod tests {
         assert_eq!(res, Some(PaletteResult::Accept(Accept::OpenFile(PathBuf::from("/w/a.txt")))));
     }
 
+    /// Select a row as the user does (a key or a click).
+    fn pick(p: &mut Palette, row: usize) {
+        p.list.select(row);
+        p.moved();
+    }
+
     fn branch(name: &str) -> BranchInfo {
         BranchInfo { name: name.to_string(), upstream: None, ahead: 0, behind: 0, current: false, remote: false }
     }
@@ -2965,7 +2978,7 @@ mod tests {
         let mut p = everywhere(PaletteKind::Everywhere);
         p.set_query("shape");
         let row = header_row(&p, Source::Files);
-        p.list.select(row);
+        pick(&mut p, row);
         p.set_symbols(Arc::new(shape_symbols()), false);
         assert_eq!(p.list.selected, row);
         assert_eq!(p.handle_action(&PaletteAction::Accept), None);
@@ -2980,7 +2993,7 @@ mod tests {
         let (seq, rows) = next_filter(&mut rx).await;
         assert!(p.apply_filter(seq, rows));
         let row = header_row(&p, Source::Symbols);
-        p.list.select(row);
+        pick(&mut p, row);
         p.set_symbols(Arc::new(shape_symbols()), false);
         assert!(p.filter_pending());
         let (seq, rows) = next_filter(&mut rx).await;
@@ -3000,7 +3013,7 @@ mod tests {
             AllRow::Item { source: Source::Branches, index } => p.branches[index - 1].name.clone(),
             _ => String::new(),
         };
-        p.list.select(row + 2);
+        pick(&mut p, row + 2);
         let picked = name_at(&p);
         assert!(picked.starts_with("shape-"));
         // A new branch lands above it: the row number would point elsewhere.
@@ -3008,11 +3021,11 @@ mod tests {
         assert_eq!(name_at(&p), picked);
         // A selected header stays selected, not moved onto the item below.
         let row = header_row(&p, Source::Branches);
-        p.list.select(row);
+        pick(&mut p, row);
         p.set_branches(vec![branch("shape-b"), branch("shape-a")]);
         assert_eq!(p.list.selected, header_row(&p, Source::Branches));
         let row = header_row(&p, Source::Actions);
-        p.list.select(row + 2);
+        pick(&mut p, row + 2);
         let id = |p: &Palette| match p.all_rows[p.rows[p.list.selected]] {
             AllRow::Item { source: Source::Actions, index } => p.actions[index].id.to_string(),
             _ => String::new(),
@@ -3044,5 +3057,48 @@ mod tests {
         p.list.select(row + 1);
         let want = branches[items[0] - 1].clone();
         assert_eq!(p.handle_action(&PaletteAction::Accept), Some(PaletteResult::Accept(Accept::Branch(want))));
+    }
+
+    #[test]
+    fn all_leaves_new_branch_out_even_when_the_query_matches_it() {
+        let mut p = everywhere(PaletteKind::Everywhere);
+        p.set_branches(vec![branch("new-branch-x"), branch("main")]);
+        p.set_query("new branch");
+        let branches: Vec<usize> = shown_all(&p)
+            .into_iter()
+            .filter_map(|r| match r {
+                AllRow::Item { source: Source::Branches, index } => Some(index),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(branches, [1], "only new-branch-x");
+        // The Branches tab does offer New Branch for the same query.
+        let mut own = Palette::new(PaletteKind::Branches, PathBuf::from("/w"));
+        own.set_branches(vec![branch("new-branch-x"), branch("main")]);
+        own.set_query("new branch");
+        assert!(own.rows.contains(&0));
+    }
+
+    #[test]
+    fn all_picked_file_survives_a_feed_that_grows_the_group_above() {
+        let mut p = everywhere(PaletteKind::Everywhere);
+        p.set_query("shape");
+        let target = header_row(&p, Source::Files) + 1;
+        while p.list.selected < target {
+            p.handle_action(&PaletteAction::Down);
+        }
+        let file = |p: &Palette| match p.all_rows[p.rows[p.list.selected]] {
+            AllRow::Item { source: Source::Files, index } => p.shown.files[index].clone(),
+            other => panic!("{other:?}"),
+        };
+        let picked = file(&p);
+        let mut symbols = shape_symbols();
+        symbols.push(kind_entry("ShapeMap", "struct", 40));
+        symbols.push(kind_entry("ShapeSet", "struct", 41));
+        p.set_symbols(Arc::new(symbols), false);
+        assert_ne!(p.list.selected, target, "the group above grew");
+        assert_eq!(file(&p), picked);
+        let want = PaletteResult::Accept(Accept::OpenFile(PathBuf::from("/w").join(&picked)));
+        assert_eq!(p.handle_action(&PaletteAction::Accept), Some(want));
     }
 }
