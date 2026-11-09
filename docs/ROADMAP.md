@@ -203,7 +203,7 @@ Ranked after 0.9.0 against JetBrains, Zed, Helix and VS Code; tracked as yman ep
 | 14 | Shelve and unshelve changes | M | Done: Alt+Shift+V in the Commit tab (files, a header's section, or the diff pane's block or lines) stores a patch in state/shelf/<hash of the root>/ and reverts the work tree; the Shelf tab lists entries with Unshelve (Alt+Shift+U: plain `git apply`, then `--3way`), Show Patch and Delete (confirmed); staged changes come back unstaged |
 | 15 | Find in Files results in an editor tab | M | Done: Alt+Enter in the Find window (`find.open_in_tab`) opens a pathless read-only tab (`editor/search_tab.rs`) with its own `Search`; Enter or a double click opens a hit, F5 searches again, Ctrl+F works; never in the session |
 | 16 | Coverage gutter from lcov | M | gutter. Done: line numbers coloured from [coverage] lcov (coverage_covered, coverage_uncovered; Live), View > Coverage, reloaded on change, stale per file |
-| 17 | Increment / decrement the number at the caret | S | caret text transforms |
+| 17 | Increment / decrement the number at the caret | S | caret text transforms. Done: Ctrl+Alt+A / Ctrl+Alt+X on the number at or after each caret (decimal with sign, 0x hex, leading zeros kept) |
 | 18 | Pipe the selection through a shell command | S | `[format]` runner |
 | 19 | Search Everywhere tabs | S | `palette.search_everywhere` |
 | 20 | Mnemonic bookmarks and groups | S | `editor/bookmarks.rs` |

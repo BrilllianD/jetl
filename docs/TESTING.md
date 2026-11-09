@@ -3313,6 +3313,26 @@ Setup as above. Create the fixture first:
    Sort Lines and Reverse Lines are listed; at 80x24 the menu scrolls.
 5. Repeat at 120x40 and 80x24.
 
+### Scenario: increment and decrement numbers
+
+Setup as above. Create the fixture first:
+
+    printf 'let a = 9;\nlet b = -1;\ndate 2026-11-08\nmask 0x0F\nid 007\nnone here\n' > $T/nums.txt
+
+1. Open `nums.txt` (Ctrl+N). Caret at the start of line 1, `C-M-a`: `let a = 10;`, the caret right
+   after `10`. `C-M-x` twice: `let a = 8;`. Ctrl+Z undoes one press at a time.
+2. Line 2, caret at the line start, `C-M-a`: `let b = 0;`; again: `let b = 1;`.
+3. Line 3, caret on the `11`, `C-M-a`: `date 2026-12-08` (the minus is not a sign).
+4. Line 4, `C-M-a`: `mask 0x10`. `C-M-x` twice: `mask 0x0f`, then `mask 0x0e` (`0x10` has no
+   letter, so the case falls back to lowercase).
+5. Line 5, `C-M-a`: `id 008`.
+6. Line 6, `C-M-a`: the text stays and a toast reads `No number at the caret`.
+7. Multi-caret: reload the fixture (Ctrl+Z until clean), caret at the start of line 1, F1
+   `Clone caret below` four times so carets sit on lines 1 to 5, `C-M-a`: every line with a
+   number changes once, and one Ctrl+Z restores all five.
+8. F1, type `increment`: `Increment the number at or after each caret` is listed with `Ctrl+Alt+A`.
+9. Repeat at 120x40 and 80x24.
+
 ### Scenario: indent guides
 
 Setup as above.

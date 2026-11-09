@@ -23,6 +23,7 @@ mod io;
 pub use io::DiskChange;
 pub mod merge;
 pub mod nav;
+mod numbers;
 pub mod patch;
 pub mod preview;
 pub mod rows;
@@ -1289,6 +1290,11 @@ impl Editor {
             E::ToLowerCase => b.change_case(CaseChange::Lower),
             E::SortLines => b.reorder_lines(LineOrder::Sort),
             E::ReverseLines => b.reorder_lines(LineOrder::Reverse),
+            E::IncrementNumber | E::DecrementNumber => {
+                if !b.step_numbers(if *a == E::IncrementNumber { 1 } else { -1 }) {
+                    cx.notify(Level::Info, "No number at the caret");
+                }
+            }
             E::Backspace => {
                 let p = pairs();
                 if !b.virtual_delete(true, false, p, tab_width) {
@@ -2654,6 +2660,41 @@ mod tests {
         let mut ed = editor_with("sort.txt", "b\na\n");
         act(&mut ed, EditorAction::SortLines);
         assert_eq!(ed.buffers[0].text(), "a\nb\n");
+    }
+
+    #[test]
+    fn increment_and_decrement_actions_dispatch() {
+        let mut ed = editor_with("a.txt", "v = 7\n");
+        act(&mut ed, EditorAction::IncrementNumber);
+        assert_eq!(ed.buffers[0].text(), "v = 8\n");
+        act(&mut ed, EditorAction::DecrementNumber);
+        act(&mut ed, EditorAction::DecrementNumber);
+        assert_eq!(ed.buffers[0].text(), "v = 6\n");
+    }
+
+    #[test]
+    fn no_number_toasts() {
+        let mut ed = editor_with("a.txt", "abc\n");
+        let toasts = with_cx(|cx| {
+            ed.handle_action(&EditorAction::IncrementNumber, cx);
+        });
+        assert_eq!(toasts, ["No number at the caret"]);
+        assert_eq!(ed.buffers[0].text(), "abc\n");
+    }
+
+    #[test]
+    fn number_keys_are_bound_in_the_editor() {
+        use crate::actions::Action;
+        use crate::config::keymap::{default_keymap, parse_chord};
+        let km = default_keymap();
+        let inc = parse_chord("ctrl-alt-a").unwrap();
+        let dec = parse_chord("ctrl-alt-x").unwrap();
+        let editor = km.table("editor").unwrap();
+        assert_eq!(editor.bindings.get(&inc), Some(&Action::Editor(EditorAction::IncrementNumber)));
+        assert_eq!(editor.bindings.get(&dec), Some(&Action::Editor(EditorAction::DecrementNumber)));
+        let git = km.table("git").unwrap();
+        assert_ne!(git.bindings.get(&inc), Some(&Action::Editor(EditorAction::IncrementNumber)));
+        assert!(git.bindings.contains_key(&inc));
     }
 
     #[test]

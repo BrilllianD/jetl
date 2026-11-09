@@ -197,6 +197,8 @@ position report.
 | `Alt+Shift+Down` | `editor.move_line_down` | Move line down |
 | `Ctrl+Shift+J` * | `editor.join_lines` | Join lines |
 | `Ctrl+Shift+U` * | `editor.toggle_case` | Toggle case |
+| `Ctrl+Alt+A` | `editor.increment_number` | Increment the number at or after each caret |
+| `Ctrl+Alt+X` | `editor.decrement_number` | Decrement the number at or after each caret |
 | `Ctrl+Shift+M` * | `editor.goto_bracket` | Move caret to matching bracket |
 | `Ctrl+Alt+W` | `editor.expand_selection` | Extend selection to the enclosing syntax node |
 | `Ctrl+Alt+Shift+W` * | `editor.shrink_selection` | Shrink selection back one step |

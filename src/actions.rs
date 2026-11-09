@@ -281,6 +281,10 @@ pub enum EditorAction {
     SortLines,
     /// Reverse the selected lines, else the whole file.
     ReverseLines,
+    /// Add one to the number at or after each caret.
+    IncrementNumber,
+    /// Subtract one from the number at or after each caret.
+    DecrementNumber,
     GotoBracket,
     ExpandSelection,
     ShrinkSelection,
@@ -1033,6 +1037,8 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.to_lower_case" => "To lower case (selection or word at the caret)", Editor(E::ToLowerCase);
         "editor.sort_lines" => "Sort lines (selected lines, else the whole file)", Editor(E::SortLines);
         "editor.reverse_lines" => "Reverse lines (selected lines, else the whole file)", Editor(E::ReverseLines);
+        "editor.increment_number" => "Increment the number at or after each caret", Editor(E::IncrementNumber);
+        "editor.decrement_number" => "Decrement the number at or after each caret", Editor(E::DecrementNumber);
         "editor.goto_bracket" => "Move caret to matching bracket", Editor(E::GotoBracket);
         "editor.expand_selection" => "Extend selection to the enclosing syntax node", Editor(E::ExpandSelection);
         "editor.shrink_selection" => "Shrink selection back one step", Editor(E::ShrinkSelection);

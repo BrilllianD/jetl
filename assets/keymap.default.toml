@@ -247,6 +247,8 @@
 "alt-shift-down" = "editor.move_line_down"
 "ctrl-shift-j" = "editor.join_lines"
 "ctrl-shift-u" = "editor.toggle_case"
+"ctrl-alt-a" = "editor.increment_number"
+"ctrl-alt-x" = "editor.decrement_number"
 "ctrl-alt-w" = "editor.expand_selection"
 "ctrl-alt-shift-w" = "editor.shrink_selection"
 # Multiple carets. Ctrl+Alt+Shift+J needs the kitty protocol; Ctrl+Alt+J is
