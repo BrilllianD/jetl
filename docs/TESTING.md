@@ -62,7 +62,7 @@ toggles), its Log (also with two commits selected, and the Log's commit context 
 (diagnostic underlines in the editor too), the lightbulb in the gutter, the main menu bar, confirm,
 input and choice dialogs, the hover and completion popups, toasts, the
 palettes (Scratch Files and Recent Projects included), the conflict resolver (filler rows included), the patch tab, the crash
-recovery dialogs and the Save As prompt and its path completion list.
+recovery dialogs, the Save As prompt and its path completion list, and the Find results tab (with its find bar).
 
 Things that depend on the clock are given as data: the Log tab's commits
 carry their relative dates as `git log` formatted them, toasts expire on
@@ -304,6 +304,53 @@ cat $T/n.txt                             # unchanged
 
 Delete without Alt still deletes a character in the Find field. A file row
 excluded with Alt+Delete dims all its results.
+
+### Scenario: Find results in an editor tab
+
+At 120x40 and 80x24 (yman 467), `[lsp] enabled = false`, `[ui] toolbar = false`:
+
+```sh
+cat > /tmp/tm-s17.sh <<'EOT'
+#!/bin/sh
+exec /usr/bin/tmux -L jetl-s17 "$@"
+EOT
+chmod +x /tmp/tm-s17.sh
+H=/tmp/jt-s17-home; T=/tmp/jt-s17; rm -rf $H $T; mkdir -p $H/config/jetl $H/state $T/src
+printf '[lsp]\nenabled = false\n[ui]\ntoolbar = false\n' > $H/config/jetl/config.toml
+printf 'no\nfoo here\n' > $T/a.txt; printf 'let foo = 1;\nfoo(foo);\n' > $T/src/b.rs
+/tmp/tm-s17.sh -f /dev/null new-session -d -s s17 -x 80 -y 24 \
+  "XDG_CONFIG_HOME=$H/config XDG_STATE_HOME=$H/state $PWD/target/debug/jetl $T 2>/tmp/jt-s17-stderr.txt"
+sleep 2
+/tmp/tm-s17.sh send-keys -t s17 M-3; /tmp/tm-s17.sh send-keys -t s17 -l foo; sleep 1
+/tmp/tm-s17.sh send-keys -t s17 M-Enter; sleep 1.5
+/tmp/tm-s17.sh capture-pane -p -t s17    # tab "Find: foo": header, "4 matches in 2 files; ...", a.txt, "     2: foo here", src/b.rs, two rows; the Find window stays, the cursor is in the editor
+```
+
+The terminal has no kitty protocol, so a toast covers the tab for a few seconds; wait
+it out, then hide the Find window (`M-3`, `M-Q`) and the Project window (`M-1`, `M-Q`) to
+see the whole tab at 80x24.
+
+- Enter on a hit line: `Down` to the `     2: foo(foo);` row, `End`, `Left` four times
+  (onto the second `foo`), `Enter`. `src/b.rs` opens and the status bar says Ln 2, Col 5.
+- Back to the tab with `M-Left`, `C-f`, type `foo`: the find bar counts 5 (the
+  header's `foo` too) and highlights them in the results; `Escape`. Typing `x` and
+  `BSpace` leave the text unchanged.
+- Change the file behind the app's back (`printf 'foo\n' > $T/a.txt.new && mv $T/a.txt.new
+  $T/a.txt`): the tab keeps its rows (a snapshot). `F5` runs the search again: the `a.txt`
+  block reads `     1: foo` and the status `4 matches in 2 files`.
+- A double click on the `     1: let foo = 1;` row (two `press 0 ...; release 0 ...`
+  within 400 ms, on a cell inside `let`) opens `src/b.rs` at Ln 1, Col 5. A single click
+  on a row only moves the caret. Mouse coordinates are 1-based: column or row 0 makes
+  crossterm panic.
+- `M-3`, `M-Enter` again: still one `Find: foo` tab. `M-3`, `M-c` (match case; the focus
+  must be in the Find window), `M-Enter`: a second tab `Find: foo`, header `Find in Files: foo   [match case]`.
+- `capture-pane -e -p`: the match cells carry the search-match background, the line
+  numbers are dim and the file lines are bold (`\e[1m`).
+- `C-q`: no unsaved-changes dialog and exit status 0. `$H/state/jetl/hot_exit` and
+  `$H/state/jetl/recovery` do not exist, and `grep -c 'Find:' $H/state/jetl/sessions/*.json`
+  prints 0.
+- On a big tree (jetl itself with the query `fn`) the status reads `10000+ matches in 258
+  files; stopped at 10000; ...` within a second, and Down and F5 stay responsive.
 
 ### Scenario: rename without a language server
 

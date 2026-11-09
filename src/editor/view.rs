@@ -628,9 +628,12 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
     // virtual columns, and carets stand there.
     let virt_on = !rows.wraps();
     let cur_x = caret_col(rope, &rows, &buf.view.sel(), o.tab_width);
-    let mut hl = match &buf.preview {
-        Some(p) => p.highlights(rope, window.clone()),
-        None => buf.syntax.as_mut().map(|s| s.highlights(rope, window.start, window.len())).unwrap_or_default(),
+    let mut hl = if let Some(p) = &buf.preview {
+        p.highlights(rope, window.clone())
+    } else if let Some(t) = &buf.search_tab {
+        t.highlights(rope, window.clone(), theme)
+    } else {
+        buf.syntax.as_mut().map(|s| s.highlights(rope, window.start, window.len())).unwrap_or_default()
     };
     // LSP semantic tokens over tree-sitter's (or no) styles; a capture the
     // theme does not style keeps what is there.

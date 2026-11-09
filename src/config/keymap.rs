@@ -842,6 +842,16 @@ mod tests {
     }
 
     #[test]
+    fn alt_enter_opens_find_results_in_a_tab_and_stays_the_editors_intention_key() {
+        let km = default_keymap();
+        let chord = parse_chord("alt-enter").unwrap();
+        let bound = |ctx: &str| km.table(ctx).and_then(|t| t.bindings.get(&chord)).cloned();
+        assert_eq!(bound("find"), Action::from_id("find.open_in_tab"));
+        assert_eq!(bound("editor"), Action::from_id("lsp.context_actions"));
+        assert!(bound("global").is_none());
+    }
+
+    #[test]
     fn default_keymap_has_no_invalid_entries() {
         let errors = Keymap::default().merge_toml(DEFAULT_KEYMAP_TOML).unwrap();
         assert!(errors.is_empty(), "{errors:?}");

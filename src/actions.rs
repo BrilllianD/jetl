@@ -496,6 +496,8 @@ pub enum FindAction {
     PageUp,
     PageDown,
     Open,
+    /// Open the results in a read-only editor tab.
+    OpenInTab,
     NextField,
     ToggleCase,
     ToggleWord,
@@ -1199,6 +1201,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "find.page_up" => "Find: page up", Find(FindAction::PageUp);
         "find.page_down" => "Find: page down", Find(FindAction::PageDown);
         "find.open" => "Find: open selected result", Find(FindAction::Open);
+        "find.open_in_tab" => "Find: open the results in an editor tab", Find(FindAction::OpenInTab);
         "find.next_field" => "Find: switch between query and replacement", Find(FindAction::NextField);
         "find.toggle_case" => "Find: match case", Find(FindAction::ToggleCase);
         "find.toggle_word" => "Find: whole words", Find(FindAction::ToggleWord);

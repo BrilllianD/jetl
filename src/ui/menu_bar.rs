@@ -78,6 +78,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Replace…", "editor.replace"),
             Item("Find in Files…", "find.in_files"),
             Item("Replace in Files…", "find.replace_in_files"),
+            Item("Find Results in Tab", "find.open_in_tab"),
             Sep,
             Item("Duplicate Line", "editor.duplicate_line"),
             Item("Delete Line", "editor.delete_line"),

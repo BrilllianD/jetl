@@ -479,6 +479,49 @@ async fn markdown_preview() {
     assert_snapshot!("markdown_preview", snapshot(&term, &marks, None));
 }
 
+/// The Find results tab of `parse`, run here: two files, three matches.
+fn search_tab_app(name: &str) -> Fixture {
+    let mut fx = stable_app(name);
+    let app = &mut fx.app;
+    let root = app.workspace.root.clone();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/parse.log"), "let tokens = lex(input);\nparse(tokens)\n    .map(|t| parse_one(t))\n").unwrap();
+    std::fs::write(root.join("notes.txt"), "nothing to see\nparse later\n").unwrap();
+    app.perform(Action::Find(crate::actions::FindAction::InFiles));
+    for c in "parse".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    app.perform(Action::Find(crate::actions::FindAction::OpenInTab));
+    super::tests::run_search_tab(app);
+    fx
+}
+
+#[tokio::test]
+async fn editor_search_tab() {
+    let mut fx = search_tab_app("search-tab");
+    let app = &mut fx.app;
+    let term = draw_editor(app, 80, 14);
+    let mut marks = editor_marks(&app.theme);
+    marks.push(Mark::bg('H', "match", app.theme.search_match_bg));
+    marks.push(Mark::modifier('B', "bold", Modifier::BOLD));
+    assert_snapshot!("editor_search_tab", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn editor_search_tab_find_bar() {
+    let mut fx = search_tab_app("search-tab-find-bar");
+    let app = &mut fx.app;
+    editor(app, EditorAction::Find);
+    for c in "tokens".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    let term = draw_editor(app, 80, 14);
+    let mut marks = editor_marks(&app.theme);
+    marks.push(Mark::bg('H', "match", app.theme.search_match_bg));
+    marks.push(Mark::modifier('B', "bold", Modifier::BOLD));
+    assert_snapshot!("editor_search_tab_find_bar", snapshot(&term, &marks, None));
+}
+
 #[cfg(feature = "lang-rust")]
 #[tokio::test]
 async fn editor_semantic_tokens() {

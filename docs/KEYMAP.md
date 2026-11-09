@@ -492,6 +492,7 @@ position report.
 | `PageUp` | `find.page_up` | Find: page up |
 | `PageDown` | `find.page_down` | Find: page down |
 | `Enter` | `find.open` | Find: open selected result |
+| `Alt+Enter` | `find.open_in_tab` | Find: open the results in an editor tab |
 | `Tab` | `find.next_field` | Find: switch between query and replacement |
 | `Alt+C` | `find.toggle_case` | Find: match case |
 | `Alt+W` | `find.toggle_word` | Find: whole words |

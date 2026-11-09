@@ -285,6 +285,8 @@ pub struct Buffer {
     pub preview: Option<super::preview::MarkdownPreview>,
     /// A diff tab (Git window Ctrl+D): its files and diff pane; read-only, pathless and empty.
     pub(crate) diff: Option<Box<super::diff_tab::DiffTab>>,
+    /// A Find in Files results tab (`Editor::open_search_tab`): its search and rows; read-only, pathless and always clean.
+    pub(crate) search_tab: Option<Box<super::search_tab::SearchTab>>,
     /// Text restored after a crash (`Editor::recover_text`): no autosave
     /// until an explicit save writes it.
     pub recovered: bool,
@@ -365,6 +367,7 @@ impl Buffer {
             patch: None,
             preview: None,
             diff: None,
+            search_tab: None,
             diff_base_seq: 0,
             blame: None,
             disk_mtime: None,

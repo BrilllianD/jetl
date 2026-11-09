@@ -74,10 +74,13 @@ impl App {
             AppMsg::FallbackUsages(f) => self.fallback_usages_done(*f),
             AppMsg::Find { generation, batch } if generation == self.workspace.generation => self.find.on_batch(batch),
             AppMsg::Todo { generation, batch } if generation == self.workspace.generation => self.todo.on_batch(batch),
+            AppMsg::SearchTab { generation, tab, batch } if generation == self.workspace.generation => {
+                self.editor.search_tab_batch(tab, batch);
+            }
             AppMsg::ReplaceDone { generation, files, matches, errors } if generation == self.workspace.generation => {
                 self.replace_done(files, matches, errors)
             }
-            AppMsg::Find { .. } | AppMsg::ReplaceDone { .. } => tracing::debug!("dropping stale find result"),
+            AppMsg::Find { .. } | AppMsg::SearchTab { .. } | AppMsg::ReplaceDone { .. } => tracing::debug!("dropping stale find result"),
             AppMsg::Todo { .. } => tracing::debug!("dropping stale TODO batch"),
             // Messages of a previous root are dropped; a stale watcher stops
             // when its message is dropped.

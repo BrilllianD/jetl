@@ -1277,6 +1277,11 @@ impl App {
                 self.find.step(false, &mut cx);
                 true
             }
+            Action::Find(FindAction::OpenInTab) => {
+                drop(cx);
+                self.find_open_in_tab();
+                return;
+            }
             Action::Find(a) => self.find.handle_action(a, &mut cx),
             Action::Structure(a) => self.structure.handle_action(a, &mut cx),
             Action::EventLog(EventLogAction::Copy) => {
@@ -1526,6 +1531,8 @@ impl App {
                     panic!("debug panic requested via keymap");
                 }
             }
+            // In a Find results tab F5 searches again, as in each tool window it refreshes that window.
+            AppAction::Refresh if self.focus.is(PanelId::Editor) && self.editor.active_is_search_tab() => self.search_tab_rerun(),
             AppAction::Refresh => self.apply_effects(vec![Effect::GitRefresh]),
             AppAction::MainMenu => self.toggle_main_menu(),
             AppAction::About => self.notify(Level::Info, format!("jetl {}", env!("CARGO_PKG_VERSION"))),
@@ -2581,6 +2588,143 @@ pub(crate) mod tests {
         for batch in batches {
             app.handle_msg(AppMsg::Find { generation: g, batch });
         }
+    }
+
+    /// Run the active Find results tab's search on this thread and deliver it.
+    pub(crate) fn run_search_tab(app: &mut App) {
+        let id = app.editor.active_buffer().unwrap().id;
+        let search = app.editor.search_tab_search(id).unwrap();
+        let g = app.workspace.generation;
+        let mut batches = Vec::new();
+        search.run(|b| batches.push(b));
+        for batch in batches {
+            app.handle_msg(AppMsg::SearchTab { generation: g, tab: id, batch });
+        }
+    }
+
+    fn type_in_find(app: &mut App, text: &str) {
+        for c in text.chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), crossterm::event::KeyModifiers::NONE));
+        }
+    }
+
+    fn search_tab_lines(app: &App) -> Vec<String> {
+        app.editor.active_buffer().unwrap().text().lines().map(str::to_string).collect()
+    }
+
+    #[tokio::test]
+    async fn find_open_in_tab_opens_reruns_and_stays_out_of_the_session() {
+        let (mut app, dir) = test_app("find-open-in-tab");
+        let root = app.workspace.root.clone();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/b.rs"), "let foo = 1;\nfoo(foo);\n").unwrap();
+        std::fs::write(root.join("a.txt"), "no\nfoo here\n").unwrap();
+        let before = app.session().files.len();
+        app.perform(Action::Find(FindAction::InFiles));
+        type_in_find(&mut app, "foo");
+        app.perform(Action::Find(FindAction::OpenInTab));
+        assert!(app.focus.is(PanelId::Editor) && app.layout.is_visible(ToolWindowId::Find));
+        assert!(app.editor.active_is_search_tab());
+        assert_eq!(app.editor.active_buffer().unwrap().name, "Find: foo");
+        assert_eq!(search_tab_lines(&app)[1], "Searching…");
+        run_search_tab(&mut app);
+        let text = "Find in Files: foo\n4 matches in 2 files; Enter opens a result, F5 searches again\n\na.txt\n     2: foo here\n\nsrc/b.rs\n     1: let foo = 1;\n     2: foo(foo);\n";
+        assert_eq!(app.editor.active_buffer().unwrap().text(), text);
+        // The files change; F5 keeps the rows until the run is done.
+        std::fs::write(root.join("a.txt"), "foo\nfoo here\n").unwrap();
+        app.perform(Action::App(AppAction::Refresh));
+        let lines = search_tab_lines(&app);
+        assert_eq!(lines[1], "Searching…");
+        assert_eq!(lines[4], "     2: foo here", "the old rows stay");
+        assert_eq!(lines.len(), 9);
+        run_search_tab(&mut app);
+        let lines = search_tab_lines(&app);
+        assert_eq!((lines[3].as_str(), lines[4].as_str(), lines[5].as_str()), ("a.txt", "     1: foo", "     2: foo here"));
+        assert!(lines[1].starts_with("5 matches in 2 files"), "{}", lines[1]);
+        assert!(!app.editor.active_buffer().unwrap().dirty());
+        assert_eq!(app.session().files.len(), before, "a results tab is not in the session");
+        assert!(!app.editor.has_dirty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn alt_enter_in_the_find_window_opens_the_tab() {
+        let (mut app, dir) = test_app("find-open-in-tab-key");
+        std::fs::write(app.workspace.root.join("a.txt"), "foo\n").unwrap();
+        app.perform(Action::Find(FindAction::InFiles));
+        type_in_find(&mut app, "foo");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::ALT));
+        assert!(app.editor.active_is_search_tab() && app.focus.is(PanelId::Editor));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn find_open_in_tab_refusals() {
+        let (mut app, dir) = test_app("find-open-in-tab-refusals");
+        app.perform(Action::Find(FindAction::InFiles));
+        app.perform(Action::Find(FindAction::OpenInTab));
+        let tabs = app.editor.buffers.len();
+        assert!(app.notifications.iter().any(|n| n.text == "Type a query in the Find window first"), "{:?}", app.notifications);
+        assert!(!app.editor.active_is_search_tab());
+        app.perform(Action::Find(FindAction::ToggleRegex));
+        type_in_find(&mut app, "a(");
+        app.perform(Action::Find(FindAction::OpenInTab));
+        assert!(app.notifications.iter().any(|n| n.text.starts_with("Find in Files: ")), "{:?}", app.notifications);
+        assert!(!app.editor.active_is_search_tab());
+        assert_eq!(app.editor.buffers.len(), tabs);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn search_tab_stale_batches_are_dropped() {
+        use crate::files::find::{Batch, Hit};
+        let (mut app, dir) = test_app("search-tab-stale");
+        std::fs::write(app.workspace.root.join("a.txt"), "foo\n").unwrap();
+        app.perform(Action::Find(FindAction::InFiles));
+        type_in_find(&mut app, "foo");
+        app.perform(Action::Find(FindAction::OpenInTab));
+        run_search_tab(&mut app);
+        let (id, g) = (app.editor.active_buffer().unwrap().id, app.workspace.generation);
+        let text = app.editor.active_buffer().unwrap().text();
+        let hit = Hit {
+            path: app.workspace.root.join("z.txt"),
+            line: 0,
+            col: 0,
+            len: 3,
+            preview: "foo".into(),
+            preview_col: 0,
+            matched: "foo".into(),
+            excluded: false,
+            rename: None,
+        };
+        let seq = app.editor.search_tab_search(id).unwrap().seq;
+        let batch = |seq| Batch { seq, hits: vec![hit.clone()], files_searched: 1, done: true, capped: false };
+        app.handle_msg(AppMsg::SearchTab { generation: g, tab: id, batch: batch(0) });
+        assert_eq!(app.editor.active_buffer().unwrap().text(), text, "an older run's batch");
+        app.handle_msg(AppMsg::SearchTab { generation: g + 1, tab: id, batch: batch(seq) });
+        assert_eq!(app.editor.active_buffer().unwrap().text(), text, "another root's batch");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn f5_elsewhere_still_refreshes_git() {
+        let (mut app, dir) = test_app("f5-elsewhere");
+        std::fs::write(app.workspace.root.join("a.txt"), "foo\n").unwrap();
+        app.perform(Action::Find(FindAction::InFiles));
+        type_in_find(&mut app, "foo");
+        app.perform(Action::Find(FindAction::OpenInTab));
+        run_search_tab(&mut app);
+        let id = app.editor.active_buffer().unwrap().id;
+        let seq = app.editor.search_tab_search(id).unwrap().seq;
+        // The Find window has the focus, then a file tab is active: neither re-runs the results tab.
+        app.focus.set(PanelId::Find);
+        app.perform(Action::App(AppAction::Refresh));
+        assert_eq!(app.editor.search_tab_search(id).unwrap().seq, seq);
+        load(&mut app, "b.txt", "x\n");
+        app.focus.set(PanelId::Editor);
+        app.perform(Action::App(AppAction::Refresh));
+        assert_eq!(app.editor.search_tab_search(id).unwrap().seq, seq);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

@@ -28,7 +28,7 @@ use crate::config::FileIcons;
 use crate::config::theme::Theme;
 use crate::editor::search::{build_pattern, preserve_case, preserve_case_applies};
 use crate::event::{AppMsg, Effect, Level, Mouse};
-use crate::files::find::{Batch, Hit, MAX_HITS, Query, Search};
+use crate::files::find::{Batch, Hit, MAX_HITS, Query, Search, SearchSpec};
 use crate::files::rename_preview::{RenamePreview, RenameSource};
 use crate::ui::dialog::{Dialog, DialogId};
 use crate::ui::focus::PanelId;
@@ -241,7 +241,19 @@ impl FindPanel {
     /// What to search for: the pattern source in structural mode, else the
     /// regex built from the query and options.
     pub fn search_query(&self) -> Result<Query, String> {
-        if self.structural { Ok(Query::Structural(self.query.text.clone())) } else { self.pattern().map(Query::Regex) }
+        self.spec().query()
+    }
+
+    /// The search the window describes: the query text and the four match
+    /// flags (not preserve case, which does not change what matches).
+    pub fn spec(&self) -> SearchSpec {
+        SearchSpec {
+            text: self.query.text.clone(),
+            case_sensitive: self.case_sensitive,
+            whole_word: self.whole_word,
+            regex: self.regex,
+            structural: self.structural,
+        }
     }
 
     /// Whether the replace row is available.
@@ -498,7 +510,9 @@ impl FindPanel {
             FindAction::ToggleExclude => self.toggle_exclude(),
             FindAction::Escape => cx.focus(PanelId::Editor),
             // Handled by the app (they need the editor and the layout).
-            FindAction::InFiles | FindAction::ReplaceInFiles | FindAction::NextResult | FindAction::PrevResult => return false,
+            FindAction::InFiles | FindAction::OpenInTab | FindAction::ReplaceInFiles | FindAction::NextResult | FindAction::PrevResult => {
+                return false;
+            }
         }
         true
     }

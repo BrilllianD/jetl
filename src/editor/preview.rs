@@ -121,8 +121,9 @@ impl Editor {
 
 impl Buffer {
     /// Replace a preview's text, keeping its first visible line and caret
-    /// line. The edit is not undoable and leaves the buffer clean.
-    fn set_preview_text(&mut self, text: &str) {
+    /// line. The edit is not undoable and leaves the buffer clean. Shared
+    /// with Find results tabs (`search_tab`).
+    pub(super) fn set_preview_text(&mut self, text: &str) {
         let old = self.text();
         if old == text {
             return;

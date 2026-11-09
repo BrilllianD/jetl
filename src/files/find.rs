@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use regex::Regex;
 
-use crate::editor::search::preserve_case;
+use crate::editor::search::{build_pattern, preserve_case};
 
 /// A search stops after this many hits.
 pub const MAX_HITS: usize = 10_000;
@@ -63,6 +63,38 @@ pub struct Batch {
 pub enum Query {
     Regex(Regex),
     Structural(String),
+}
+
+/// What a search looks for, as the Find window holds it: the text and the
+/// four match flags. Two equal specs are the same search.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SearchSpec {
+    pub text: String,
+    pub case_sensitive: bool,
+    pub whole_word: bool,
+    pub regex: bool,
+    pub structural: bool,
+}
+
+impl SearchSpec {
+    /// The query to run: the pattern source in structural mode, else the
+    /// regex built from the text and flags.
+    pub fn query(&self) -> Result<Query, String> {
+        if self.structural {
+            Ok(Query::Structural(self.text.clone()))
+        } else {
+            build_pattern(&self.text, self.regex, self.case_sensitive, self.whole_word).map(Query::Regex)
+        }
+    }
+
+    /// The set options in words, for a results header: `""` when none.
+    pub fn options(&self) -> String {
+        if self.structural {
+            return "structural".to_string();
+        }
+        let on = [(self.case_sensitive, "match case"), (self.whole_word, "whole words"), (self.regex, "regex")];
+        on.iter().filter(|(set, _)| *set).map(|(_, name)| *name).collect::<Vec<_>>().join(", ")
+    }
 }
 
 /// A search request, detached from the panel so it can run in
@@ -287,6 +319,23 @@ pub fn replace_text(text: &str, reps: &[Replacement]) -> String {
 mod tests {
     use super::*;
     use crate::editor::search::build_pattern;
+
+    #[test]
+    fn search_spec_options_and_query() {
+        let spec =
+            |case_sensitive, whole_word, regex, structural| SearchSpec { text: "a(".into(), case_sensitive, whole_word, regex, structural };
+        assert_eq!(spec(false, false, false, false).options(), "");
+        assert_eq!(spec(true, false, false, false).options(), "match case");
+        assert_eq!(spec(true, true, true, false).options(), "match case, whole words, regex");
+        assert_eq!(spec(false, true, false, false).options(), "whole words");
+        assert_eq!(spec(false, false, true, true).options(), "structural");
+        assert!(spec(false, false, true, false).query().is_err());
+        match spec(false, false, false, false).query() {
+            Ok(Query::Regex(re)) => assert!(re.is_match("a(")),
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(spec(false, false, true, true).query(), Ok(Query::Structural(s)) if s == "a("));
+    }
 
     #[test]
     fn hits_carry_line_column_and_preview() {

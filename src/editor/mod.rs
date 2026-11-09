@@ -27,6 +27,7 @@ pub mod patch;
 pub mod preview;
 pub mod rows;
 pub mod search;
+pub(crate) mod search_tab;
 pub mod selection;
 pub mod semantic;
 pub mod snippet;
@@ -1040,6 +1041,9 @@ impl Editor {
         if let Some(done) = self.diff_tab_action(a, cx) {
             return done;
         }
+        if let Some(done) = self.search_tab_action(a, cx) {
+            return done;
+        }
         match a {
             E::NextTab | E::PrevTab => {
                 let (g, group) = (self.focused, self.focused_group());
@@ -1555,6 +1559,9 @@ impl Editor {
 
     pub fn handle_mouse(&mut self, m: &Mouse, area: Rect, cx: &mut Ctx) -> bool {
         let handled = self.mouse(m, area, cx);
+        if handled {
+            self.search_tab_click(m, cx);
+        }
         if let Some(b) = self.active_buffer_mut() {
             b.reveal_carets();
         }
@@ -2020,10 +2027,14 @@ impl Editor {
             scrolloff: self.scrolloff,
             hscrolloff: self.hscrolloff,
             occurrences: self.highlight_occurrences,
-            indent_guides: self.indent_guides && self.buffers[i].preview.is_none(),
-            rulers: if self.buffers[i].preview.is_none() && self.buffers[i].patch.is_none() { &self.rulers } else { &[] },
+            indent_guides: self.indent_guides && self.buffers[i].preview.is_none() && self.buffers[i].search_tab.is_none(),
+            rulers: if self.buffers[i].preview.is_none() && self.buffers[i].patch.is_none() && self.buffers[i].search_tab.is_none() {
+                &self.rulers
+            } else {
+                &[]
+            },
             bracket_colours: self.bracket_pair_colours && self.buffers[i].preview.is_none() && self.buffers[i].patch.is_none(),
-            fold_marks: self.buffers[i].preview.is_none(),
+            fold_marks: self.buffers[i].preview.is_none() && self.buffers[i].search_tab.is_none(),
             inline_blame: self.inline_blame,
             theme,
             follow,

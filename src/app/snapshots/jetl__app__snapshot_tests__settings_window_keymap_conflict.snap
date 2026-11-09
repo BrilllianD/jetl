@@ -21,9 +21,9 @@ expression: "snapshot(&term, &settings_marks(&app.theme), None)"
 15    │ │Tools                     │    Git: commit                                                        git.commit│
 16    │ │  Terminal                │        Alt+Enter                                                                │
 17    │ │  Run                     │        Ctrl+Enter                                                               │
-18  ◉ │ │  Clipboard               │                                                                                 │
-19    │ │  Local History           │                                                                                 │
-20  ⋔ │ │Language Servers          │                                                                                 │
+18  ◉ │ │  Clipboard               │  ▾ Find (1)                                                                     │
+19    │ │  Local History           │    Find: open the results in an editor tab                      find.open_in_tab│
+20  ⋔ │ │Language Servers          │        Alt+Enter                                                                │
 21    │ │Dependencies              │                                                                                 │
 22  ✎ │ │                          │                                                                                 │
 23    │ │                          │                                                                                 │

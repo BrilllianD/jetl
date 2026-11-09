@@ -26,12 +26,12 @@ expression: "snapshot(&term, &marks, None)"
 20  ⎇ │     │ Replace…                                      Ctrl+R │
 21    │     │ Find in Files…                          Ctrl+Shift+F │
 22  ❯ │     │ Replace in Files…                       Ctrl+Shift+R │
-23  6 │     ├──────────────────────────────────────────────────────┤
-24  ⚠ │     │ Duplicate Line                                Ctrl+D │
-25  4 │     │ Delete Line                                   Ctrl+Y │
-26  ► │     │ Join Lines                              Ctrl+Shift+J │
-27  3 │     │ Move Line Up                            Alt+Shift+Up │
-28  ⌕ └─────│ Move Line Down                        Alt+Shift+Down │
+23  6 │     │ Find Results in Tab                        Alt+Enter │
+24  ⚠ │     ├──────────────────────────────────────────────────────┤
+25  4 │     │ Duplicate Line                                Ctrl+D │
+26  ► │     │ Delete Line                                   Ctrl+Y │
+27  3 │     │ Join Lines                              Ctrl+Shift+J │
+28  ⌕ └─────│ Move Line Up                            Alt+Shift+Up │
 29          ╰───────────────────────────▼──────────────────────────╯
 -- marks: L=selected d=dim
 00          LLLLLL
@@ -53,7 +53,7 @@ expression: "snapshot(&term, &marks, None)"
 20           dddddddddddddddddddddddddddddddddddddddddddddddddddddd
 21           LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL
 22                                                    dddddddddddd
-24           dddddddddddddddddddddddddddddddddddddddddddddddddddddd
+23                                                       ddddddddd
 25           dddddddddddddddddddddddddddddddddddddddddddddddddddddd
 26           dddddddddddddddddddddddddddddddddddddddddddddddddddddd
 27           dddddddddddddddddddddddddddddddddddddddddddddddddddddd

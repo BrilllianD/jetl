@@ -1,0 +1,26 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+80x14 cursor=(16,1)
+00   Find: parse ×
+01  Find:    tokens                           Cc   W   .*   1/1            ↑  ↓  ×
+02   1    Find in Files: parse
+03   2    3 matches in 2 files; Enter opens a result, F5 searches again
+04   3
+05   4    notes.txt
+06   5         2: parse later
+07   6
+08   7    src/parse.log
+09   8         2: parse(tokens)
+10   9         3:     .map(|t| parse_one(t))
+11  10
+12
+13
+-- marks: C=caret S=selection F=fold O=occurrence H=match B=bold
+00 BBBBBBBBBBBBBBBB
+05        BBBBBBBBB
+06                HHHHH
+08        BBBBBBBBBBBBB
+09                HHHHHBSSSSSSB
+10                             HHHHH

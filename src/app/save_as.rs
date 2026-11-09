@@ -317,6 +317,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn saving_a_search_tab_makes_it_an_ordinary_file() {
+        let (mut app, dir) = fresh_app("save-as-search-tab");
+        std::fs::write(app.workspace.root.join("a.txt"), "foo\n").unwrap();
+        app.perform(Action::Find(crate::actions::FindAction::InFiles));
+        for c in "foo".chars() {
+            app.handle_key(crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Char(c), crossterm::event::KeyModifiers::NONE));
+        }
+        app.perform(Action::Find(crate::actions::FindAction::OpenInTab));
+        crate::app::tests::run_search_tab(&mut app);
+        let (id, text) = {
+            let b = app.editor.active_buffer().unwrap();
+            assert!(b.search_tab.is_some());
+            (b.id, b.text())
+        };
+        app.perform(Action::Editor(EditorAction::Save));
+        let (_, then, _) = prompt(&mut app);
+        app.finish_dialog(DialogId::SaveAs { id, then }, DialogResult::Text("r.txt".into()));
+        assert_eq!(std::fs::read_to_string(app.workspace.root.join("r.txt")).unwrap(), text);
+        let b = app.editor.active_buffer().unwrap();
+        assert!(b.search_tab.is_none() && !b.read_only);
+        edit(&mut app, "x");
+        assert!(app.editor.active_buffer().unwrap().dirty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn quit_asks_for_each_untitled_buffer_in_turn() {
         let (mut app, dir) = fresh_app("save-as-quit");
         app.config.files.hot_exit = false;

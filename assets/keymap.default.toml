@@ -399,6 +399,7 @@
 "pageup" = "find.page_up"
 "pagedown" = "find.page_down"
 "enter" = "find.open"
+"alt-enter" = "find.open_in_tab"
 "tab" = "find.next_field"
 "alt-c" = "find.toggle_case"
 "alt-w" = "find.toggle_word"

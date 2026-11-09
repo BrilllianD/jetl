@@ -1,17 +1,56 @@
 //! Replace in files: only the included hits, located by position. Open tabs
 //! change through the editor (undoable), the other files are rewritten off
-//! the main thread; a file changed since the search is left alone.
+//! the main thread; a file changed since the search is left alone. A Find
+//! results tab runs its own search (`find_open_in_tab`, `search_tab_rerun`).
 
 use super::{App, Ctx};
+use crate::editor::buffer::BufferId;
 use crate::editor::search::preserve_case_applies;
 use crate::event::{AppMsg, Level};
-use crate::files::find::{hit_replacements, replace_text};
+use crate::files::find::{Search, hit_replacements, replace_text};
+use crate::ui::focus::PanelId;
 
 fn stale(path: &std::path::Path) -> String {
     format!("{}: changed since the search; search again", path.display())
 }
 
 impl App {
+    /// Alt+Enter in the Find window: show its search as a results tab in the editor.
+    pub(super) fn find_open_in_tab(&mut self) {
+        if self.find.rename_preview().is_some() {
+            return self.notify(Level::Info, "A rename preview cannot open in a tab");
+        }
+        let spec = self.find.spec();
+        if spec.text.is_empty() {
+            return self.notify(Level::Info, "Type a query in the Find window first");
+        }
+        if let Err(e) = spec.query() {
+            return self.notify(Level::Error, format!("Find in Files: {}", e.lines().last().unwrap_or("invalid pattern").trim()));
+        }
+        let cx = ctx!(self);
+        let (_, run) = self.editor.open_search_tab(spec, &cx);
+        drop(cx);
+        if let Some((id, search)) = run {
+            self.spawn_search_tab(id, search);
+        }
+        self.focus.set(PanelId::Editor);
+    }
+
+    /// F5 in a results tab: search again with the same query and options.
+    pub(super) fn search_tab_rerun(&mut self) {
+        let cx = ctx!(self);
+        let run = self.editor.rerun_search_tab(&cx);
+        drop(cx);
+        if let Some((id, search)) = run {
+            self.spawn_search_tab(id, search);
+        }
+    }
+
+    fn spawn_search_tab(&self, id: BufferId, search: Search) {
+        let (generation, tx) = (self.workspace.generation, self.bus_tx.clone());
+        tokio::task::spawn_blocking(move || search.run(|batch| drop(tx.send(AppMsg::SearchTab { generation, tab: id, batch }))));
+    }
+
     pub(super) fn replace_in_files(&mut self) {
         if self.find.rename_preview().is_some() {
             return self.rename_preview_apply();

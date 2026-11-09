@@ -282,6 +282,7 @@ impl Editor {
                 super::adopt_path(b, path.clone(), setup, self.tab_width);
                 b.patch = None;
                 b.preview = None;
+                b.search_tab = None;
                 b.read_only = false;
                 let capture = Capture { detail: from, ..Capture::text(PathBuf::new(), text, Kind::SaveAs) };
                 mark_written(b, path, state, perm_err, cx, false, capture);

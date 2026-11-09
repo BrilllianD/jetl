@@ -112,6 +112,12 @@ pub enum AppMsg {
         generation: u64,
         batch: crate::files::find::Batch,
     },
+    /// Find results tab batches (`Editor::search_tab_batch`).
+    SearchTab {
+        generation: u64,
+        tab: crate::editor::buffer::BufferId,
+        batch: crate::files::find::Batch,
+    },
     /// Replace in files finished writing the files that were not open.
     ReplaceDone {
         generation: u64,

@@ -201,7 +201,7 @@ Ranked after 0.9.0 against JetBrains, Zed, Helix and VS Code; tracked as yman ep
 | 12 | Instruction stepping and disassembly | M | `ResumeKind`, DAP `disassemble`. Done: next/stepIn with granularity instruction (Ctrl+Shift+F7, Alt+Shift+F7), Disassembly tab in the Debug window (32 instructions forward from an anchor kept while the pc stays in view; gdb cannot disassemble backwards) |
 | 13 | Keyboard macros | M | Done: record (Ctrl+Shift+F4), play (Ctrl+Shift+F5, one undo step per file), Save Macro As into state/macros.json, Find Action entries |
 | 14 | Shelve and unshelve changes | M | Done: Alt+Shift+V in the Commit tab (files, a header's section, or the diff pane's block or lines) stores a patch in state/shelf/<hash of the root>/ and reverts the work tree; the Shelf tab lists entries with Unshelve (Alt+Shift+U: plain `git apply`, then `--3way`), Show Patch and Delete (confirmed); staged changes come back unstaged |
-| 15 | Find in Files results in an editor tab | M | Find panel, diff tabs |
+| 15 | Find in Files results in an editor tab | M | Done: Alt+Enter in the Find window (`find.open_in_tab`) opens a pathless read-only tab (`editor/search_tab.rs`) with its own `Search`; Enter or a double click opens a hit, F5 searches again, Ctrl+F works; never in the session |
 | 16 | Coverage gutter from lcov | M | gutter |
 | 17 | Increment / decrement the number at the caret | S | caret text transforms |
 | 18 | Pipe the selection through a shell command | S | `[format]` runner |
