@@ -30,6 +30,10 @@ order); the working mode is Stage D's, in `yman show 107 -n 0` (107 is closed). 
 Implementer subagents run one at a time across the whole run, in the main checkout: no parallel
 worktree slots, even for slices with `Depends on: none` (overrides the global slot rule). Designers
 and reviewers may overlap a running implementer.
+One task weighs at most W 3 here (overrides the designer's W ≤ 8): the designer splits heavier
+work into W ≤ 3 tasks, each its own implementer and commit, inside its slice. A slice that holds
+the pieces of one former W 6-8 task may exceed ΣW 5; every other slice keeps ΣW ≤ 5. M-size
+tasks (W 5) are where subagent sessions compacted in runs 26-27; no S-size task did.
 
 ## Conventions
 
