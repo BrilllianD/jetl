@@ -43,6 +43,8 @@ pub enum DialogId {
         version: u64,
         prefixes: Vec<String>,
     },
+    /// Pipe Through Command: the answer is the command, run on the buffer's ranges.
+    PipeSelection(crate::editor::buffer::BufferId),
     /// Close others or close all but pinned with unsaved tabs among them.
     CloseTabsDirty(Vec<crate::editor::buffer::BufferId>),
     /// Tree: File or Directory, then a name, created in the directory.
@@ -399,10 +401,23 @@ pub struct Dialog {
     /// Tab completes a typed path (input dialogs that opt in). Boxed: most
     /// dialogs have none, and `Effect::Dialog` carries a whole `Dialog`.
     pub paths: Option<Box<PathCompletion>>,
+    /// Up and Down walk earlier answers (input dialogs that opt in with
+    /// [`Dialog::with_history`]). Boxed like `paths`.
+    history: Option<Box<InputHistory>>,
     button_rects: Vec<Rect>,
     body_rect: Rect,
     input_rect: Rect,
     list_rect: Rect,
+}
+
+/// Earlier answers an input dialog's Up and Down walk.
+#[derive(Debug, Clone)]
+struct InputHistory {
+    /// Newest first.
+    items: Vec<String>,
+    /// The entry shown; `None` while the typed text (`draft`) is.
+    pos: Option<usize>,
+    draft: String,
 }
 
 /// The answer of an input dialog: with a check row it carries the check.
@@ -421,6 +436,7 @@ impl Dialog {
             message: message.into(),
             kind: DialogKind::Confirm { buttons: buttons.iter().map(|s| s.to_string()).collect(), selected: 0 },
             paths: None,
+            history: None,
             button_rects: vec![],
             body_rect: Rect::default(),
             input_rect: Rect::default(),
@@ -437,6 +453,7 @@ impl Dialog {
             message: message.into(),
             kind: DialogKind::Input { input: TextInput::new(false).with_text(initial), ok: ok.into(), check: None },
             paths: None,
+            history: None,
             button_rects: vec![],
             body_rect: Rect::default(),
             input_rect: Rect::default(),
@@ -450,6 +467,21 @@ impl Dialog {
         }
         self
     }
+    /// Let Up and Down walk `items` (newest first) in an input dialog, which
+    /// starts with the newest one selected when it was empty; no effect on
+    /// another kind or without items.
+    pub fn with_history(mut self, items: Vec<String>) -> Self {
+        if let DialogKind::Input { input, .. } = &mut self.kind
+            && !items.is_empty()
+        {
+            if input.text.is_empty() {
+                input.set_text(&items[0]);
+                input.select_all();
+            }
+            self.history = Some(Box::new(InputHistory { items, pos: None, draft: String::new() }));
+        }
+        self
+    }
     pub fn choice(id: DialogId, title: &str, message: &str, items: Vec<String>) -> Self {
         let mut list = ListState::default();
         list.set_len(items.len());
@@ -459,6 +491,7 @@ impl Dialog {
             message: message.into(),
             kind: DialogKind::Choice { items, list, filter: TextInput::new(false) },
             paths: None,
+            history: None,
             button_rects: vec![],
             body_rect: Rect::default(),
             input_rect: Rect::default(),
@@ -474,6 +507,7 @@ impl Dialog {
             message: String::new(),
             kind: DialogKind::NewTask(Box::new(form)),
             paths: None,
+            history: None,
             button_rects: vec![],
             body_rect: Rect::default(),
             input_rect: Rect::default(),
@@ -491,6 +525,7 @@ impl Dialog {
             message: String::new(),
             kind: DialogKind::Rebase(Box::new(form)),
             paths: None,
+            history: None,
             button_rects: vec![],
             body_rect: Rect::default(),
             input_rect: Rect::default(),
@@ -506,6 +541,7 @@ impl Dialog {
             message: message.into(),
             kind: DialogKind::KeyCapture(Box::new(crate::ui::key_capture::KeyCaptureForm::new(initial))),
             paths: None,
+            history: None,
             button_rects: vec![],
             body_rect: Rect::default(),
             input_rect: Rect::default(),
@@ -587,6 +623,22 @@ impl Dialog {
                 KeyCode::Char('c') if key.modifiers == KeyModifiers::ALT && check.is_some() => {
                     if let Some(c) = check {
                         c.on = !c.on;
+                    }
+                    None
+                }
+                KeyCode::Up | KeyCode::Down if self.history.is_some() => {
+                    if let Some(h) = self.history.as_deref_mut() {
+                        let pos = match (key.code, h.pos) {
+                            (KeyCode::Up, None) => {
+                                h.draft.clone_from(&input.text);
+                                Some(0)
+                            }
+                            (KeyCode::Up, Some(p)) => Some((p + 1).min(h.items.len() - 1)),
+                            (_, None) => return None,
+                            (_, Some(p)) => p.checked_sub(1),
+                        };
+                        h.pos = pos;
+                        input.set_text(pos.map_or(&h.draft, |p| &h.items[p]));
                     }
                     None
                 }
@@ -1186,6 +1238,29 @@ mod tests {
         assert!(d.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL | KeyModifiers::ALT)).is_none());
         assert!(d.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)).is_none());
         assert!(matches!(d.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Some(DialogResult::Text(t)) if t == "oldx"));
+    }
+
+    #[test]
+    fn input_history_walks_up_and_down() {
+        let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
+        let text = |d: &Dialog| match &d.kind {
+            DialogKind::Input { input, .. } => input.text.clone(),
+            _ => panic!(),
+        };
+        let mut d = Dialog::input(DialogId::Info, "T", "", "", "Run").with_history(vec!["b".into(), "a".into()]);
+        assert_eq!(text(&d), "b");
+        assert!(d.handle_key(key(KeyCode::Char('x'))).is_none());
+        assert_eq!(text(&d), "x", "typing replaces it");
+        for (code, want) in
+            [(KeyCode::Up, "b"), (KeyCode::Up, "a"), (KeyCode::Up, "a"), (KeyCode::Down, "b"), (KeyCode::Down, "x"), (KeyCode::Down, "x")]
+        {
+            assert!(d.handle_key(key(code)).is_none());
+            assert_eq!(text(&d), want, "after {code:?}");
+        }
+        assert!(matches!(d.handle_key(key(KeyCode::Enter)), Some(DialogResult::Text(t)) if t == "x"));
+        let mut d = Dialog::input(DialogId::Info, "T", "", "keep", "Run");
+        d.handle_key(key(KeyCode::Up));
+        assert_eq!(text(&d), "keep", "no history, no change");
     }
 
     fn alt_c() -> KeyEvent {

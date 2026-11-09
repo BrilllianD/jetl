@@ -8,6 +8,12 @@
 //! file. Results are checked against the
 //! generation and the request's seq before the editor applies them
 //! (`Editor::format_done`); a save waiting for one writes either way.
+//!
+//! Pipe Through Command (`editor.pipe_selection`) shares the seq counter: it
+//! asks for a `sh -c` command, runs it on each range one after another off
+//! the main thread, and the editor applies the outputs as one edit
+//! (`Editor::pipe_done`) while the buffer is as it was. One run per buffer;
+//! `FormatState::pipes` holds it, `FormatState::pipe_history` the commands.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -19,12 +25,15 @@ use serde_json::{Value, json};
 use super::lsp::Inflight;
 use super::lsp_nav::{FORMATTING, RANGE_FORMATTING};
 use super::{App, Ctx};
+use crate::dispatch::Mode;
 use crate::editor::buffer::BufferId;
-use crate::editor::format::{FormatRequest, Formatter, Snapshot};
+use crate::editor::format::{FormatRequest, Formatter, PipeRequest, Snapshot, fit_output, pipe_ranges};
 use crate::event::{AppMsg, Level};
 use crate::lsp::client::State;
 use crate::lsp::transport::ResponseError;
 use crate::lsp::{DocTag, PendingTag, pos};
+use crate::ui::dialog::{Dialog, DialogId};
+use crate::ui::focus::PanelId;
 use crate::util::format::Failure;
 
 #[derive(Debug, Default)]
@@ -33,6 +42,22 @@ pub struct FormatState {
     seq: u64,
     /// The run in flight per buffer.
     jobs: HashMap<BufferId, Job>,
+    /// The Pipe Through Command run in flight per buffer.
+    pipes: HashMap<BufferId, PipeJob>,
+    /// Commands run this session, newest first, without repeats, at most
+    /// [`PIPE_HISTORY`]. Not persisted; a root switch keeps it.
+    pub(crate) pipe_history: Vec<String>,
+}
+
+/// Most commands the Pipe Through Command prompt remembers.
+const PIPE_HISTORY: usize = 20;
+
+#[derive(Debug)]
+struct PipeJob {
+    seq: u64,
+    req: PipeRequest,
+    /// Aborting drops the run, which kills the command's process group.
+    task: tokio::task::AbortHandle,
 }
 
 #[derive(Debug)]
@@ -68,6 +93,9 @@ impl FormatState {
             if let Run::Command(task) = job.run {
                 task.abort();
             }
+        }
+        for (_, job) in self.pipes.drain() {
+            job.task.abort();
         }
     }
 }
@@ -215,6 +243,95 @@ impl App {
         }
         let Some(job) = self.format.jobs.remove(&id) else { return };
         self.finish_format(id, job.save, job.snapshot, result);
+    }
+
+    /// `editor.pipe_selection`: ask for the command to pipe the selection (or
+    /// the caret line) through.
+    pub(super) fn pipe_prompt(&mut self) {
+        let ready =
+            self.focus.is(PanelId::Editor) && !self.editor.find_focused() && !self.editor.merge_active() && self.mode == Mode::Insert;
+        let Some(b) = self.editor.active_buffer().filter(|_| ready) else {
+            return self.lsp_hint("Pipe Through Command needs a writable editor");
+        };
+        let (ranges, line_mode) = match pipe_ranges(b) {
+            Ok(r) => r,
+            Err(t) => return self.lsp_hint(t),
+        };
+        let what = match (ranges.len(), line_mode) {
+            (1, false) => "the selection".to_string(),
+            (1, true) => "the caret line".to_string(),
+            (n, false) => format!("{n} selections"),
+            (n, true) => format!("{n} caret lines"),
+        };
+        let msg = format!("Replace {what} with the output of this command (sh -c, in the project root):");
+        let id = DialogId::PipeSelection(b.id);
+        self.dialog = Some(Dialog::input(id, "Pipe Through Command", &msg, "", "Run").with_history(self.format.pipe_history.clone()));
+        self.dispatcher.reset();
+    }
+
+    /// The Pipe Through Command dialog answered `t` for buffer `id`.
+    pub(super) fn pipe_answer(&mut self, id: BufferId, t: String) {
+        let cmd = t.trim();
+        if cmd.is_empty() {
+            return;
+        }
+        self.format.pipe_history.retain(|c| c != cmd);
+        self.format.pipe_history.insert(0, cmd.to_string());
+        self.format.pipe_history.truncate(PIPE_HISTORY);
+        match self.editor.pipe_request(id, cmd) {
+            Ok(req) => self.start_pipe(req),
+            Err(t) => self.lsp_hint(t),
+        }
+    }
+
+    /// Run `req`'s command on each range, one after another, within one
+    /// budget. A newer pipe for the same buffer replaces one in flight.
+    fn start_pipe(&mut self, mut req: PipeRequest) {
+        self.format.seq += 1;
+        let seq = self.format.seq;
+        if let Some(old) = self.format.pipes.remove(&req.id) {
+            old.task.abort();
+        }
+        let inputs = std::mem::take(&mut req.inputs);
+        let (generation, tx, root) = (self.workspace.generation, self.bus_tx.clone(), self.workspace.root.clone());
+        let (id, command, timeout, n) = (req.id, req.command.clone(), req.timeout, inputs.len());
+        tracing::debug!("piping {n} range(s) of buffer {id} through {command:?}");
+        let task = tokio::spawn(async move {
+            let work = async {
+                let mut outs = Vec::with_capacity(n);
+                for (k, input) in inputs.into_iter().enumerate() {
+                    match crate::util::format::pipe(&command, &root, input.clone(), timeout).await {
+                        Ok(o) => outs.push(fit_output(&input, &o)),
+                        Err(mut f) => {
+                            if n > 1 {
+                                f.summary = format!("selection {} of {n}: {}", k + 1, f.summary);
+                            }
+                            return Err(f);
+                        }
+                    }
+                }
+                Ok(outs)
+            };
+            let result = match tokio::time::timeout(timeout, work).await {
+                Ok(r) => r,
+                Err(_) => Err(failure(format!("sh did not finish within {} ms", timeout.as_millis()))),
+            };
+            let _ = tx.send(AppMsg::Piped { generation, id, seq, result });
+        });
+        self.format.pipes.insert(id, PipeJob { seq, req, task: task.abort_handle() });
+    }
+
+    /// A Pipe Through Command run ended: the editor applies it unless it is
+    /// stale (another workspace, or a newer pipe on the buffer).
+    pub(super) fn pipe_done(&mut self, generation: u64, id: BufferId, seq: u64, result: Result<Vec<String>, Failure>) {
+        if generation != self.workspace.generation || self.format.pipes.get(&id).is_none_or(|j| j.seq != seq) {
+            return tracing::debug!("dropping a stale pipe result for buffer {id}");
+        }
+        let Some(job) = self.format.pipes.remove(&id) else { return };
+        let mut cx = ctx!(self);
+        self.editor.pipe_done(&job.req, result, &mut cx);
+        let fx = cx.effects;
+        self.apply_effects(fx);
     }
 
     fn finish_format(&mut self, id: BufferId, save: bool, snapshot: Snapshot, result: Result<String, Failure>) {
@@ -842,5 +959,192 @@ mod tests {
             assert!(!app.editor.active_buffer().unwrap().dirty());
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+}
+
+#[cfg(test)]
+mod pipe_tests {
+    use super::*;
+    use crate::actions::{Action, EditorAction};
+    use crate::app::tests::{handle_next, load, test_app};
+    use crate::editor::format::short_command;
+    use crate::editor::selection::{Selection, Selections};
+    use crate::event::Level;
+    use crate::ui::dialog::{DialogKind, DialogResult};
+
+    fn piped(m: &AppMsg) -> bool {
+        matches!(m, AppMsg::Piped { .. })
+    }
+
+    fn text(app: &App) -> String {
+        app.editor.active_buffer().unwrap().text()
+    }
+
+    fn open(name: &str, file: &str, text: &str) -> (App, std::path::PathBuf) {
+        let (mut app, dir) = test_app(name);
+        load(&mut app, file, text);
+        app.focus.set(PanelId::Editor);
+        (app, dir)
+    }
+
+    fn select(app: &mut App, ranges: &[(usize, usize)]) {
+        let sels = ranges.iter().map(|&(a, h)| Selection::new(a, h)).collect();
+        app.editor.active_buffer_mut().unwrap().view.sels = Selections::new(sels, 0);
+    }
+
+    /// Open the prompt and answer it with `cmd`.
+    fn run_pipe(app: &mut App, cmd: &str) {
+        app.perform(Action::Editor(EditorAction::PipeSelection));
+        let d = app.dialog.take().expect("the prompt opens");
+        assert!(matches!(d.id, DialogId::PipeSelection(_)));
+        app.finish_dialog(d.id, DialogResult::Text(cmd.into()));
+    }
+
+    fn texts(app: &App, level: Level) -> Vec<String> {
+        app.notifications.iter().filter(|n| n.level == level && !n.text.starts_with("Terminal")).map(|n| n.text.clone()).collect()
+    }
+
+    fn undo_len(app: &App) -> usize {
+        app.editor.active_buffer().unwrap().undo.len()
+    }
+
+    #[tokio::test]
+    async fn pipe_sorts_the_selection_as_one_undo_step() {
+        let (mut app, dir) = open("pipe-sort", "a.txt", "c\nb\na\nz\n");
+        select(&mut app, &[(0, 6)]);
+        run_pipe(&mut app, "sort");
+        handle_next(&mut app, piped).await;
+        assert_eq!(text(&app), "a\nb\nc\nz\n");
+        app.perform(Action::Editor(EditorAction::Undo));
+        assert_eq!(text(&app), "c\nb\na\nz\n");
+        assert_eq!(app.format.pipe_history, ["sort"]);
+        app.perform(Action::Editor(EditorAction::PipeSelection));
+        let d = app.dialog.take().unwrap();
+        let DialogKind::Input { input, .. } = &d.kind else { panic!() };
+        assert_eq!(input.text, "sort");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn pipe_without_selection_takes_each_caret_line() {
+        let (mut app, dir) = open("pipe-lines", "a.txt", "ab\ncd\nef\n");
+        select(&mut app, &[(0, 0), (6, 6)]);
+        run_pipe(&mut app, "tr a-z A-Z");
+        handle_next(&mut app, piped).await;
+        assert_eq!(text(&app), "AB\ncd\nEF\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn pipe_fits_the_output_to_the_input_line_break() {
+        // A caret line keeps its break; a selection inside a line gets none.
+        let (mut app, dir) = open("pipe-fit", "a.txt", "ab\ncd\n");
+        run_pipe(&mut app, "printf X");
+        handle_next(&mut app, piped).await;
+        assert_eq!(text(&app), "X\ncd\n");
+        select(&mut app, &[(2, 4)]);
+        run_pipe(&mut app, "echo Y");
+        handle_next(&mut app, piped).await;
+        assert_eq!(text(&app), "X\nY\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn pipe_several_selections() {
+        let (mut app, dir) = open("pipe-multi", "a.txt", "x one\nx two\n");
+        select(&mut app, &[(0, 1), (6, 7)]);
+        run_pipe(&mut app, "tr x Y");
+        handle_next(&mut app, piped).await;
+        assert_eq!(text(&app), "Y one\nY two\n");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let (mut app, dir) = open("pipe-multi-fail", "a.txt", "x\ny\n");
+        select(&mut app, &[(0, 1), (2, 3)]);
+        let cmd = r#"read l; [ "$l" = x ] && echo X || { echo nope >&2; exit 1; }"#;
+        run_pipe(&mut app, cmd);
+        handle_next(&mut app, piped).await;
+        assert_eq!(text(&app), "x\ny\n");
+        assert_eq!(texts(&app, Level::Warn), [format!("Pipe `{}`: selection 2 of 2: sh: nope", short_command(cmd))]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn pipe_failure_leaves_the_buffer() {
+        let (mut app, dir) = open("pipe-fail", "a.txt", "abc\n");
+        run_pipe(&mut app, "false");
+        handle_next(&mut app, piped).await;
+        run_pipe(&mut app, "echo bad >&2; exit 3");
+        handle_next(&mut app, piped).await;
+        assert_eq!(text(&app), "abc\n");
+        assert_eq!(texts(&app, Level::Warn), ["Pipe `false`: sh failed (exit status: 1)", "Pipe `echo bad >&2; exit 3`: sh: bad"]);
+        assert_eq!(undo_len(&app), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn pipe_timeout() {
+        let (mut app, dir) = open("pipe-timeout", "a.txt", "abc\n");
+        app.editor.format.timeout_ms = 300;
+        let start = std::time::Instant::now();
+        run_pipe(&mut app, "sleep 5");
+        handle_next(&mut app, piped).await;
+        assert!(start.elapsed() < Duration::from_secs(3));
+        assert_eq!(texts(&app, Level::Warn), ["Pipe `sleep 5`: sh did not finish within 300 ms"]);
+        assert_eq!(text(&app), "abc\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn pipe_drops_stale_results() {
+        let (mut app, dir) = open("pipe-stale", "a.txt", "abc\n");
+        let cmd = "sleep 0.3; tr a-z A-Z";
+        run_pipe(&mut app, cmd);
+        app.perform(Action::Editor(EditorAction::InsertText("x".into())));
+        handle_next(&mut app, piped).await;
+        assert_eq!(text(&app), "xabc\n", "the edit stays, nothing is uppercased");
+        assert_eq!(texts(&app, Level::Warn), [format!("a.txt changed while `{cmd}` ran; nothing replaced")]);
+
+        run_pipe(&mut app, "sleep 2; echo old");
+        let (generation, seq, id) = {
+            let (id, job) = app.format.pipes.iter().next().unwrap();
+            (app.workspace.generation, job.seq, *id)
+        };
+        let notes = app.notifications.len();
+        let msg = |generation, seq| AppMsg::Piped { generation, id, seq, result: Ok(vec!["Z\n".into()]) };
+        app.handle_msg(msg(generation, seq - 1));
+        app.handle_msg(msg(generation + 1, seq));
+        assert_eq!(text(&app), "xabc\n");
+        assert_eq!(app.notifications.len(), notes, "no toast");
+        assert_eq!(app.format.pipes.len(), 1, "the dropped answers did not end the run");
+
+        run_pipe(&mut app, "echo new");
+        assert_eq!(app.format.pipes.len(), 1, "the old run is replaced");
+        handle_next(&mut app, piped).await;
+        assert_eq!(text(&app), "new\n");
+        assert!(app.format.pipes.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn pipe_refusals() {
+        let (mut app, dir) = open("pipe-refuse", "a.txt", "abc\n");
+        app.editor.active_buffer_mut().unwrap().read_only = true;
+        app.perform(Action::Editor(EditorAction::PipeSelection));
+        assert!(app.dialog.is_none());
+        let toasts: Vec<String> = app.toasts.items().iter().map(|t| t.text.clone()).collect();
+        assert!(toasts.contains(&"Pipe Through Command needs a writable editor".to_string()), "{toasts:?}");
+        app.editor.active_buffer_mut().unwrap().read_only = false;
+
+        app.format.pipe_history = vec!["sort".into()];
+        let id = app.editor.active_buffer().unwrap().id;
+        app.finish_dialog(DialogId::PipeSelection(id), DialogResult::Text("   ".into()));
+        assert!(app.format.pipes.is_empty());
+        assert_eq!(app.format.pipe_history, ["sort"]);
+
+        run_pipe(&mut app, "sleep 5");
+        assert_eq!(app.format.pipes.len(), 1);
+        app.format.abort_all();
+        assert!(app.format.pipes.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

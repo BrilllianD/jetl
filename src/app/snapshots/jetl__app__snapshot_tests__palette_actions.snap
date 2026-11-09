@@ -8,24 +8,24 @@ expression: "snapshot(&term, &marks, None)"
 02  ⌂ │                              ││
 03  ◫ │                              ││
 04  ⊢┌ Find Action ─────────────────────────────────────────────────────────────┐
-05   │ › split                                                               18 │
+05   │ › split                                                               19 │
 06   │ Split right (the tab in a new group beside)  editor.split_right    Alt+\ │
 07   │ Split down (the tab in a new group below)  editor.split_down       Alt+- │
 08   │ Local History: back to the snapshot list  local_history.left        Left │
 09   │ Run: build the SCIP index with [index] scip_command, then load it  run.b │
-10   │ Unsplit (merge the group into the one beside it)  editor.unsplit         │
-11   │ Unsplit all (one group)  editor.unsplit_all                Alt+W Shift+U │
-12  ◉│ Local history of the file (editor) or the selected entry (Project tree;  │
-13  ⋔│ Run: previous problem (opens it)  run.prev_problem                       │
-14  ✎│ Previous problem (diagnostic) in the file  lsp.prev_problem     Shift+F2 │
-15  ✓│ Snippet: select the previous tabstop  editor.prev_tabstop      Shift+Tab │
-16  ⟲│ Local History: open the file in the editor (in the project view: the sel │
-17  ⚑│ Show or hide inlay hints  lsp.toggle_inlay_hints                         │
-18  ⎇│ Local History: the project's files with history, deleted ones included ( │
-19  ❯│ Debug: enable or disable the breakpoint on the caret's line (kept, not s │
-20  ⚠│ Run: send the HTTP request at the caret of a .http file with curl  run.h │
-21  ►│ Snippet: select the next tabstop (the last one ends the snippet)  editor │
-22  ⌕│ Escape (close find, clear selection)  editor.escape                  Esc │
+10   │ Pipe the selection (or the caret line) through a shell command and repla │
+11   │ Unsplit (merge the group into the one beside it)  editor.unsplit         │
+12  ◉│ Unsplit all (one group)  editor.unsplit_all                Alt+W Shift+U │
+13  ⋔│ Local history of the file (editor) or the selected entry (Project tree;  │
+14  ✎│ Run: previous problem (opens it)  run.prev_problem                       │
+15  ✓│ Previous problem (diagnostic) in the file  lsp.prev_problem     Shift+F2 │
+16  ⟲│ Snippet: select the previous tabstop  editor.prev_tabstop      Shift+Tab │
+17  ⚑│ Local History: open the file in the editor (in the project view: the sel │
+18  ⎇│ Show or hide inlay hints  lsp.toggle_inlay_hints                         │
+19  ❯│ Local History: the project's files with history, deleted ones included ( │
+20  ⚠│ Debug: enable or disable the breakpoint on the caret's line (kept, not s │
+21  ►│ Run: send the HTTP request at the caret of a .http file with curl  run.h │
+22  ⌕│ Snippet: select the next tabstop (the last one ends the snippet)  editor │
 23   └──────────────────────────────────────────────────────────────────────────┘
 -- marks: L=selected
 06    LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

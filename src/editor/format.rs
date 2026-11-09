@@ -4,7 +4,9 @@
 //! selection of `editor.format` when the server has it). Requests the app
 //! runs (`Effect::Format`),
 //! and their results applied as one undoable edit that touches only the
-//! changed lines, with the caret kept on the same code.
+//! changed lines, with the caret kept on the same code. Also Pipe Through
+//! Command: the ranges to replace, and the outputs of `sh -c` applied as one
+//! undoable edit.
 
 use std::ops::Range;
 use std::path::PathBuf;
@@ -12,10 +14,11 @@ use std::time::Duration;
 
 use super::Editor;
 use super::buffer::{Buffer, BufferId, LineEnding};
+use super::selection::{Selection, Selections};
 use super::undo::{Change, TxKind};
 use crate::app::Ctx;
 use crate::event::{Effect, Level};
-use crate::util::format::Failure;
+use crate::util::format::{Failure, PIPE_MAX_BYTES, PIPE_MAX_RANGES};
 
 /// The buffer as it was handed to the formatter.
 #[derive(Debug, Clone)]
@@ -62,7 +65,125 @@ fn selection_span(b: &Buffer) -> Option<Range<usize>> {
     b.view.sels.iter().map(|s| s.range()).filter(|r| !r.is_empty()).reduce(|a, r| a.start.min(r.start)..a.end.max(r.end))
 }
 
+/// Pipe Through Command for buffer `id`: replace `ranges` with what
+/// `sh -c command` prints for each of `inputs`.
+#[derive(Debug, Clone)]
+pub struct PipeRequest {
+    pub id: BufferId,
+    /// Trimmed, non-empty.
+    pub command: String,
+    pub timeout: Duration,
+    /// `Buffer::version` and path at the request: applied only while both are unchanged.
+    pub version: u64,
+    pub path: Option<PathBuf>,
+    /// Char ranges of the text at `version`, ascending and disjoint.
+    pub ranges: Vec<Range<usize>>,
+    /// Each range's text with `\r\n` made `\n` (taken by the run; empty in the job).
+    pub inputs: Vec<String>,
+    /// No selection: the ranges are caret lines.
+    pub line_mode: bool,
+}
+
+/// The ranges Pipe Through Command replaces in `b` and whether they are
+/// caret lines, or why it refuses (the toast text).
+pub fn pipe_ranges(b: &Buffer) -> Result<(Vec<Range<usize>>, bool), String> {
+    if b.read_only {
+        return Err("Pipe Through Command needs a writable editor".into());
+    }
+    let mut ranges: Vec<Range<usize>> = b.view.sels.iter().map(|s| s.range()).filter(|r| !r.is_empty()).collect();
+    let line_mode = ranges.is_empty();
+    if line_mode {
+        let rope = &b.rope;
+        ranges = b
+            .view
+            .sels
+            .iter()
+            .map(|s| {
+                let l = rope.char_to_line(s.head);
+                let end = if l + 1 >= rope.len_lines() { rope.len_chars() } else { rope.line_to_char(l + 1) };
+                rope.line_to_char(l)..end
+            })
+            .collect();
+        ranges.dedup();
+    }
+    if ranges.len() > PIPE_MAX_RANGES {
+        return Err(format!("Pipe Through Command takes at most {PIPE_MAX_RANGES} selections (there are {})", ranges.len()));
+    }
+    let bytes: usize = ranges.iter().map(|r| b.rope.slice(r.clone()).len_bytes()).sum();
+    if bytes > PIPE_MAX_BYTES {
+        return Err(format!("The selection is too large to pipe (more than {} MiB)", PIPE_MAX_BYTES >> 20));
+    }
+    Ok((ranges, line_mode))
+}
+
+/// `output` fitted to `input`'s trailing line break; `\n` line breaks.
+pub fn fit_output(input: &str, output: &str) -> String {
+    let mut out = output.replace("\r\n", "\n");
+    if input.ends_with('\n') {
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+    } else if out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
+/// `cmd` cut to 40 chars plus `…`.
+pub fn short_command(cmd: &str) -> String {
+    match cmd.char_indices().nth(40) {
+        Some((i, _)) => format!("{}…", &cmd[..i]),
+        None => cmd.to_string(),
+    }
+}
+
 impl Editor {
+    /// A request for buffer `id`, or the refusal text.
+    pub fn pipe_request(&mut self, id: BufferId, command: &str) -> Result<PipeRequest, String> {
+        let i = self.index_of_id(id).ok_or("The file is closed")?;
+        let b = &self.buffers[i];
+        let (ranges, line_mode) = pipe_ranges(b)?;
+        let inputs = ranges.iter().map(|r| b.rope.slice(r.clone()).to_string().replace("\r\n", "\n")).collect();
+        Ok(PipeRequest {
+            id,
+            command: command.trim().to_string(),
+            timeout: Duration::from_millis(self.format.timeout_ms),
+            version: b.version,
+            path: b.path.clone(),
+            ranges,
+            inputs,
+            line_mode,
+        })
+    }
+
+    /// The run for `req` ended (generation and seq already checked).
+    pub fn pipe_done(&mut self, req: &PipeRequest, result: Result<Vec<String>, Failure>, cx: &mut Ctx) {
+        let Some(i) = self.index_of_id(req.id) else { return };
+        let b = &mut self.buffers[i];
+        let cmd = short_command(&req.command);
+        match result {
+            Err(f) => {
+                let mut msg = format!("Pipe `{cmd}`: {}", f.summary);
+                if f.stderr.lines().filter(|l| !l.trim().is_empty()).nth(1).is_some() {
+                    msg.push('\n');
+                    msg.push_str(&f.stderr);
+                }
+                cx.notify(Level::Warn, msg);
+            }
+            Ok(_) if b.version != req.version || b.path != req.path => {
+                cx.notify(Level::Warn, format!("{} changed while `{cmd}` ran; nothing replaced", b.name));
+            }
+            Ok(outs) if outs.len() != req.ranges.len() => {
+                tracing::warn!("pipe gave {} outputs for {} ranges; nothing replaced", outs.len(), req.ranges.len());
+            }
+            Ok(outs) => {
+                if !b.apply_piped(&req.ranges, &outs, req.line_mode) {
+                    cx.notify(Level::Info, format!("`{cmd}` changed nothing"));
+                }
+            }
+        }
+    }
+
     /// Buffer `i`'s formatter command (`{path}` expanded), if its language
     /// has one.
     pub(super) fn formatter(&self, i: usize) -> Option<Vec<String>> {
@@ -158,6 +279,35 @@ impl Editor {
 }
 
 impl Buffer {
+    /// Replace each of `ranges` with `outputs[k]` (`\n` made the buffer's
+    /// line break) as one transaction; false, with none, when nothing changes.
+    /// Afterwards a range of a selection selects its output, a caret line gets
+    /// a caret at the start of its output.
+    pub fn apply_piped(&mut self, ranges: &[Range<usize>], outputs: &[String], line_mode: bool) -> bool {
+        let head = self.view.sel().head;
+        let primary = ranges.iter().position(|r| r.start <= head && head <= r.end).unwrap_or(0);
+        let crlf = self.line_ending == LineEnding::CrLf;
+        let mut changes = Vec::new();
+        let mut sels = Vec::with_capacity(ranges.len());
+        let mut delta: isize = 0;
+        for (r, out) in ranges.iter().zip(outputs) {
+            let old = self.rope.slice(r.clone()).to_string();
+            let new = if crlf { out.replace('\n', "\r\n") } else { out.clone() };
+            let start = (r.start as isize + delta) as usize;
+            let len = new.chars().count();
+            sels.push(if line_mode { Selection::point(start) } else { Selection::new(start, start + len) });
+            delta += len as isize - r.len() as isize;
+            if old != new {
+                changes.push(Change::replace(start, old, new));
+            }
+        }
+        if changes.is_empty() {
+            return false;
+        }
+        self.apply(changes, Selections::new(sels, primary), TxKind::Other);
+        true
+    }
+
     /// Replace the text with `formatted` (its line breaks made the buffer's)
     /// as one undoable transaction of the changed lines only. The selection
     /// stays on the same code and the view on the same lines. Returns false,
@@ -388,5 +538,57 @@ mod tests {
         // A block selection: columns 0..1 of lines 1 to 3.
         b.view.sels = Selections::new(vec![Selection::new(3, 4), Selection::new(6, 7), Selection::new(9, 10)], 2);
         assert_eq!(selection_span(&b), Some(3..10), "a block: from its first cell to its last, not whole lines");
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)]
+    fn pipe_ranges_rules() {
+        let mut b = buf("ab\ncd\nef\n");
+        b.view.sels = Selections::new(vec![Selection::new(0, 1), Selection::point(4), Selection::new(6, 8)], 0);
+        assert_eq!(pipe_ranges(&b), Ok((vec![0..1, 6..8], false)), "the empty caret is ignored");
+        let mut b = buf("a\nb\nc");
+        b.view.sels = Selections::new(vec![Selection::point(0), Selection::point(1), Selection::point(4)], 0);
+        assert_eq!(pipe_ranges(&b), Ok((vec![0..2, 4..5], true)), "caret lines, the last without a break");
+        assert_eq!(pipe_ranges(&buf("")), Ok((vec![0..0], true)));
+        let mut b = buf("a");
+        b.read_only = true;
+        assert_eq!(pipe_ranges(&b), Err("Pipe Through Command needs a writable editor".into()));
+        let mut b = buf(&"x\n".repeat(101));
+        b.view.sels = Selections::new((0..101).map(|l| Selection::point(l * 2)).collect(), 0);
+        assert_eq!(pipe_ranges(&b), Err("Pipe Through Command takes at most 100 selections (there are 101)".into()));
+    }
+
+    #[test]
+    fn fit_output_rules() {
+        assert_eq!(fit_output("a\n", "A"), "A\n");
+        assert_eq!(fit_output("a", "A\n"), "A");
+        assert_eq!(fit_output("a\n", ""), "");
+        assert_eq!(fit_output("a\n", "A\r\nB\r\n"), "A\nB\n");
+        assert_eq!(fit_output("a", "A\n\n"), "A\n", "only one break is removed");
+        assert_eq!(short_command(&"x".repeat(45)), format!("{}…", "x".repeat(40)));
+        assert_eq!(short_command("sort"), "sort");
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)]
+    fn apply_piped_is_one_transaction() {
+        let mut b = buf("b a\nd c\n");
+        assert!(b.apply_piped(&[0..3, 4..7], &["a b".into(), "c d".into()], false));
+        assert_eq!(b.text(), "a b\nc d\n");
+        let ranges: Vec<_> = b.view.sels.iter().map(|s| (s.anchor, s.head)).collect();
+        assert_eq!(ranges, [(0, 3), (4, 7)]);
+        assert_eq!(b.undo.len(), 1);
+        assert!(b.undo());
+        assert_eq!(b.text(), "b a\nd c\n");
+        // A CRLF buffer keeps its line breaks.
+        let mut b = Buffer::from_text(1, None, "x\r\ny\r\n", false);
+        assert_eq!(b.line_ending, LineEnding::CrLf);
+        assert!(b.apply_piped(&[0..6], &["X\nY\n".into()], true));
+        assert_eq!(b.text(), "X\r\nY\r\n");
+        assert_eq!((b.view.sel().anchor, b.view.sel().head), (0, 0));
+        // Outputs equal to the inputs change nothing.
+        let mut b = buf("a\nb\n");
+        assert!(!b.apply_piped(&[0..4], &["a\nb\n".into()], true));
+        assert!(b.undo.is_empty());
     }
 }

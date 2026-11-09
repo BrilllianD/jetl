@@ -109,6 +109,7 @@ impl App {
             AppMsg::Paste { generation, seq, result } => self.paste_done(generation, seq, result),
             AppMsg::Compared { generation, title, key, result } => self.compared(generation, title, key, result),
             AppMsg::Formatted { generation, id, seq, result } => self.format_done(generation, id, seq, result),
+            AppMsg::Piped { generation, id, seq, result } => self.pipe_done(generation, id, seq, result),
             AppMsg::RunOutput { generation, run, lines } => self.run_output(generation, run, lines),
             AppMsg::RunExited { generation, run, end } => self.run_exited(generation, run, end),
             AppMsg::RunTasks { generation, seq, tasks, error, warnings } => self.run_tasks_loaded(generation, seq, tasks, error, warnings),

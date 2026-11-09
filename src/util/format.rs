@@ -35,6 +35,35 @@ pub fn expand(argv: &[String], path: &str) -> Vec<String> {
 /// or the future is dropped (root switch, quit), its whole process group is
 /// killed, so helpers it started (`npx` starting `node`) do not linger.
 pub async fn run(argv: &[String], cwd: &Path, input: String, timeout: Duration) -> Result<String, Failure> {
+    run_with(argv, cwd, input, timeout, FORMAT).await
+}
+
+/// Most bytes of input, and of each run's stdout, Pipe Through Command handles.
+pub const PIPE_MAX_BYTES: usize = 16 << 20;
+/// Most bytes of stderr a pipe run keeps (the rest is drained and dropped).
+pub const PIPE_MAX_STDERR: usize = 64 << 10;
+/// Most ranges one Pipe Through Command replaces.
+pub const PIPE_MAX_RANGES: usize = 100;
+
+/// Run `sh -c command` like [`run`], for Pipe Through Command: empty output
+/// is fine (it deletes the text), stdout is capped at [`PIPE_MAX_BYTES`] and
+/// stderr keeps its first [`PIPE_MAX_STDERR`] bytes.
+pub async fn pipe(command: &str, cwd: &Path, input: String, timeout: Duration) -> Result<String, Failure> {
+    run_with(&["sh".into(), "-c".into(), command.into()], cwd, input, timeout, PIPE).await
+}
+
+/// What a run accepts: the `[format]` and the pipe path differ only here.
+#[derive(Clone, Copy)]
+struct Limits {
+    allow_empty: bool,
+    max_stdout: usize,
+    max_stderr: usize,
+}
+
+const FORMAT: Limits = Limits { allow_empty: false, max_stdout: usize::MAX, max_stderr: usize::MAX };
+const PIPE: Limits = Limits { allow_empty: true, max_stdout: PIPE_MAX_BYTES, max_stderr: PIPE_MAX_STDERR };
+
+async fn run_with(argv: &[String], cwd: &Path, input: String, timeout: Duration, limits: Limits) -> Result<String, Failure> {
     use tokio::io::AsyncWriteExt;
     let name = argv.first().filter(|n| !n.is_empty()).ok_or_else(|| Failure::new("empty formatter command"))?;
     let mut cmd = tokio::process::Command::new(name);
@@ -61,7 +90,8 @@ pub async fn run(argv: &[String], cwd: &Path, input: String, timeout: Duration) 
         }
     };
     let work = async {
-        let (_, out, err, status) = tokio::join!(feed, read_all(stdout), read_all(stderr), child.wait());
+        let (_, out, err, status) =
+            tokio::join!(feed, read_capped(stdout, limits.max_stdout), read_capped(stderr, limits.max_stderr), child.wait());
         (out, err, status)
     };
     let Ok((out, err, status)) = tokio::time::timeout(timeout, work).await else {
@@ -69,7 +99,7 @@ pub async fn run(argv: &[String], cwd: &Path, input: String, timeout: Duration) 
     };
     group.disarm();
     let io = |e: std::io::Error| Failure::new(format!("{name}: {e}"));
-    let (out, err, status) = (out.map_err(io)?, err.map_err(io)?, status.map_err(io)?);
+    let ((out, out_cut), (err, _), status) = (out.map_err(io)?, err.map_err(io)?, status.map_err(io)?);
     let stderr = String::from_utf8_lossy(&err).trim_end().to_string();
     if !status.success() {
         let first = stderr.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
@@ -77,21 +107,36 @@ pub async fn run(argv: &[String], cwd: &Path, input: String, timeout: Duration) 
         return Err(Failure { summary, stderr });
     }
     let fail = |summary: String| Failure { summary, stderr: stderr.clone() };
+    if out_cut {
+        return Err(fail(format!("{name} printed more than {} MiB", limits.max_stdout >> 20)));
+    }
     let text = String::from_utf8(out).map_err(|_| fail(format!("{name} printed text that is not UTF-8")))?;
-    if text.is_empty() && had_input {
+    if text.is_empty() && had_input && !limits.allow_empty {
         return Err(fail(format!("{name} printed nothing (is it set to write to stdout?)")));
     }
     Ok(text)
 }
 
-/// Everything a child pipe gives until it closes.
-async fn read_all(pipe: Option<impl tokio::io::AsyncRead + Unpin>) -> std::io::Result<Vec<u8>> {
+/// What a child pipe gives until it closes: at most `cap` bytes, the rest is
+/// read and dropped (the child must not block on a full pipe). The bool says
+/// whether anything was dropped.
+async fn read_capped(pipe: Option<impl tokio::io::AsyncRead + Unpin>, cap: usize) -> std::io::Result<(Vec<u8>, bool)> {
     use tokio::io::AsyncReadExt;
     let mut buf = Vec::new();
+    let mut cut = false;
     if let Some(mut pipe) = pipe {
-        pipe.read_to_end(&mut buf).await?;
+        let mut chunk = vec![0u8; 64 << 10];
+        loop {
+            let n = pipe.read(&mut chunk).await?;
+            if n == 0 {
+                break;
+            }
+            let room = cap.saturating_sub(buf.len()).min(n);
+            buf.extend_from_slice(&chunk[..room]);
+            cut |= room < n;
+        }
     }
-    Ok(buf)
+    Ok((buf, cut))
 }
 
 /// Kills the formatter's process group when dropped before [`Group::disarm`]:
@@ -128,6 +173,36 @@ mod tests {
 
     async fn run_sh(script: &str, input: &str) -> Result<String, Failure> {
         run(&sh(script), &std::env::temp_dir(), input.into(), Duration::from_secs(5)).await
+    }
+
+    async fn pipe_sh(script: &str, input: &str) -> Result<String, Failure> {
+        pipe(script, &std::env::temp_dir(), input.into(), Duration::from_secs(5)).await
+    }
+
+    #[tokio::test]
+    async fn pipe_runs_sh_and_allows_empty_output() {
+        assert_eq!(pipe_sh("sort", "c\nb\na\n").await.unwrap(), "a\nb\nc\n");
+        assert_eq!(pipe_sh("tr a-z A-Z", "ab").await.unwrap(), "AB");
+        assert_eq!(pipe_sh("cat >/dev/null", "x").await.unwrap(), "");
+        assert_eq!(pipe_sh("false", "x").await.unwrap_err().summary, "sh failed (exit status: 1)");
+        assert_eq!(pipe_sh("echo boom >&2; exit 3", "").await.unwrap_err().summary, "sh: boom");
+        assert!(run_sh("cat >/dev/null", "x").await.unwrap_err().summary.contains("printed nothing"));
+    }
+
+    #[tokio::test]
+    async fn pipe_caps_stdout_and_stderr() {
+        let f = pipe_sh("head -c 17000000 /dev/zero | tr '\\0' a", "").await.unwrap_err();
+        assert_eq!(f.summary, "sh printed more than 16 MiB");
+        let f = pipe_sh("head -c 100000 /dev/zero | tr '\\0' e >&2; exit 1", "").await.unwrap_err();
+        assert!(!f.stderr.is_empty() && f.stderr.len() <= PIPE_MAX_STDERR, "{}", f.stderr.len());
+    }
+
+    #[tokio::test]
+    async fn pipe_timeout_kills_the_command() {
+        let start = std::time::Instant::now();
+        let f = pipe("sleep 5", &std::env::temp_dir(), String::new(), Duration::from_millis(200)).await.unwrap_err();
+        assert!(f.summary.contains("did not finish within 200 ms"), "{}", f.summary);
+        assert!(start.elapsed() < Duration::from_secs(2));
     }
 
     #[test]

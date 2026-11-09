@@ -1199,6 +1199,11 @@ impl App {
                 self.open_switcher(back, false);
                 return;
             }
+            Action::Editor(EditorAction::PipeSelection) => {
+                drop(cx);
+                self.pipe_prompt();
+                return;
+            }
             Action::Editor(EditorAction::SurroundWith) => {
                 drop(cx);
                 self.surround_with();

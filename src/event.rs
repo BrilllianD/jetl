@@ -250,6 +250,15 @@ pub enum AppMsg {
         seq: u64,
         result: Result<String, crate::util::format::Failure>,
     },
+    /// A Pipe Through Command run for buffer `id` (`App::start_pipe`), tagged
+    /// with the workspace generation and the request's seq. On success: one
+    /// fitted output (LF line breaks) per range, in range order.
+    Piped {
+        generation: u64,
+        id: crate::editor::buffer::BufferId,
+        seq: u64,
+        result: Result<Vec<String>, crate::util::format::Failure>,
+    },
     /// Output lines of run `run` (`App::run_task`), tagged with the
     /// workspace generation.
     RunOutput {

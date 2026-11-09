@@ -3718,6 +3718,23 @@ async fn surround_with_dialog() {
 }
 
 #[tokio::test]
+async fn pipe_selection_dialog() {
+    let mut fx = stable_app("pipe-selection");
+    let app = &mut fx.app;
+    load(app, "notes.txt", "pear\napple\nfig\n");
+    app.focus.set(PanelId::Editor);
+    let b = app.editor.active_buffer_mut().unwrap();
+    let end = b.rope.line_to_char(2);
+    b.view.set_sel(Selection::new(0, end));
+    app.format.pipe_history = vec!["sort".into(), "tr a-z A-Z".into()];
+    app.perform(Action::Editor(EditorAction::PipeSelection));
+    let term = draw_app(app, 80, 24);
+    let area = app.dialog.as_ref().unwrap().rect();
+    let marks = [Mark::bg('S', "selection", app.theme.selection_bg)];
+    assert_snapshot!("pipe_selection_dialog", snapshot(&term, &marks, Some(area)));
+}
+
+#[tokio::test]
 async fn main_menu_bar() {
     let mut fx = stable_app("main-menu");
     let app = &mut fx.app;

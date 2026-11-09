@@ -93,6 +93,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("To Lower Case", "editor.to_lower_case"),
             Item("Sort Lines", "editor.sort_lines"),
             Item("Reverse Lines", "editor.reverse_lines"),
+            Item("Pipe Through Command…", "editor.pipe_selection"),
             Sep,
             Item("Comment with Line Comment", "editor.toggle_comment"),
             Item("Comment with Block Comment", "editor.toggle_block_comment"),

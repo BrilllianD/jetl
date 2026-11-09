@@ -229,6 +229,7 @@ impl App {
             (DialogId::LspRename(t), DialogResult::TextChecked(name, in_text)) => self.lsp_rename_checked(t, name, in_text),
             (DialogId::TextRename(t), DialogResult::Text(name)) => self.text_rename_to(t, name),
             (DialogId::LspCodeAction(t), DialogResult::Choice(i)) => self.lsp_code_action_chosen(t, i),
+            (DialogId::PipeSelection(id), DialogResult::Text(t)) => self.pipe_answer(id, t),
             (DialogId::SurroundWith { buffer, version, prefixes }, DialogResult::Choice(i)) => {
                 self.surround_chosen(buffer, version, prefixes.get(i).cloned())
             }

@@ -1550,6 +1550,7 @@ impl Editor {
             | E::PrevTabstop
             | E::ExpandSnippet
             | E::SurroundWith
+            | E::PipeSelection
             | E::CompareWithClipboard
             | E::CompareWithFile
             | E::MarkdownPreview => {}

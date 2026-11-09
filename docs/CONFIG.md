@@ -367,6 +367,10 @@ project root, without a terminal, and is killed with everything it started
 after `timeout_ms`. Ctrl+Alt+L (`editor.format`, Reformat Code) formats the
 current file without saving, whether or not `on_save` is set.
 
+`timeout_ms` also bounds Edit > Pipe Through Command… (`editor.pipe_selection`):
+the whole run, every selection one after another, is killed after it. A pipe
+needs no `[format]` command: it runs `sh -c <command>` in the project root.
+
 A `[format]` command for the file's language always wins. Without one, the
 file's language server formats it when it can (`textDocument/formatting`,
 with the file's indentation: its width as the tab size, spaces or tabs), for
