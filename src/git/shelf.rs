@@ -461,9 +461,16 @@ pub async fn shelve(root: PathBuf, dir: PathBuf, name: String, what: ShelveWhat,
         return (false, "Nothing to shelve: no changes against HEAD in the selected files".into());
     }
     let files = patch_files(&patch);
-    // The patch must undo cleanly from the work tree, or the revert below would
-    // drop what it does not hold (a textconv driver, say). Nothing is stored or reverted otherwise.
-    match run(&top, &cli::apply_check_reverse_args(), Some(patch.clone())).await {
+    // What the revert below takes out must undo cleanly from the work tree: for
+    // whole files the stored patch itself (else the discard would drop what it
+    // does not hold, a textconv driver's text, say); for a part, the revert
+    // patch (the stored one keeps unselected old lines, so it is not the work
+    // tree's). Nothing is stored or reverted otherwise.
+    let undo = match &what {
+        ShelveWhat::Files(_) => patch.clone(),
+        ShelveWhat::Part { revert, .. } => revert.clone().into_bytes(),
+    };
+    match run(&top, &cli::apply_check_reverse_args(), Some(undo)).await {
         Ok(o) if o.ok => {}
         Ok(o) => return (false, format!("Cannot shelve: the patch does not match the work tree, nothing changed: {}", o.combined())),
         Err(e) => return (false, format!("Cannot shelve: {e}")),
@@ -830,7 +837,8 @@ mod tests {
         let (t, repo) = textconv_repo("textconv");
         let dir = t.0.join("shelf");
         let tracked = b"alpha\nBETA changed\n\x01\xff tail\n".to_vec();
-        let untracked = b"gamma\ndelta\n".to_vec();
+        // A NUL makes git treat the untracked file as binary: a `GIT binary patch` hunk.
+        let untracked = b"gamma\0delta\n".to_vec();
         std::fs::write(repo.join("t.bin"), &tracked).unwrap();
         std::fs::write(repo.join("new.bin"), &untracked).unwrap();
         let what = ShelveWhat::Files(vec![file("t.bin", false), file("new.bin", true)]);
@@ -838,10 +846,31 @@ mod tests {
         assert!(ok, "{msg}");
         assert_eq!(std::fs::read(repo.join("t.bin")).unwrap(), b"alpha\nbeta\n");
         assert!(!repo.join("new.bin").exists());
+        let stored = String::from_utf8_lossy(&std::fs::read(dir.join("1.patch")).unwrap()).into_owned();
+        assert!(stored.contains("GIT binary patch"), "{stored}");
         let (ok, msg) = unshelve(repo.clone(), dir, 1, "tc".into(), None).await;
         assert!(ok, "{msg}");
         assert_eq!(std::fs::read(repo.join("t.bin")).unwrap(), tracked);
         assert_eq!(std::fs::read(repo.join("new.bin")).unwrap(), untracked);
+    }
+
+    #[tokio::test]
+    async fn a_line_selection_shelves_its_lines_only() {
+        let (t, repo) = textconv_repo("part-lines");
+        let dir = t.0.join("shelf");
+        std::fs::write(repo.join("p.txt"), b"a\n").unwrap();
+        git_in(&repo, &["add", "p.txt"]);
+        git_in(&repo, &["commit", "-qm", "p"]);
+        std::fs::write(repo.join("p.txt"), b"b\n").unwrap();
+        // Only `+b` selected: the stored patch keeps the unselected `a` as context,
+        // so it does not reverse-apply to the work tree; the revert does.
+        let stored = "diff --git a/p.txt b/p.txt\n--- a/p.txt\n+++ b/p.txt\n@@ -1 +1,2 @@\n a\n+b\n".to_string();
+        let revert = "diff --git a/p.txt b/p.txt\n--- a/p.txt\n+++ b/p.txt\n@@ -0,0 +1 @@\n+b\n".to_string();
+        let what = ShelveWhat::Part { rel: "p.txt".into(), stored, revert };
+        let (ok, msg) = shelve(repo.clone(), dir.clone(), "part".into(), what, 1).await;
+        assert!(ok, "{msg}");
+        assert_eq!(std::fs::read(repo.join("p.txt")).unwrap(), b"");
+        assert_eq!(patch_numbers(&dir).len(), 1);
     }
 
     #[tokio::test]
