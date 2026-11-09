@@ -687,6 +687,7 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `tool_window.move_right_bottom` | Move the active tool window to Right Bottom |
 | `app.toggle_toolbar` | Show or hide the toolbar |
 | `coverage.toggle` | Coverage: show or hide line coverage from the [coverage] lcov file |
+| `palette.classes` | Go to class (Search Everywhere on the Classes tab) |
 | `palette.goto_line` | Go to line |
 | `editor.scratch_files` | Scratch files |
 | `editor.put_label` | Local history: put label… |

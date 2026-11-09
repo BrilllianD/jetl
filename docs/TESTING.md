@@ -61,7 +61,7 @@ window's Commit tab (also at 80 columns, its diff header cut before the
 toggles), its Log (also with two commits selected, and the Log's commit context menu), Stash and Console tabs, the Find and Problems windows
 (diagnostic underlines in the editor too), the lightbulb in the gutter, the main menu bar, confirm,
 input and choice dialogs, the hover and completion popups, toasts, the
-palettes (Scratch Files and Recent Projects included), the conflict resolver (filler rows included), the patch tab, the crash
+palettes (Scratch Files and Recent Projects included; Search Everywhere's All tab, grouped, with a header's `Enter: more`, and its Classes tab), the conflict resolver (filler rows included), the patch tab, the crash
 recovery dialogs, the Save As prompt and its path completion list, the Find results tab (with its find bar), and coverage colours on the line numbers.
 
 Things that depend on the clock are given as data: the Log tab's commits
@@ -3280,6 +3280,31 @@ Ctrl+N with an empty query lists the opened file first, so it shows which
 one Enter took. Each filter takes about 15-80 ms in release at this size;
 the keystrokes echo at once, and the previous rows stay on screen (with
 their count) until the new ones arrive.
+
+### Scenario: Search Everywhere tabs
+
+Private socket `/tmp/tm.sh` (`tmux -L jetl`) and XDG dirs under `/tmp/jt-s21`. The project is a copy of `src`, so that nothing in the repository is touched:
+
+```sh
+B=/tmp/jt-s21; rm -rf $B; mkdir -p $B/cfg/jetl $B/proj && cp -r src $B/proj/src && git -C $B/proj init -q
+printf '[lsp]\nenabled = false\n' > $B/cfg/jetl/config.toml
+cargo build --no-default-features --features lang-rust
+/tmp/tm.sh -f /dev/null new-session -d -s jetl -x 120 -y 40 \
+  "RUST_LOG=jetl=debug XDG_CONFIG_HOME=$B/cfg XDG_STATE_HOME=$B/state $PWD/target/debug/jetl $B/proj 2>/tmp/jetl-stderr.txt"
+sleep 4; s() { /tmp/tm.sh send-keys -t jetl "$@"; }; c() { /tmp/tm.sh capture-pane -t jetl -p; }
+```
+
+1. `s M-s; sleep 1; c`. The palette shows `Search Everywhere`, with the tab row `All` (highlighted) `Classes Files Symbols Actions Branches`. The placeholder reads `type to search everywhere`, and a `Files` header is followed by up to 5 files.
+2. `s -l 'palette'; sleep 1; c`. The groups appear in order: Classes (`Palette`, `PaletteKind`, ...), Files, Symbols (functions and methods only), Actions. A group with more matches than it shows has `Enter: more`. The first class row is selected, and the count equals the item rows.
+3. `s Up; s Enter; c`. The Up selects the Classes header, and Enter shows the Classes tab with `palette` still typed. Every row's kind is one of struct, enum, union, trait, interface, class or type. `s Tab; c` moves to Files, still with the query.
+4. `s BTab BTab; s Enter`. This goes back to All and Enter opens the top item at its line. `s M-Left` returns.
+5. `s Escape; s F1; s -l 'go to class'; s Enter; c`. The palette opens on Classes with an empty query and lists only type kinds. `s Escape`.
+6. Navigate > Class… opens the same palette.
+7. Mouse: a double click on a group header in All switches to its tab, and a single click only selects it.
+8. Repeat at `-x 80 -y 24`: the tab row still fits, and the list scrolls through the groups with Down and PageDown.
+9. Large tree (release build, as "Scenario: palette on a huge tree", 200000 files): `s M-s; s -l 'm24/file_345'`. The keystrokes echo at once, the Files group's top row is `file_345.rs  m24/sub/`, and `grep 'palette filter' $B/state/jetl/jetl.log` shows one `N of 200000` line per settled query, with the superseded ones `cancelled`. `s Tab` to Classes shows `Nothing found`.
+
+Finish with `/tmp/tm.sh kill-server; rm -rf $B`.
 
 ### Scenario: injections
 

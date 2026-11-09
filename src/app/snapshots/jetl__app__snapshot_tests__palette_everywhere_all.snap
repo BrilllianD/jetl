@@ -1,0 +1,32 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+80x24 cursor=(11,6)
+00  ≣ ┌ Project: root ───────────────┐│
+01    │                              ││
+02  ⌂ │                              ││
+03  ◫ │                              ││
+04  ⊢┌ Search Everywhere ───────────────────────────────────────────────────────┐
+05   │  All   Classes   Files   Symbols   Actions   Branches          Tab: next │
+06   │ › shape                                                               12 │
+07   │  Classes                                                                 │
+08   │ Shape  trait  src/shape.rs:1                                             │
+09   │ ShapeKind  enum  src/shape.rs:5                                          │
+10   │ ShapeError  type  src/shape.rs:11                                        │
+11   │  Files                                                       Enter: more │
+12  ◉│ shape.rs  src/                                                           │
+13  ⋔│ shapes.md  docs/                                                         │
+14  ✎│ tri.rs  src/shape/                                                       │
+15  ✓│ poly.rs  src/shape/                                                      │
+16  ⟲│ rect.rs  src/shape/                                                      │
+17  ⚑│  Symbols                                                                 │
+18  ⎇│ shape_area  function  src/shape.rs:21                                    │
+19  ❯│ draw_shape  function  src/shape.rs:31                                    │
+20  ⚠│  Actions                                                                 │
+21  ►│ Split down (the tab in a new group below)  editor.split_down       Alt+- │
+22  ⌕│ Split right (the tab in a new group beside)  editor.split_right    Alt+\ │
+23   └──────────────────────────────────────────────────────────────────────────┘
+-- marks: L=selected
+05     LLLLL
+08    LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

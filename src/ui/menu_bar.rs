@@ -196,6 +196,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
         'N',
         &[
             Item("Search Everywhere…", "palette.search_everywhere"),
+            Item("Class…", "palette.classes"),
             Item("File…", "palette.files"),
             Item("Symbol…", "palette.symbols"),
             Item("File Structure…", "lsp.file_structure"),

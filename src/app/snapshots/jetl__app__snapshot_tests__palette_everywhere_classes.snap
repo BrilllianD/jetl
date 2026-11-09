@@ -1,0 +1,32 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &marks, None)"
+---
+80x24 cursor=(6,6)
+00  ≣ ┌ Project: root ───────────────┐│
+01    │                              ││
+02  ⌂ │                              ││
+03  ◫ │                              ││
+04  ⊢┌ Search Everywhere ───────────────────────────────────────────────────────┐
+05   │  All   Classes   Files   Symbols   Actions   Branches          Tab: next │
+06   │ › type a class name                                                    4 │
+07   │ Shape  trait  src/shape.rs:1                                             │
+08   │ ShapeKind  enum  src/shape.rs:5                                          │
+09   │ ShapeError  type  src/shape.rs:11                                        │
+10   │ Square  struct  src/shape.rs:13                                          │
+11   │                                                                          │
+12  ◉│                                                                          │
+13  ⋔└──────────────────────────────────────────────────────────────────────────┘
+14  ✎ │                              ││
+15  ✓ │                              ││
+16  ⟲ │                              ││
+17  ⚑ │                              ││
+18  ⎇ │                              ││
+19  ❯ │                              ││
+20  ⚠ │                              ││
+21  ► │                              ││
+22  ⌕ └──────────────────────────────┘│
+23
+-- marks: L=selected
+05           LLLLLLLLL
+07    LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL

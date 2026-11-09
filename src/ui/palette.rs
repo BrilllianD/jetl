@@ -1,5 +1,5 @@
 //! Command palette overlay: Go to File, Go to Symbol, Find Action, Search
-//! Everywhere, Recent Files, Branches, Recent Projects, Run tasks, Scratch
+//! Everywhere (tabs All, Classes, Files, Symbols, Actions, Branches), Recent Files, Branches, Recent Projects, Run tasks, Scratch
 //! Files and a language server's locations
 //! (definitions, usages; grouped by file under headers when they span
 //! several, each usage's range marked). The app
@@ -89,6 +89,11 @@ struct Pending {
 enum FilterInput {
     Paths(Arc<Vec<String>>),
     Symbols(Arc<Vec<SymbolEntry>>),
+    /// The All tab's two large sources, ranked together ([`rank_all_large`]).
+    All {
+        files: Arc<Vec<String>>,
+        symbols: Arc<Vec<SymbolEntry>>,
+    },
 }
 
 /// What the selected row shows, to find it again among new rows.
@@ -100,6 +105,10 @@ enum RowKey {
 /// What a palette tab lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
+    /// Search Everywhere's first tab: the best rows of each source, grouped.
+    All,
+    /// The class-like symbols (`CLASS_KINDS`).
+    Classes,
     Files,
     Actions,
     Branches,
@@ -119,6 +128,8 @@ pub enum Source {
 impl Source {
     fn label(self) -> &'static str {
         match self {
+            Source::All => "All",
+            Source::Classes => "Classes",
             Source::Files => "Files",
             Source::Actions => "Actions",
             Source::Branches => "Branches",
@@ -132,6 +143,26 @@ impl Source {
             Source::Processes => "Processes",
         }
     }
+}
+
+/// Symbol kinds the Classes tab lists (and the All tab groups under Classes).
+pub(crate) const CLASS_KINDS: [&str; 7] = ["class", "struct", "enum", "union", "interface", "trait", "type"];
+
+pub(crate) fn is_class_kind(kind: &str) -> bool {
+    CLASS_KINDS.contains(&kind)
+}
+
+/// How many rows of each source the All tab shows.
+pub(crate) const ALL_PER_GROUP: usize = 5;
+
+/// An All tab row: a group header or an item of a source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AllRow {
+    /// `more`: the group has more matches than it shows.
+    Header { source: Source, more: bool },
+    /// For Branches `index` follows the Branches tab's convention (`branches[index - 1]`, never 0).
+    /// For Files it indexes `shown.files`, for Classes and Symbols `shown.symbols`, for Actions `actions`.
+    Item { source: Source, index: usize },
 }
 
 /// An Attach to Process row. The texts are made by the app; `/proc` text has been through `one_line` or `var_text`.
@@ -244,6 +275,12 @@ pub struct Palette {
     /// Candidate indices of the current source in display order. For
     /// branches, 0 is "New Branch" and `i` is `branches[i - 1]`.
     rows: Vec<usize>,
+    /// Indices into `symbols` of the class-kind ones, ascending (rebuilt by `set_symbols`).
+    class_rows: Vec<usize>,
+    /// The All tab's rows (headers and items); `rows` is `0..all_rows.len()` there.
+    all_rows: Vec<AllRow>,
+    /// The encoded large-source result `all_rows` was built from, relative to `shown`.
+    all_large: Vec<usize>,
     root: PathBuf,
     files: Arc<Vec<String>>,
     files_loading: bool,
@@ -302,7 +339,9 @@ impl Palette {
         let tabs = match kind {
             PaletteKind::Files => vec![Source::Files],
             PaletteKind::Actions => vec![Source::Actions],
-            PaletteKind::Everywhere => vec![Source::Files, Source::Symbols, Source::Actions, Source::Branches],
+            PaletteKind::Everywhere | PaletteKind::Classes => {
+                vec![Source::All, Source::Classes, Source::Files, Source::Symbols, Source::Actions, Source::Branches]
+            }
             PaletteKind::RecentFiles => vec![Source::Recent],
             PaletteKind::RecentProjects => vec![Source::Projects],
             PaletteKind::Symbols => vec![Source::Symbols],
@@ -315,15 +354,25 @@ impl Palette {
             // Go to Line stays a dialog and never opens a palette.
             PaletteKind::Branches | PaletteKind::GotoLine => vec![Source::Branches],
         };
-        let first = tabs[0];
+        // The app feeds sources through `wants`: All and Classes read what the other tabs are fed.
+        debug_assert!(
+            !tabs.contains(&Source::All)
+                || [Source::Files, Source::Symbols, Source::Actions, Source::Branches].iter().all(|s| tabs.contains(s))
+        );
+        debug_assert!(!tabs.contains(&Source::Classes) || tabs.contains(&Source::Symbols));
+        let tab = usize::from(kind == PaletteKind::Classes);
+        let first = tabs[tab];
         Self {
             kind,
             file_icons: FileIcons::None,
             tabs,
-            tab: 0,
+            tab,
             input: TextInput::new(false),
             list: ListState::default(),
             rows: Vec::new(),
+            class_rows: Vec::new(),
+            all_rows: Vec::new(),
+            all_large: Vec::new(),
             root,
             files: Arc::new(Vec::new()),
             files_loading: false,
@@ -401,14 +450,14 @@ impl Palette {
     pub fn set_files(&mut self, files: Arc<Vec<String>>, loading: bool) {
         self.files = files;
         self.files_loading = loading;
-        if self.source() == Source::Files {
+        if matches!(self.source(), Source::Files | Source::All) {
             self.refilter(false);
         }
     }
 
     pub fn set_recent(&mut self, recent: Vec<PathBuf>) {
         self.recent = recent;
-        if matches!(self.source(), Source::Recent | Source::Files) {
+        if matches!(self.source(), Source::Recent | Source::Files | Source::All) {
             self.refilter(false);
         }
         // Recent Files opens on the previous file, like the tab switcher.
@@ -419,22 +468,27 @@ impl Palette {
 
     pub fn set_actions(&mut self, actions: Vec<ActionEntry>) {
         self.actions = actions;
-        if self.source() == Source::Actions {
-            self.refilter(false);
+        match self.source() {
+            Source::Actions => self.refilter(false),
+            Source::All => self.refresh_all_small(),
+            _ => {}
         }
     }
 
     pub fn set_branches(&mut self, branches: Vec<BranchInfo>) {
         self.branches = branches;
-        if self.source() == Source::Branches {
-            self.refilter(false);
+        match self.source() {
+            Source::Branches => self.refilter(false),
+            Source::All => self.refresh_all_small(),
+            _ => {}
         }
     }
 
     pub fn set_symbols(&mut self, symbols: Arc<Vec<SymbolEntry>>, loading: bool) {
+        self.class_rows = symbols.iter().enumerate().filter(|(_, e)| is_class_kind(e.symbol.kind)).map(|(i, _)| i).collect();
         self.symbols = symbols;
         self.symbols_loading = loading;
-        if self.source() == Source::Symbols {
+        if matches!(self.source(), Source::Symbols | Source::Classes | Source::All) {
             self.refilter(false);
         }
     }
@@ -564,7 +618,7 @@ impl Palette {
             reset |= p.reset;
             moved = !reset && p.moved;
         }
-        let subset = if q.is_empty() { None } else { self.narrow_rows(&q) };
+        let subset = self.subset_for(&q);
         let input = if background { self.background_input(&q, subset.as_ref().map(Vec::len)) } else { None };
         if let Some(input) = input {
             let Some(bus) = &self.bus else { return };
@@ -577,6 +631,7 @@ impl Palette {
                 let n = match &input {
                     FilterInput::Paths(p) => p.len(),
                     FilterInput::Symbols(s) => s.len(),
+                    FilterInput::All { files, symbols } => files.len() + symbols.len(),
                 };
                 match rank_large(&query, &input, subset.as_deref(), &mut m, &cancelled) {
                     None => tracing::debug!("palette filter {seq} cancelled"),
@@ -604,11 +659,18 @@ impl Palette {
         self.shown = Shown { files: self.files.clone(), symbols: self.symbols.clone(), query: q, source: self.source() };
         self.list.set_len(self.rows.len());
         if reset {
-            // Under a file header, start on its first item.
-            let skip_header =
-                self.source() == Source::Locations && matches!(self.loc_rows.first(), Some(LocRow::File { .. })) && self.rows.len() > 1;
-            self.list.select(usize::from(skip_header));
+            // Under a header, start on its first item.
+            self.list.select(self.first_row());
             self.list.offset = 0;
+        } else {
+            self.leave_header();
+        }
+    }
+
+    /// A kept selection that sits on an All group header (a feed refilters without moving it) moves to the item below.
+    fn leave_header(&mut self) {
+        if self.source() == Source::All && self.header_tab(self.list.selected).is_some() && self.list.selected + 1 < self.rows.len() {
+            self.list.select(self.list.selected + 1);
         }
     }
 
@@ -636,6 +698,25 @@ impl Palette {
         self.loc_rows = out;
     }
 
+    /// The row to select on a new query: 1 under a leading group header (Locations file, All group), else 0.
+    fn first_row(&self) -> usize {
+        let header = match self.source() {
+            Source::Locations => matches!(self.loc_rows.first(), Some(LocRow::File { .. })),
+            Source::All => self.rows.first().is_some_and(|&i| matches!(self.all_rows.get(i), Some(AllRow::Header { .. }))),
+            _ => false,
+        };
+        usize::from(header && self.rows.len() > 1)
+    }
+
+    /// The candidates to rank for `q` instead of every one: the shown rows when `q` narrows them, on Classes the
+    /// class-kind symbols. None for an empty query.
+    fn subset_for(&self, q: &str) -> Option<Vec<usize>> {
+        if q.is_empty() {
+            return None;
+        }
+        self.narrow_rows(q).or_else(|| (self.source() == Source::Classes).then(|| self.class_rows.clone()))
+    }
+
     /// The candidates to rank off the main thread for `q`, if it should be.
     /// `narrowed` is the number of rows to rank when narrowing a shown filter.
     fn background_input(&self, q: &str, narrowed: Option<usize>) -> Option<FilterInput> {
@@ -646,6 +727,12 @@ impl Palette {
             Source::Files if narrowed.unwrap_or(self.files.len()) >= self.background_min => Some(FilterInput::Paths(self.files.clone())),
             Source::Symbols if narrowed.unwrap_or(self.symbols.len()) >= self.background_min => {
                 Some(FilterInput::Symbols(self.symbols.clone()))
+            }
+            Source::Classes if narrowed.unwrap_or(self.class_rows.len()) >= self.background_min => {
+                Some(FilterInput::Symbols(self.symbols.clone()))
+            }
+            Source::All if self.files.len() + self.symbols.len() >= self.background_min => {
+                Some(FilterInput::All { files: self.files.clone(), symbols: self.symbols.clone() })
             }
             _ => None,
         }
@@ -658,7 +745,7 @@ impl Palette {
     fn narrow_rows(&self, q: &str) -> Option<Vec<usize>> {
         let same = match self.source() {
             Source::Files => Arc::ptr_eq(&self.shown.files, &self.files),
-            Source::Symbols => Arc::ptr_eq(&self.shown.symbols, &self.symbols),
+            Source::Symbols | Source::Classes => Arc::ptr_eq(&self.shown.symbols, &self.symbols),
             _ => return None,
         };
         (same && self.shown.source == self.source() && narrowable(&self.shown.query, q)).then(|| self.rows.clone())
@@ -667,21 +754,28 @@ impl Palette {
     /// The current source ranked against `q` on this thread.
     fn rank_now(&mut self, q: &str, subset: Option<Vec<usize>>) -> Vec<usize> {
         match self.source() {
+            Source::All => {
+                let (files, symbols) = (self.files.clone(), self.symbols.clone());
+                let large = if q.trim().is_empty() {
+                    let mut rows = self.files_unranked();
+                    rows.truncate(ALL_PER_GROUP + 1);
+                    rows
+                } else {
+                    rank_all_large(q, &files, &symbols, &mut self.matcher, &|| false).unwrap_or_default()
+                };
+                self.build_all_rows(q, large, &files, &symbols)
+            }
+            Source::Classes => {
+                if q.is_empty() {
+                    self.class_rows.clone()
+                } else {
+                    let input = FilterInput::Symbols(self.symbols.clone());
+                    rank_large(q, &input, subset.as_deref(), &mut self.matcher, &|| false).unwrap_or_default()
+                }
+            }
             Source::Files => {
                 if q.is_empty() {
-                    // Open files first (most recent first), then the rest.
-                    let mut rows: Vec<usize> = Vec::new();
-                    for p in &self.recent {
-                        if let Ok(rel) = p.strip_prefix(&self.root) {
-                            let rel = rel.to_string_lossy();
-                            if let Ok(i) = self.files.binary_search_by(|f| f.as_str().cmp(&rel)) {
-                                rows.push(i);
-                            }
-                        }
-                    }
-                    let first: std::collections::HashSet<usize> = rows.iter().copied().collect();
-                    rows.extend((0..self.files.len()).filter(|i| !first.contains(i)));
-                    rows
+                    self.files_unranked()
                 } else {
                     let input = FilterInput::Paths(self.files.clone());
                     rank_large(q, &input, subset.as_deref(), &mut self.matcher, &|| false).unwrap_or_default()
@@ -720,14 +814,7 @@ impl Palette {
                     rank_texts(q, texts, &mut self.matcher)
                 }
             }
-            Source::Actions => {
-                if q.is_empty() {
-                    (0..self.actions.len()).collect()
-                } else {
-                    let texts = self.actions.iter().map(|a| [a.desc.as_ref(), a.id.as_ref()]);
-                    rank_texts(q, texts, &mut self.matcher)
-                }
-            }
+            Source::Actions => self.rank_actions(q),
             Source::Symbols => {
                 if q.is_empty() {
                     (0..self.symbols.len()).collect()
@@ -756,12 +843,86 @@ impl Palette {
                 self.group_locations(matched);
                 (0..self.loc_rows.len()).collect()
             }
-            Source::Branches => {
-                let mut texts: Vec<[&str; 1]> = vec![["New Branch"]];
-                texts.extend(self.branches.iter().map(|b| [b.name.as_str()]));
-                if q.is_empty() { (0..texts.len()).collect() } else { rank_texts(q, texts.into_iter(), &mut self.matcher) }
+            Source::Branches => self.rank_branch_rows(q),
+        }
+    }
+
+    /// Every file, open files first (most recent first), then the rest.
+    fn files_unranked(&self) -> Vec<usize> {
+        let mut rows: Vec<usize> = Vec::new();
+        for p in &self.recent {
+            if let Ok(rel) = p.strip_prefix(&self.root) {
+                let rel = rel.to_string_lossy();
+                if let Ok(i) = self.files.binary_search_by(|f| f.as_str().cmp(&rel)) {
+                    rows.push(i);
+                }
             }
         }
+        let first: std::collections::HashSet<usize> = rows.iter().copied().collect();
+        rows.extend((0..self.files.len()).filter(|i| !first.contains(i)));
+        rows
+    }
+
+    /// The actions matching `q` (all when empty), best first; indices into `actions`.
+    fn rank_actions(&mut self, q: &str) -> Vec<usize> {
+        if q.is_empty() {
+            (0..self.actions.len()).collect()
+        } else {
+            let texts = self.actions.iter().map(|a| [a.desc.as_ref(), a.id.as_ref()]);
+            rank_texts(q, texts, &mut self.matcher)
+        }
+    }
+
+    /// The branch rows matching `q` (all when empty), best first; 0 is New Branch, `i` is `branches[i - 1]`.
+    fn rank_branch_rows(&mut self, q: &str) -> Vec<usize> {
+        let mut texts: Vec<[&str; 1]> = vec![["New Branch"]];
+        texts.extend(self.branches.iter().map(|b| [b.name.as_str()]));
+        if q.is_empty() { (0..texts.len()).collect() } else { rank_texts(q, texts.into_iter(), &mut self.matcher) }
+    }
+
+    /// Build the All tab's rows from the encoded large-source result `large` (file `i < files.len()`, else symbol
+    /// `i - files.len()`, relative to `files` and `symbols`) and the actions and branches ranked here. Returns the
+    /// `rows` for them.
+    fn build_all_rows(&mut self, q: &str, large: Vec<usize>, files: &Arc<Vec<String>>, symbols: &Arc<Vec<SymbolEntry>>) -> Vec<usize> {
+        let (mut file_items, mut class_items, mut symbol_items) = (Vec::new(), Vec::new(), Vec::new());
+        for &i in &large {
+            if i < files.len() {
+                file_items.push(i);
+            } else if let Some(e) = symbols.get(i - files.len()) {
+                if is_class_kind(e.symbol.kind) { &mut class_items } else { &mut symbol_items }.push(i - files.len());
+            }
+        }
+        let (action_items, branch_items) = if q.trim().is_empty() {
+            (Vec::new(), Vec::new())
+        } else {
+            (self.rank_actions(q), self.rank_branch_rows(q).into_iter().filter(|&i| i != 0).collect())
+        };
+        let mut out = Vec::new();
+        let groups: [(Source, Vec<usize>); 5] = [
+            (Source::Classes, class_items),
+            (Source::Files, file_items),
+            (Source::Symbols, symbol_items),
+            (Source::Actions, action_items),
+            (Source::Branches, branch_items),
+        ];
+        for (source, items) in groups {
+            if items.is_empty() {
+                continue;
+            }
+            out.push(AllRow::Header { source, more: items.len() > ALL_PER_GROUP });
+            out.extend(items.into_iter().take(ALL_PER_GROUP).map(|index| AllRow::Item { source, index }));
+        }
+        self.all_large = large;
+        self.all_rows = out;
+        (0..self.all_rows.len()).collect()
+    }
+
+    /// A new action or branch list on the All tab: rebuild those groups against the shown query, keep the large ones.
+    fn refresh_all_small(&mut self) {
+        let large = std::mem::take(&mut self.all_large);
+        let (q, files, symbols) = (self.shown.query.clone(), self.shown.files.clone(), self.shown.symbols.clone());
+        self.rows = self.build_all_rows(&q, large, &files, &symbols);
+        self.list.set_len(self.rows.len());
     }
 
     /// Show the rows of off-thread filter `seq` if it is still the latest of
@@ -781,7 +942,7 @@ impl Palette {
     fn finish_now(&mut self) {
         let Some(p) = self.pending.take() else { return };
         self.filter_seq.fetch_add(1, Ordering::Relaxed);
-        let subset = if p.query.is_empty() { None } else { self.narrow_rows(&p.query) };
+        let subset = self.subset_for(&p.query);
         let rows = self.rank_now(&p.query, subset);
         self.show_rows(p, rows);
     }
@@ -791,34 +952,56 @@ impl Palette {
     /// picked it meanwhile; a new query selects the top row.
     fn show_rows(&mut self, p: Pending, rows: Vec<usize>) {
         let key = if p.moved || !p.reset { self.selected_key() } else { None };
+        let all = (p.source == Source::All).then(|| (p.files.clone(), p.symbols.clone()));
         self.rows = rows;
         self.shown = Shown { files: p.files, symbols: p.symbols, query: p.query, source: p.source };
+        if let Some((files, symbols)) = all {
+            let (q, large) = (self.shown.query.clone(), std::mem::take(&mut self.rows));
+            self.rows = self.build_all_rows(&q, large, &files, &symbols);
+        }
         self.list.set_len(self.rows.len());
         match key.and_then(|k| self.rows.iter().position(|&i| self.row_is(i, &k))) {
             Some(row) => self.list.select(row),
             None if p.reset => {
-                self.list.select(0);
+                self.list.select(self.first_row());
                 self.list.offset = 0;
             }
-            None => {}
+            None => self.leave_header(),
         }
     }
 
     /// What the selected row shows (files and symbols only).
     fn selected_key(&self) -> Option<RowKey> {
         let i = *self.rows.get(self.list.selected)?;
+        let file = |i: usize| Some(RowKey::File(self.shown.files.get(i)?.clone()));
+        let symbol = |i: usize| {
+            let e = self.shown.symbols.get(i)?;
+            Some(RowKey::Symbol(e.path.clone(), e.symbol.line, e.symbol.col, e.symbol.name.clone()))
+        };
         match self.source() {
-            Source::Files => Some(RowKey::File(self.shown.files.get(i)?.clone())),
-            Source::Symbols => {
-                let e = self.shown.symbols.get(i)?;
-                Some(RowKey::Symbol(e.path.clone(), e.symbol.line, e.symbol.col, e.symbol.name.clone()))
-            }
+            Source::Files => file(i),
+            Source::Symbols | Source::Classes => symbol(i),
+            Source::All => match *self.all_rows.get(i)? {
+                AllRow::Item { source: Source::Files, index } => file(index),
+                AllRow::Item { source: Source::Classes | Source::Symbols, index } => symbol(index),
+                _ => None,
+            },
             _ => None,
         }
     }
 
     /// Whether candidate `i` of the shown ones is what `key` names.
     fn row_is(&self, i: usize, key: &RowKey) -> bool {
+        let i = if self.shown.source == Source::All {
+            // A header, an action or a branch never matches.
+            match (self.all_rows.get(i), key) {
+                (Some(AllRow::Item { source: Source::Files, index }), RowKey::File(_)) => *index,
+                (Some(AllRow::Item { source: Source::Classes | Source::Symbols, index }), RowKey::Symbol(..)) => *index,
+                _ => return false,
+            }
+        } else {
+            i
+        };
         match key {
             RowKey::File(f) => self.shown.files.get(i).is_some_and(|x| x == f),
             RowKey::Symbol(path, line, col, name) => self
@@ -845,13 +1028,37 @@ impl Palette {
         }
     }
 
-    fn accept(&self, row: usize) -> Option<PaletteResult> {
+    /// The source and candidate index a candidate row stands for: an All item is its own source's, a header none.
+    fn resolve(&self, i: usize) -> Option<(Source, usize)> {
+        if self.source() != Source::All {
+            return Some((self.source(), i));
+        }
+        match *self.all_rows.get(i)? {
+            AllRow::Item { source, index } => Some((source, index)),
+            AllRow::Header { .. } => None,
+        }
+    }
+
+    /// The tab a group header at `row` stands for (All only).
+    fn header_tab(&self, row: usize) -> Option<usize> {
+        if self.source() != Source::All {
+            return None;
+        }
         let i = *self.rows.get(row)?;
-        let a = match self.source() {
+        match self.all_rows.get(i)? {
+            AllRow::Header { source, .. } => self.tabs.iter().position(|s| s == source),
+            AllRow::Item { .. } => None,
+        }
+    }
+
+    fn accept(&self, row: usize) -> Option<PaletteResult> {
+        let (source, i) = self.resolve(*self.rows.get(row)?)?;
+        let a = match source {
+            Source::All => return None,
             Source::Files => Accept::OpenFile(self.root.join(self.shown.files.get(i)?)),
             Source::Recent => Accept::OpenFile(self.recent.get(i)?.clone()),
             Source::Projects => Accept::SwitchRoot(self.projects.get(i)?.clone()),
-            Source::Symbols => {
+            Source::Symbols | Source::Classes => {
                 let e = self.shown.symbols.get(i)?;
                 let path = self.root.join(&*e.path);
                 if e.utf16 {
@@ -901,6 +1108,12 @@ impl Palette {
             // A row picked among the shown ones is taken as it is; otherwise
             // the best match of the query typed so far, ranked now.
             PaletteAction::Accept => {
+                // Enter on a group header of All shows that tab, keeping the query.
+                let settled = self.pending.as_ref().is_none_or(|p| p.moved);
+                if settled && let Some(t) = self.header_tab(self.list.selected) {
+                    self.switch_tab(t);
+                    return None;
+                }
                 if self.pending.as_ref().is_some_and(|p| p.moved)
                     && let Some(r) = self.accept(self.list.selected)
                 {
@@ -909,6 +1122,10 @@ impl Palette {
                     return Some(r);
                 }
                 self.finish_now();
+                if let Some(t) = self.header_tab(self.list.selected) {
+                    self.switch_tab(t);
+                    return None;
+                }
                 return self.accept(self.list.selected);
             }
             PaletteAction::Cancel => return Some(PaletteResult::Cancel),
@@ -1021,6 +1238,10 @@ impl Palette {
                     self.moved();
                     self.list.select(row);
                     if m.clicks >= 2 {
+                        if let Some(t) = self.header_tab(row) {
+                            self.switch_tab(t);
+                            return None;
+                        }
                         return self.accept(row);
                     }
                     return None;
@@ -1047,7 +1268,7 @@ impl Palette {
             PaletteKind::Locations => &self.locations_title,
             PaletteKind::Files => "Go to File",
             PaletteKind::Actions => "Find Action",
-            PaletteKind::Everywhere => "Search Everywhere",
+            PaletteKind::Everywhere | PaletteKind::Classes => "Search Everywhere",
             PaletteKind::RecentFiles => "Recent Files",
             PaletteKind::RecentProjects => "Recent Projects",
             PaletteKind::Symbols => "Go to Symbol",
@@ -1110,17 +1331,30 @@ impl Palette {
         // A new index or batch still being ranked counts as loading.
         let pending = self.pending.as_ref();
         let loading = match self.source() {
+            Source::All => {
+                self.files_loading
+                    || self.symbols_loading
+                    || pending.is_some_and(|p| !Arc::ptr_eq(&p.files, &self.shown.files) || !Arc::ptr_eq(&p.symbols, &self.shown.symbols))
+            }
             Source::Files => self.files_loading || pending.is_some_and(|p| !Arc::ptr_eq(&p.files, &self.shown.files)),
-            Source::Symbols => self.symbols_loading || pending.is_some_and(|p| !Arc::ptr_eq(&p.symbols, &self.shown.symbols)),
+            Source::Symbols | Source::Classes => {
+                self.symbols_loading || pending.is_some_and(|p| !Arc::ptr_eq(&p.symbols, &self.shown.symbols))
+            }
             Source::Tasks => self.tasks_loading,
             _ => false,
         };
+        // Rows that are results: group and file headers are not counted.
+        let n = match self.source() {
+            Source::All => self.rows.iter().filter(|&&i| matches!(self.all_rows.get(i), Some(AllRow::Item { .. }))).count(),
+            Source::Locations => self.loc_rows.iter().filter(|r| matches!(r, LocRow::Item(_))).count(),
+            _ => self.rows.len(),
+        };
         let count = match self.source() {
             Source::Files if loading && self.files.is_empty() => "indexing…".to_string(),
-            Source::Symbols if loading && self.symbols.is_empty() => "indexing…".to_string(),
-            _ if loading => format!("{} (indexing…)", self.rows.len()),
-            Source::Locations => format!("{}", self.loc_rows.iter().filter(|r| matches!(r, LocRow::Item(_))).count()),
-            _ => format!("{}", self.rows.len()),
+            Source::Symbols | Source::Classes if loading && self.symbols.is_empty() => "indexing…".to_string(),
+            Source::All if loading && self.files.is_empty() && self.symbols.is_empty() => "indexing…".to_string(),
+            _ if loading => format!("{n} (indexing…)"),
+            _ => n.to_string(),
         };
         let cw = count.width() as u16;
         frame.buffer_mut().set_stringn(inner.x + 1, y, "›", 1, theme.status_accent.bg(theme.popup_bg));
@@ -1131,6 +1365,8 @@ impl Palette {
             Source::Branches => "type a branch name",
             Source::Projects => "type a project name · Shift+Del forgets",
             Source::Symbols => "type a symbol name",
+            Source::All => "type to search everywhere",
+            Source::Classes => "type a class name",
             Source::Tasks => "type a task name",
             Source::Locations => "type to filter",
             Source::Scratches => "type a scratch name · Shift+Del deletes",
@@ -1148,7 +1384,8 @@ impl Palette {
         if self.rows.is_empty() {
             let msg = match self.source() {
                 Source::Files if loading => "Indexing files…",
-                Source::Symbols if loading => "Indexing symbols…",
+                Source::All if loading => "Indexing…",
+                Source::Symbols | Source::Classes if loading => "Indexing symbols…",
                 Source::Tasks if loading => "Loading tasks…",
                 Source::Tasks if self.input.text.trim().is_empty() => {
                     "No run configurations: Run > Edit Configurations… or [[run.configs]] in config.toml"
@@ -1173,11 +1410,23 @@ impl Palette {
             let dim = if selected { base } else { theme.dim.bg(theme.popup_bg) };
             let hl = base.fg(theme.status_accent.fg.unwrap_or(theme.fg)).add_modifier(Modifier::BOLD);
             let hl = if selected { base.add_modifier(Modifier::BOLD | Modifier::UNDERLINED) } else { hl };
-            let i = self.rows[vi];
             let width = lrect.width.saturating_sub(2) as usize;
-            let spans: Vec<(String, Style)> = match self.source() {
+            if let Some(AllRow::Header { source, more }) =
+                (self.source() == Source::All).then(|| self.all_rows.get(self.rows[vi]).copied()).flatten()
+            {
+                let label = format!(" {}", source.label());
+                frame.buffer_mut().set_stringn(lrect.x + 1, ry, &label, width, base.add_modifier(Modifier::BOLD));
+                let hint = "Enter: more";
+                if more && label.width() + hint.width() < width {
+                    frame.buffer_mut().set_stringn(lrect.x + 1 + (width - hint.width()) as u16, ry, hint, hint.len(), dim);
+                }
+                continue;
+            }
+            let Some((src, i)) = self.resolve(self.rows[vi]) else { continue };
+            let spans: Vec<(String, Style)> = match src {
+                Source::All => vec![],
                 Source::Files | Source::Recent | Source::Projects => {
-                    let path = match self.source() {
+                    let path = match src {
                         Source::Files => self.shown.files[i].clone(),
                         Source::Projects => self.projects_shown[i].clone(),
                         _ => display_path(&self.recent[i], &self.root),
@@ -1189,7 +1438,7 @@ impl Palette {
                     let marks = match_indices(&pattern, &path, &mut self.matcher);
                     let name_off = dir.chars().count();
                     let mut v = highlight(&name, |ci| marks.contains(&((ci + name_off) as u32)), base, hl);
-                    if self.source() != Source::Projects
+                    if src != Source::Projects
                         && let Some(icon) = crate::ui::file_icons::span(&name, false, icons, base, theme)
                     {
                         v.insert(0, icon);
@@ -1199,8 +1448,8 @@ impl Palette {
                     v
                 }
                 Source::Actions => {
-                    let a = &self.actions[i];
-                    let mut v = vec![(a.desc.to_string(), base), ("  ".into(), base), (a.id.to_string(), dim)];
+                    let Some(a) = self.actions.get(i) else { continue };
+                    let mut v = vec![(a.desc.as_ref().to_string(), base), ("  ".into(), base), (a.id.as_ref().to_string(), dim)];
                     if let Some(s) = &a.shortcut {
                         // Right-align the shortcut when it fits.
                         let used: usize = v.iter().map(|(t, _)| t.width()).sum();
@@ -1212,7 +1461,7 @@ impl Palette {
                     }
                     v
                 }
-                Source::Symbols => {
+                Source::Symbols | Source::Classes => {
                     let e = &self.shown.symbols[i];
                     let marks = match_indices(&pattern, &e.symbol.name, &mut self.matcher);
                     let mut v = highlight(&e.symbol.name, |ci| marks.contains(&(ci as u32)), base, hl);
@@ -1359,7 +1608,7 @@ impl Palette {
                 }
                 Source::Branches if i == 0 => vec![(NEW_BRANCH.to_string(), base)],
                 Source::Branches => {
-                    let b = &self.branches[i - 1];
+                    let Some(b) = self.branches.get(i - 1) else { continue };
                     let mut v = vec![
                         (if b.current { "* " } else { "  " }.to_string(), base),
                         (b.name.clone(), if b.current { base.add_modifier(Modifier::BOLD) } else { base }),
@@ -1516,6 +1765,31 @@ fn rank_texts_until<'a, const N: usize>(
     Some(scored.into_iter().map(|(_, i)| i).collect())
 }
 
+/// Files and symbols of the All tab ranked against a non-empty query: up to `ALL_PER_GROUP + 1` file indices, then
+/// up to as many class-kind symbol indices and as many other symbol indices, symbols offset by `files.len()`. Each
+/// part keeps its ranking order. `None` once cancelled.
+fn rank_all_large(
+    query: &str,
+    files: &[String],
+    symbols: &[SymbolEntry],
+    matcher: &mut Matcher,
+    cancelled: &dyn Fn() -> bool,
+) -> Option<Vec<usize>> {
+    let cap = ALL_PER_GROUP + 1;
+    let mut out: Vec<usize> = rank_paths_until(query, files, None, matcher, cancelled)?.into_iter().take(cap).collect();
+    let ranked = rank_texts_until(query, symbols.iter().enumerate().map(|(i, e)| (i, [&*e.symbol.name])), matcher, cancelled)?;
+    let (mut classes, mut others) = (Vec::new(), Vec::new());
+    for i in ranked {
+        let part = if is_class_kind(symbols[i].symbol.kind) { &mut classes } else { &mut others };
+        if part.len() < cap {
+            part.push(i + files.len());
+        }
+    }
+    out.extend(classes);
+    out.extend(others);
+    Some(out)
+}
+
 /// Rank a large source (files or symbols) against a non-empty query; the
 /// one ranking used both off the main thread and on it, so both give the
 /// same rows. `subset` limits it to those candidate indices. `None` when
@@ -1529,6 +1803,7 @@ fn rank_large(
 ) -> Option<Vec<usize>> {
     match input {
         FilterInput::Paths(paths) => rank_paths_until(query, paths, subset, matcher, cancelled),
+        FilterInput::All { files, symbols } => rank_all_large(query, files, symbols, matcher, cancelled),
         FilterInput::Symbols(symbols) => match subset {
             Some(s) => rank_texts_until(query, s.iter().map(|&i| (i, [&*symbols[i].symbol.name])), matcher, cancelled),
             None => rank_texts_until(query, symbols.iter().enumerate().map(|(i, e)| (i, [&*e.symbol.name])), matcher, cancelled),
@@ -2322,6 +2597,314 @@ mod tests {
         let files = walk_files(&dir, true, false);
         assert_eq!(files, vec![".gitignore", "b.md", "src/a.rs"]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Search Everywhere's All and Classes tabs.
+
+    fn kind_entry(name: &str, kind: &'static str, line: usize) -> SymbolEntry {
+        let mut e = symbol_entry(name, line);
+        e.path = Arc::from("src/shape.rs");
+        e.symbol.kind = kind;
+        e
+    }
+
+    fn shape_files() -> Vec<String> {
+        [
+            "docs/shapes.md",
+            "src/main.rs",
+            "src/shape.rs",
+            "src/shape/circle.rs",
+            "src/shape/poly.rs",
+            "src/shape/rect.rs",
+            "src/shape/square.rs",
+            "src/shape/tri.rs",
+        ]
+        .map(String::from)
+        .to_vec()
+    }
+
+    fn shape_symbols() -> Vec<SymbolEntry> {
+        vec![
+            kind_entry("Shape", "trait", 0),
+            kind_entry("ShapeKind", "enum", 4),
+            kind_entry("ShapeError", "type", 10),
+            kind_entry("Square", "struct", 12),
+            kind_entry("shape_area", "function", 20),
+            kind_entry("draw_shape", "function", 30),
+            kind_entry("T", "type parameter", 31),
+        ]
+    }
+
+    fn action_entry(id: &'static str, desc: &'static str, action: Action) -> ActionEntry {
+        ActionEntry { id: id.into(), desc: desc.into(), action, shortcut: None }
+    }
+
+    fn shape_actions() -> Vec<ActionEntry> {
+        use crate::actions::{AppAction, EditorAction};
+        vec![
+            action_entry("editor.split_right", "Split right (the tab in a new group beside)", Action::Editor(EditorAction::SplitRight)),
+            action_entry("editor.split_down", "Split down (the tab in a new group below)", Action::Editor(EditorAction::SplitDown)),
+            action_entry("palette.files", "Go to file", Action::App(AppAction::OpenPalette(PaletteKind::Files))),
+        ]
+    }
+
+    fn feed(p: &mut Palette) {
+        p.set_files(Arc::new(shape_files()), false);
+        p.set_symbols(Arc::new(shape_symbols()), false);
+        p.set_actions(shape_actions());
+    }
+
+    fn everywhere(kind: PaletteKind) -> Palette {
+        let mut p = Palette::new(kind, PathBuf::from("/w"));
+        feed(&mut p);
+        p
+    }
+
+    fn all_header(source: Source, more: bool) -> AllRow {
+        AllRow::Header { source, more }
+    }
+
+    fn all_item(source: Source, index: usize) -> AllRow {
+        AllRow::Item { source, index }
+    }
+
+    /// The All rows as shown, in order.
+    fn shown_all(p: &Palette) -> Vec<AllRow> {
+        p.rows.iter().map(|&i| p.all_rows[i]).collect()
+    }
+
+    /// What the all-tab rows for "shape" must be, from direct ranking calls on the fixture.
+    fn shape_all_rows() -> Vec<AllRow> {
+        let mut m = Matcher::default();
+        let symbols = shape_symbols();
+        let by_name = rank_texts("shape", symbols.iter().map(|e| [&*e.symbol.name]), &mut m);
+        let (classes, others): (Vec<usize>, Vec<usize>) = by_name.into_iter().partition(|&i| is_class_kind(symbols[i].symbol.kind));
+        let files = rank_paths("shape", &shape_files(), &mut m);
+        let actions = shape_actions();
+        let acts = rank_texts("shape", actions.iter().map(|a| [a.desc.as_ref(), a.id.as_ref()]), &mut m);
+        let mut want = Vec::new();
+        let mut group = |source: Source, items: Vec<usize>| {
+            want.push(all_header(source, items.len() > ALL_PER_GROUP));
+            want.extend(items.into_iter().take(ALL_PER_GROUP).map(|i| all_item(source, i)));
+        };
+        group(Source::Classes, classes);
+        group(Source::Files, files);
+        group(Source::Symbols, others);
+        group(Source::Actions, acts);
+        want
+    }
+
+    #[test]
+    fn everywhere_opens_on_all_and_classes_on_classes() {
+        let all = Palette::new(PaletteKind::Everywhere, PathBuf::from("/w"));
+        let classes = Palette::new(PaletteKind::Classes, PathBuf::from("/w"));
+        assert_eq!((all.source(), classes.source()), (Source::All, Source::Classes));
+        let tabs = vec![Source::All, Source::Classes, Source::Files, Source::Symbols, Source::Actions, Source::Branches];
+        assert_eq!((&all.tabs, &classes.tabs), (&tabs, &tabs));
+        assert_eq!((all.title(), classes.title()), ("Search Everywhere", "Search Everywhere"));
+        let labels: Vec<&str> = tabs.iter().map(|s| s.label()).collect();
+        assert_eq!(labels, ["All", "Classes", "Files", "Symbols", "Actions", "Branches"]);
+    }
+
+    #[test]
+    fn class_kinds_are_the_type_like_ones() {
+        for k in CLASS_KINDS {
+            assert!(is_class_kind(k), "{k}");
+        }
+        for k in ["function", "method", "impl", "mod", "macro", "type parameter", "variable", "field"] {
+            assert!(!is_class_kind(k), "{k}");
+        }
+    }
+
+    #[test]
+    fn classes_tab_lists_type_kinds_and_ranks_them() {
+        let mut p = everywhere(PaletteKind::Classes);
+        let names = |p: &Palette| p.rows.iter().map(|&i| p.shown.symbols[i].symbol.name.to_string()).collect::<Vec<_>>();
+        assert_eq!(names(&p), ["Shape", "ShapeKind", "ShapeError", "Square"]);
+        p.set_query("shk");
+        assert_eq!(names(&p), ["ShapeKind"]);
+        let want = PaletteResult::Accept(Accept::OpenFileAt { path: PathBuf::from("/w/src/shape.rs"), line: 4, col: 3 });
+        assert_eq!(p.handle_action(&PaletteAction::Accept), Some(want));
+    }
+
+    #[test]
+    fn all_groups_the_best_rows_under_headers() {
+        let mut p = everywhere(PaletteKind::Everywhere);
+        p.set_query("shape");
+        let want = shape_all_rows();
+        // The expectation itself, from the requirement: three classes, a longer files group, two symbols, two actions.
+        assert_eq!(want.iter().filter(|r| matches!(r, AllRow::Header { .. })).count(), 4);
+        assert_eq!(want.len(), 16);
+        assert_eq!(want[0], all_header(Source::Classes, false));
+        assert_eq!(want[4], all_header(Source::Files, true));
+        assert_eq!(want[10], all_header(Source::Symbols, false));
+        assert_eq!(want[13], all_header(Source::Actions, false));
+        assert_eq!(shown_all(&p), want);
+        assert_eq!(p.list.selected, 1);
+        assert!(!shown_all(&p).contains(&all_item(Source::Actions, 2)));
+    }
+
+    #[test]
+    fn all_empty_query_lists_open_files_first() {
+        let mut p = everywhere(PaletteKind::Everywhere);
+        p.set_recent(vec![PathBuf::from("/w/src/shape/tri.rs")]);
+        let tri = shape_files().iter().position(|f| f == "src/shape/tri.rs").unwrap();
+        let mut want = vec![all_header(Source::Files, true), all_item(Source::Files, tri)];
+        want.extend((0..8).filter(|&i| i != tri).take(4).map(|i| all_item(Source::Files, i)));
+        assert_eq!(shown_all(&p), want);
+        assert_eq!(p.list.selected, 1);
+    }
+
+    #[test]
+    fn all_header_enter_switches_to_its_tab_and_keeps_the_query() {
+        let mut p = everywhere(PaletteKind::Everywhere);
+        p.set_query("shape");
+        p.list.select(4);
+        assert_eq!(p.handle_action(&PaletteAction::Accept), None);
+        assert_eq!((p.source(), p.input.text.as_str()), (Source::Files, "shape"));
+        let mut files = everywhere(PaletteKind::Files);
+        files.set_query("shape");
+        assert_eq!(p.rows, files.rows);
+        p.handle_action(&PaletteAction::PrevTab);
+        p.handle_action(&PaletteAction::PrevTab);
+        assert_eq!(p.source(), Source::All);
+        p.list.select(1);
+        assert!(matches!(p.handle_action(&PaletteAction::Accept), Some(PaletteResult::Accept(_))));
+        // A single click selects a header; a double click shows its tab.
+        p.list.select(1);
+        p.list_rect = Rect::new(0, 0, 80, 20);
+        let click = |y: u16, clicks: u8| Mouse { x: 5, y, kind: MouseEventKind::Down(MouseButton::Left), mods: KeyModifiers::NONE, clicks };
+        assert_eq!(p.handle_mouse(&click(4, 1)), None);
+        assert_eq!((p.source(), p.list.selected), (Source::All, 4));
+        assert_eq!(p.handle_mouse(&click(4, 2)), None);
+        assert_eq!(p.source(), Source::Files);
+    }
+
+    #[test]
+    fn all_accepts_like_the_items_tab() {
+        let mut all = everywhere(PaletteKind::Everywhere);
+        all.set_query("shape");
+        let firsts: Vec<(usize, Source, usize)> = all
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(r, &i)| match all.all_rows[i] {
+                AllRow::Item { source, index } if r > 0 && matches!(all.all_rows[all.rows[r - 1]], AllRow::Header { .. }) => {
+                    Some((r, source, index))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(firsts.iter().map(|f| f.1).collect::<Vec<_>>(), [Source::Classes, Source::Files, Source::Symbols, Source::Actions]);
+        for (row, source, index) in firsts {
+            all.list.select(row);
+            let got = all.handle_action(&PaletteAction::Accept);
+            let kind = match source {
+                Source::Classes => PaletteKind::Classes,
+                Source::Files => PaletteKind::Files,
+                Source::Symbols => PaletteKind::Symbols,
+                _ => PaletteKind::Actions,
+            };
+            let mut own = everywhere(kind);
+            own.set_query("shape");
+            let at = own.rows.iter().position(|&i| i == index).expect("the item is on its own tab");
+            own.list.select(at);
+            let want = own.handle_action(&PaletteAction::Accept);
+            assert!(want.is_some());
+            assert_eq!(got, want, "{source:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn all_action_list_refresh_keeps_the_large_groups() {
+        let (mut p, mut rx) = bus_palette(PaletteKind::Everywhere);
+        feed(&mut p);
+        p.set_query("shape");
+        let (seq, rows) = next_filter(&mut rx).await;
+        assert!(p.apply_filter(seq, rows));
+        assert!(!p.filter_pending());
+        let before = shown_all(&p);
+        p.set_actions(shape_actions()[1..2].to_vec());
+        assert!(!p.filter_pending(), "no refilter happened");
+        let after = shown_all(&p);
+        let actions = |rows: &[AllRow]| rows.iter().filter(|r| matches!(r, AllRow::Item { source: Source::Actions, .. })).count();
+        assert_eq!((actions(&before), actions(&after)), (2, 1));
+        let large = |rows: &[AllRow]| {
+            rows.iter().copied().filter(|r| !matches!(r, AllRow::Item { source: Source::Actions, .. })).collect::<Vec<_>>()
+        };
+        assert_eq!(large(&before), large(&after));
+        assert!(after.contains(&all_item(Source::Actions, 0)));
+    }
+
+    #[tokio::test]
+    async fn all_background_filter_equals_a_sync_rank() {
+        let (mut p, mut rx) = bus_palette(PaletteKind::Everywhere);
+        feed(&mut p);
+        type_text(&mut p, "shape");
+        loop {
+            let (seq, rows) = next_filter(&mut rx).await;
+            if p.apply_filter(seq, rows) {
+                break;
+            }
+        }
+        let mut sync = everywhere(PaletteKind::Everywhere);
+        sync.set_query("shape");
+        assert_eq!(shown_all(&p), shape_all_rows());
+        assert_eq!(shown_all(&p), shown_all(&sync));
+        assert_eq!(p.list.selected, 1);
+        assert_eq!(p.rows, sync.rows);
+    }
+
+    #[tokio::test]
+    async fn all_drops_a_filter_superseded_by_a_new_source_batch() {
+        let (mut p, mut rx) = bus_palette(PaletteKind::Everywhere);
+        feed(&mut p);
+        type_text(&mut p, "shape");
+        let a = pending_seq(&p);
+        let mut symbols = shape_symbols();
+        symbols.push(kind_entry("ShapeMap", "struct", 40));
+        p.set_symbols(Arc::new(symbols), false);
+        let b = pending_seq(&p);
+        assert!(b > a);
+        let before = p.all_rows.clone();
+        assert!(!p.apply_filter(a, vec![0]));
+        assert_eq!(p.all_rows, before);
+        loop {
+            let (seq, rows) = next_filter(&mut rx).await;
+            if p.apply_filter(seq, rows) {
+                assert_eq!(seq, b);
+                break;
+            }
+        }
+        let has_map = shown_all(&p).contains(&all_item(Source::Classes, 7));
+        assert!(has_map, "the Classes group holds ShapeMap");
+    }
+
+    #[tokio::test]
+    async fn classes_background_narrowing_equals_a_full_rank() {
+        let kinds = ["function", "struct", "trait", "method", "enum", "type parameter"];
+        let symbols: Vec<SymbolEntry> = (0..300)
+            .map(|i| {
+                let name = if i % 4 == 0 { format!("xs{i}") } else { format!("{}sh_{}_{i}", ["Do", "do", "run_"][i % 3], i % 13) };
+                kind_entry(&name, kinds[i % kinds.len()], i)
+            })
+            .collect();
+        let symbols = Arc::new(symbols);
+        let (mut p, mut rx) = bus_palette(PaletteKind::Classes);
+        p.set_symbols(symbols.clone(), false);
+        p.set_query("s");
+        let (seq, rows) = next_filter(&mut rx).await;
+        assert!(p.apply_filter(seq, rows));
+        p.set_query("sh");
+        assert!(p.filter_pending());
+        let (seq, rows) = next_filter(&mut rx).await;
+        assert!(p.apply_filter(seq, rows));
+        let mut full = Palette::new(PaletteKind::Classes, PathBuf::from("/w"));
+        full.set_symbols(symbols, false);
+        full.set_query("sh");
+        assert!(!full.rows.is_empty());
+        assert_eq!(p.rows, full.rows);
+        assert!(p.rows.iter().all(|&i| is_class_kind(p.shown.symbols[i].symbol.kind)));
     }
 
     #[test]

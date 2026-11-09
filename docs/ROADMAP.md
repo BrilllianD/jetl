@@ -205,7 +205,7 @@ Ranked after 0.9.0 against JetBrains, Zed, Helix and VS Code; tracked as yman ep
 | 16 | Coverage gutter from lcov | M | gutter. Done: line numbers coloured from [coverage] lcov (coverage_covered, coverage_uncovered; Live), View > Coverage, reloaded on change, stale per file |
 | 17 | Increment / decrement the number at the caret | S | caret text transforms. Done: Ctrl+Alt+A / Ctrl+Alt+X on the number at or after each caret (decimal with sign, 0x hex, leading zeros kept) |
 | 18 | Pipe the selection through a shell command | S | `[format]` runner. Done: Edit > Pipe Through Command… (`editor.pipe_selection`, no key) asks for a command and replaces each non-empty selection (else each caret line) with the output of `sh -c`, run in the project root one range after another within `[format] timeout_ms`; one undo step, nothing replaced on a failure, a timeout or an edit meanwhile; Up/Down walk this session's commands |
-| 19 | Search Everywhere tabs | S | `palette.search_everywhere` |
+| 19 | Search Everywhere tabs | S | Done: All tab (best rows of every source, grouped, header Enter shows the tab), Classes tab (type-like symbol kinds), `palette.classes` |
 | 20 | Mnemonic bookmarks and groups | S | `editor/bookmarks.rs` |
 
 Carried over from Stage D: other debug adapters (research first), vim mode, publishing release binaries.

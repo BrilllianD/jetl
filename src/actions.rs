@@ -134,6 +134,8 @@ pub enum PaletteKind {
     Files,
     Actions,
     Everywhere,
+    /// Search Everywhere opened on its Classes tab (palette.classes).
+    Classes,
     RecentFiles,
     GotoLine,
     Branches,
@@ -925,6 +927,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "palette.files" => "Go to file", App(AppAction::OpenPalette(PaletteKind::Files));
         "palette.actions" => "Find action", App(AppAction::OpenPalette(PaletteKind::Actions));
         "palette.search_everywhere" => "Search everywhere", App(AppAction::OpenPalette(PaletteKind::Everywhere));
+        "palette.classes" => "Go to class (Search Everywhere on the Classes tab)", App(AppAction::OpenPalette(PaletteKind::Classes));
         "palette.recent_files" => "Recent files", App(AppAction::OpenPalette(PaletteKind::RecentFiles));
         "palette.recent_locations" => "Recent locations", App(AppAction::RecentLocations);
         "palette.goto_line" => "Go to line", App(AppAction::OpenPalette(PaletteKind::GotoLine));

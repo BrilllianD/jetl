@@ -65,7 +65,13 @@ impl App {
     /// Ask the servers for the symbols matching the Symbols palette's query
     /// when it changed; each query cancels the previous one's requests.
     pub(super) fn workspace_symbols_sync(&mut self) {
-        let Some(p) = self.palette.as_ref().filter(|p| p.wants(Source::Symbols) && p.source() == Source::Symbols) else { return };
+        let Some(p) = self
+            .palette
+            .as_ref()
+            .filter(|p| p.wants(Source::Symbols) && matches!(p.source(), Source::Symbols | Source::Classes | Source::All))
+        else {
+            return;
+        };
         let query = p.input.text.trim().to_string();
         if query == self.lsp.ws_symbols.query {
             return;
@@ -428,6 +434,55 @@ mod tests {
         assert_eq!(app.editor.active_path(), Some(b.as_path()));
         let buf = app.editor.active_buffer().unwrap();
         assert_eq!(crate::editor::selection::pos_to_line_col(&buf.rope, buf.view.sel().head), (0, 7));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn workspace_symbols_reach_the_classes_and_all_tabs() {
+        let (mut app, dir) = test_app("ws-symbols-classes");
+        let mut servers = with_fake_servers(&mut app, ws_caps());
+        let mut server = open_on_server(&mut app, &mut servers, "a.rs", "fn main() {}\n").await;
+        let b = app.workspace.root.join("b.rs");
+        std::fs::write(&b, "pub struct Helper;\npub fn helper_fn() {}\n").unwrap();
+        app.open_palette(PaletteKind::Classes);
+        type_str(&mut app, "he");
+        let mut ids = Vec::new();
+        for q in ["h", "he"] {
+            if !ids.is_empty() {
+                server.recv("$/cancelRequest").await;
+            }
+            let req = server.recv("workspace/symbol").await;
+            assert_eq!(req["params"], json!({"query": q}));
+            ids.push(req["id"].clone());
+        }
+        let uri = crate::lsp::sync::uri(&b).unwrap();
+        let info = |name: &str, kind: u32, line: u32| {
+            let range = json!({"start": {"line": line, "character": 0}, "end": {"line": line, "character": 6}});
+            json!({"name": name, "kind": kind, "location": {"uri": uri.as_str(), "range": range}})
+        };
+        server.respond(ids[1].as_i64().unwrap(), json!([info("Helper", 5, 0), info("helper_fn", 12, 1)]));
+        handle_next(&mut app, is_lsp).await;
+        let screen = rows(&mut app);
+        assert!(screen.iter().any(|r| r.contains("Helper") && r.contains("b.rs:1")), "{screen:#?}");
+        assert!(!screen.iter().any(|r| r.contains("helper_fn")), "{screen:#?}");
+        // Symbols lists every kind; the query is unchanged, so nothing new is asked.
+        let tab = || KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+        app.handle_key(tab());
+        app.handle_key(tab());
+        assert_eq!(app.palette.as_ref().unwrap().source(), crate::ui::palette::Source::Symbols);
+        let screen = rows(&mut app);
+        assert!(screen.iter().any(|r| r.contains("helper_fn")), "{screen:#?}");
+        let sent = server.sent_so_far(&app.lsp.clients["rust-analyzer"]).await;
+        assert!(sent.iter().all(|m| m["method"] != "workspace/symbol"), "{sent:?}");
+        // The Files tab asks for nothing.
+        app.close_palette();
+        app.open_palette(PaletteKind::Everywhere);
+        app.handle_key(tab());
+        app.handle_key(tab());
+        assert_eq!(app.palette.as_ref().unwrap().source(), crate::ui::palette::Source::Files);
+        type_str(&mut app, "zz");
+        let sent = server.sent_so_far(&app.lsp.clients["rust-analyzer"]).await;
+        assert!(sent.iter().all(|m| m["method"] != "workspace/symbol"), "{sent:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

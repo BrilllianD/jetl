@@ -568,4 +568,19 @@ mod tests {
         assert!(app.notifications.iter().any(|n| n.text.contains("No recent locations")));
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[tokio::test]
+    async fn palette_classes_opens_search_everywhere_on_classes() {
+        let (mut app, dir) = test_app("palette-classes");
+        let classes = crate::actions::REGISTRY.iter().find(|r| r.id == "palette.classes").expect("the action is registered");
+        app.perform(classes.action.clone());
+        let p = app.palette.as_ref().unwrap();
+        assert_eq!((p.kind, p.source()), (PaletteKind::Classes, Source::Classes));
+        type_keys(&mut app, "x");
+        app.perform(Action::App(AppAction::OpenPalette(PaletteKind::Everywhere)));
+        let p = app.palette.as_ref().unwrap();
+        assert_eq!((p.kind, p.source(), p.input.text.as_str()), (PaletteKind::Everywhere, Source::All, "x"));
+        assert!(app.palette_actions().iter().any(|a| a.id == "palette.classes"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

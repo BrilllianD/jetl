@@ -1567,6 +1567,67 @@ async fn palette_actions() {
     assert_snapshot!("palette_actions", snapshot(&term, &marks, None));
 }
 
+/// Search Everywhere with fixed candidates, the way the app feeds them: files, symbols (every kind) and three actions.
+fn everywhere_fixture(app: &mut App, kind: PaletteKind) {
+    use crate::symbols::{Symbol, index::SymbolEntry};
+    app.open_palette(kind);
+    drain(app);
+    let actions: Vec<_> = app
+        .palette_actions()
+        .into_iter()
+        .filter(|a| matches!(a.id.as_ref(), "editor.split_right" | "editor.split_down" | "palette.files"))
+        .collect();
+    let files = [
+        "docs/shapes.md",
+        "src/main.rs",
+        "src/shape.rs",
+        "src/shape/circle.rs",
+        "src/shape/poly.rs",
+        "src/shape/rect.rs",
+        "src/shape/square.rs",
+        "src/shape/tri.rs",
+    ];
+    let symbol = |name: &str, kind: &'static str, line: usize| SymbolEntry {
+        path: "src/shape.rs".into(),
+        symbol: Symbol { name: name.into(), kind, line, col: 3, start_line: line, end_line: line, depth: 0 },
+        utf16: false,
+    };
+    let symbols = vec![
+        symbol("Shape", "trait", 0),
+        symbol("ShapeKind", "enum", 4),
+        symbol("ShapeError", "type", 10),
+        symbol("Square", "struct", 12),
+        symbol("shape_area", "function", 20),
+        symbol("draw_shape", "function", 30),
+        symbol("T", "type parameter", 31),
+    ];
+    let p = app.palette.as_mut().unwrap();
+    p.set_files(std::sync::Arc::new(files.map(String::from).to_vec()), false);
+    p.set_symbols(std::sync::Arc::new(symbols), false);
+    p.set_actions(actions);
+}
+
+#[tokio::test]
+async fn palette_everywhere_all() {
+    let mut fx = stable_app("palette-everywhere-all");
+    let app = &mut fx.app;
+    everywhere_fixture(app, PaletteKind::Everywhere);
+    app.palette.as_mut().unwrap().set_query("shape");
+    let term = draw_app(app, 80, 24);
+    let marks = palette_marks(&app.theme);
+    assert_snapshot!("palette_everywhere_all", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn palette_everywhere_classes() {
+    let mut fx = stable_app("palette-everywhere-classes");
+    let app = &mut fx.app;
+    everywhere_fixture(app, PaletteKind::Classes);
+    let term = draw_app(app, 80, 24);
+    let marks = palette_marks(&app.theme);
+    assert_snapshot!("palette_everywhere_classes", snapshot(&term, &marks, None));
+}
+
 #[tokio::test]
 async fn palette_files() {
     let mut fx = stable_app("palette-files");
