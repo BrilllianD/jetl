@@ -39,7 +39,7 @@ impl App {
         self.coverage.explicit = false;
         let (seq, generation, tx) = (self.coverage.seq, self.workspace.generation, self.bus_tx.clone());
         let root = self.workspace.root.clone();
-        let file = root.join(name);
+        let file = self.coverage_file(&name);
         tokio::task::spawn_blocking(move || {
             let result = crate::coverage::load(&file, &root);
             let _ = tx.send(AppMsg::Coverage { generation, seq, result });
@@ -104,6 +104,12 @@ impl App {
         }
     }
 
+    /// The report's path: `[coverage] lcov` joined to the root, with `.` and `..` applied, so it
+    /// compares equal to the watcher's paths and a `../` path counts as outside the root.
+    fn coverage_file(&self, name: &str) -> PathBuf {
+        crate::util::fs::normalize(&self.workspace.root.join(name))
+    }
+
     /// The watcher's batch: the report changed (or a directory above it was made): load it again;
     /// else a source file the report lists changed: its colours go until the next load.
     pub(super) fn coverage_fs_changed(&mut self, paths: &[PathBuf]) {
@@ -112,7 +118,7 @@ impl App {
             return;
         }
         let root = &self.workspace.root;
-        let lcov = root.join(name);
+        let lcov = self.coverage_file(name);
         if paths.iter().any(|p| *p == lcov || (p != root && lcov.starts_with(p))) {
             self.load_coverage();
             return;
@@ -131,7 +137,7 @@ impl App {
         if self.coverage.hidden || name.is_empty() {
             return;
         }
-        if self.watcher.is_none() || !self.workspace.root.join(name).starts_with(&self.workspace.root) {
+        if self.watcher.is_none() || !self.coverage_file(name).starts_with(&self.workspace.root) {
             self.load_coverage();
         }
     }
@@ -261,6 +267,18 @@ mod tests {
         let root = app.workspace.root.clone();
         app.fs_changed(Changes { paths: vec![root], ..Default::default() });
         assert_eq!(app.coverage.seq, before, "the root itself is no report change");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_report_path_through_dot_dot_reloads_on_change() {
+        let (mut app, dir, _a) = fixture("cov-watch-dotdot").await;
+        app.config.coverage.lcov = "cov/../lcov.info".into();
+        let before = app.coverage.seq;
+        let lcov = app.workspace.root.join("lcov.info");
+        app.fs_changed(Changes { paths: vec![lcov], ..Default::default() });
+        assert!(app.coverage.seq > before);
+        wait(&mut app).await;
         let _ = std::fs::remove_dir_all(&dir);
     }
 

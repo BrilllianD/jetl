@@ -267,7 +267,8 @@ lcov = "lcov.info"             # an lcov report (cargo llvm-cov --lcov --output-
 ```
 
 Coverage (`[coverage] lcov`): only the `SF:` and `DA:` records of the report are
-read. The line numbers of lines it lists are drawn in `coverage_covered` (hits
+read. A relative `SF:` path is taken from the project root, not from the report's
+directory, so run the coverage tool from the root (or make it write absolute paths). The line numbers of lines it lists are drawn in `coverage_covered` (hits
 above 0) or `coverage_uncovered` (0 hits); a folded header takes the uncovered
 colour when a line it hides is uncovered, and the caret line keeps
 `line_number_current`. Since only the line numbers change colour, nothing shows

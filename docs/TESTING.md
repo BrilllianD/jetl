@@ -62,7 +62,7 @@ toggles), its Log (also with two commits selected, and the Log's commit context 
 (diagnostic underlines in the editor too), the lightbulb in the gutter, the main menu bar, confirm,
 input and choice dialogs, the hover and completion popups, toasts, the
 palettes (Scratch Files and Recent Projects included), the conflict resolver (filler rows included), the patch tab, the crash
-recovery dialogs, the Save As prompt and its path completion list, and the Find results tab (with its find bar), and coverage colours on the line numbers.
+recovery dialogs, the Save As prompt and its path completion list, the Find results tab (with its find bar), and coverage colours on the line numbers.
 
 Things that depend on the clock are given as data: the Log tab's commits
 carry their relative dates as `git log` formatted them, toasts expire on
