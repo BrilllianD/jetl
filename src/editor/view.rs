@@ -761,14 +761,14 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
                 let (glyph, style) = super::breakpoints::breakpoint_glyph(mark.state, &mark.spec, theme);
                 screen.set_string(gx + digits as u16, y, glyph, style);
             } else {
-                // A numbered bookmark shows its digit (on a fold's header the
-                // first digit it hides), any other one ◆.
+                // A mnemonic bookmark shows its digit or letter (on a fold's
+                // header the first one it hides), any other one ◆.
                 let mut marked = buf.bookmarks.range(span.clone()).peekable();
                 if marked.peek().is_some() {
-                    // A digit is drawn reversed, as a badge, so that it does not
+                    // A mnemonic is drawn reversed, as a badge, so that it does not
                     // read as one more digit of the line number.
-                    let (glyph, style) = match marked.find_map(|(_, d)| *d) {
-                        Some(d) => (char::from(b'0' + d).to_string(), theme.bookmark.add_modifier(Modifier::REVERSED)),
+                    let (glyph, style) = match marked.find_map(|(_, b)| b.mnemonic) {
+                        Some(m) => (m.glyph().to_string(), theme.bookmark.add_modifier(Modifier::REVERSED)),
                         None => ("◆".to_string(), theme.bookmark),
                     };
                     screen.set_string(gx + digits as u16, y, glyph, style);

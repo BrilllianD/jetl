@@ -9,9 +9,9 @@ expression: "snapshot(&term, &marks, None)"
 03  ◫ │                              ││  31   │ three indented
 04  ⊢ │                              ││  4    four
 05    │                              ││  5
-06    │   ┌ Numbered Bookmark ────────────────────────────────────────────┐e
-07    │   │ Press a digit to bookmark line 4 with it.                     │
-08    │   │ A digit used elsewhere moves here; Esc cancels.               │
+06    │   ┌ Mnemonic Bookmark ────────────────────────────────────────────┐e
+07    │   │ Press a digit or a letter to bookmark line 4 with it.         │
+08    │   │ One used elsewhere moves here; Esc cancels.                   │
 09    │   │                                                               │
 10    │   │  [ 0 ] [ 1 ] [ 2 ] [ 3 ] [ 4 ] [ 5 ] [ 6 ] [ 7 ] [ 8 ] [ 9 ]  │
 11    │   └───────────────────────────────────────────────────────────────┘

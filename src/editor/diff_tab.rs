@@ -223,6 +223,8 @@ impl Editor {
                 | E::ShowBookmarks
                 | E::ToggleBreakpoint
                 | E::GotoNumberedBookmark(_)
+                | E::GotoLetterBookmark(_)
+                | E::RenameBookmarkGroup
                 | E::Merge(_)
         ) {
             return None;

@@ -245,7 +245,7 @@ pub struct Buffer {
     /// change (edits, undo, redo) carries them along with their text; lines
     /// deleted outright drop out, and of two marks merged into one line a
     /// digit wins over none.
-    pub bookmarks: BTreeMap<usize, Option<u8>>,
+    pub bookmarks: BTreeMap<usize, super::bookmarks::Bookmark>,
     /// Breakpoint lines (Ctrl+F8). Like bookmarks they follow every applied
     /// change with their text; of two marks merged into one line the lower
     /// line's stays, whole.
@@ -488,8 +488,8 @@ impl Buffer {
         // (a reload) leaves them nothing to map.
         let whole = at == 0 && old_len > 0 && old_len == self.rope.len_chars();
         self.edit_log.push(if whole { LogEdit::Reset } else { LogEdit::Edit { at, old_len, new_len } });
-        let marks: Vec<(MarkTarget, Option<u8>)> =
-            self.bookmarks.iter().map(|(&l, &d)| (mark_target(&self.rope, l, at, old_len, c), d)).collect();
+        let marks: Vec<(MarkTarget, super::bookmarks::Bookmark)> =
+            std::mem::take(&mut self.bookmarks).into_iter().map(|(l, b)| (mark_target(&self.rope, l, at, old_len, c), b)).collect();
         let breakpoints: Vec<(MarkTarget, BreakpointMark)> =
             std::mem::take(&mut self.breakpoints).into_iter().map(|(l, m)| (mark_target(&self.rope, l, at, old_len, c), m)).collect();
         let before = self.view.folds.list().to_vec();
@@ -506,16 +506,14 @@ impl Buffer {
                 self.breakpoints.entry(line).or_insert(mark);
             }
         }
-        if !marks.is_empty() {
-            let mut moved = BTreeMap::new();
-            for (t, digit) in marks {
-                let Some(line) = mark_line(&self.rope, t) else { continue };
-                let slot = moved.entry(line).or_insert(None);
-                if slot.is_none() {
-                    *slot = digit;
+        for (t, bookmark) in marks {
+            let Some(line) = mark_line(&self.rope, t) else { continue };
+            match self.bookmarks.entry(line) {
+                std::collections::btree_map::Entry::Vacant(e) => {
+                    e.insert(bookmark);
                 }
+                std::collections::btree_map::Entry::Occupied(mut e) => e.get_mut().merge(bookmark),
             }
-            self.bookmarks = moved;
         }
         if let Some(s) = &mut self.syntax {
             s.note_change(&self.rope, at, old_len, new_len, &c.old, &c.new);
@@ -1717,14 +1715,14 @@ impl Buffer {
     pub fn toggle_bookmark(&mut self) {
         let line = self.cursor_line_col().0;
         if self.bookmarks.remove(&line).is_none() {
-            self.bookmarks.insert(line, None);
+            self.bookmarks.insert(line, super::bookmarks::Bookmark::default());
         }
     }
 
     /// Replace the bookmarks (from a session), dropping lines past the end.
     pub fn set_bookmarks(&mut self, lines: &[usize]) {
         let n = self.rope.len_lines();
-        self.bookmarks = lines.iter().copied().filter(|l| *l < n).map(|l| (l, None)).collect();
+        self.bookmarks = lines.iter().copied().filter(|l| *l < n).map(|l| (l, super::bookmarks::Bookmark::default())).collect();
     }
 
     /// Add or remove the breakpoint on `line`; a line past the end is ignored.
@@ -1749,14 +1747,48 @@ impl Buffer {
         }
     }
 
-    /// The line of the bookmark with mnemonic `digit`.
-    pub fn digit_line(&self, digit: u8) -> Option<usize> {
-        self.bookmarks.iter().find(|(_, d)| **d == Some(digit)).map(|(l, _)| *l)
+    /// The line of the bookmark with mnemonic `m`.
+    pub fn mnemonic_line(&self, m: super::bookmarks::Mnemonic) -> Option<usize> {
+        self.bookmarks.iter().find(|(_, b)| b.mnemonic == Some(m)).map(|(l, _)| *l)
     }
 
     /// The numbered bookmarks as (digit, line), by line.
     pub fn digits(&self) -> Vec<(u8, usize)> {
-        self.bookmarks.iter().filter_map(|(l, d)| d.map(|d| (d, *l))).collect()
+        use super::bookmarks::Mnemonic;
+        self.bookmarks
+            .iter()
+            .filter_map(|(l, b)| match b.mnemonic {
+                Some(Mnemonic::Digit(d)) => Some((d, *l)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The lettered bookmarks as (letter, line), by line.
+    pub fn letters(&self) -> Vec<(char, usize)> {
+        use super::bookmarks::Mnemonic;
+        self.bookmarks
+            .iter()
+            .filter_map(|(l, b)| match b.mnemonic {
+                Some(Mnemonic::Letter(c)) => Some((c, *l)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The bookmarks outside the default group as (group, line), by line.
+    pub fn grouped(&self) -> Vec<(String, usize)> {
+        self.bookmarks.iter().filter_map(|(l, b)| b.group.clone().map(|g| (g, *l))).collect()
+    }
+
+    /// Put bookmarks into groups (from a session): (group, line); a line
+    /// with no bookmark is skipped, and so is an invalid group name.
+    pub fn set_bookmark_groups(&mut self, groups: &[(String, usize)]) {
+        for (name, line) in groups {
+            if let (Some(b), Ok(group)) = (self.bookmarks.get_mut(line), super::bookmarks::group_name(name)) {
+                b.group = group;
+            }
+        }
     }
 
     pub fn line_text(&self, line: usize) -> String {
@@ -1954,6 +1986,7 @@ pub fn map_one(p: usize, at: usize, old_n: usize, new_n: usize, stay_at_insert: 
 
 #[cfg(test)]
 mod tests {
+    use super::super::bookmarks::{Bookmark, Mnemonic};
     use super::*;
 
     fn b(text: &str) -> Buffer {
@@ -3313,18 +3346,40 @@ g()
     fn numbered_bookmarks_follow_edits_and_win_merges() {
         let mut buf = b("a\nb\nc\nd\n");
         buf.set_bookmarks(&[1]);
-        buf.bookmarks.insert(2, Some(3));
+        buf.bookmarks.insert(2, Bookmark { mnemonic: Mnemonic::digit(3), group: None });
         buf.goto_line(0, 0);
         buf.insert("x\n", TxKind::Other);
-        assert_eq!((marks(&buf), buf.digits(), buf.digit_line(3)), (vec![2, 3], vec![(3, 3)], Some(3)));
+        assert_eq!((marks(&buf), buf.digits(), buf.mnemonic_line(Mnemonic::Digit(3))), (vec![2, 3], vec![(3, 3)], Some(3)));
         // Backspace at the start of line 3 merges it into marked line 2:
         // the merged mark keeps the digit.
         buf.goto_line(3, 0);
         buf.backspace();
-        assert_eq!(buf.bookmarks.iter().map(|(l, d)| (*l, *d)).collect::<Vec<_>>(), vec![(2, Some(3))]);
+        assert_eq!(buf.bookmarks.iter().map(|(l, b)| (*l, b.mnemonic)).collect::<Vec<_>>(), vec![(2, Mnemonic::digit(3))]);
         assert!(buf.undo());
-        assert_eq!(buf.digit_line(3), Some(2));
-        assert_eq!(buf.digit_line(4), None);
+        assert_eq!(buf.mnemonic_line(Mnemonic::Digit(3)), Some(2));
+        assert_eq!(buf.mnemonic_line(Mnemonic::Digit(4)), None);
+    }
+
+    #[test]
+    fn lettered_bookmark_wins_a_merge_with_its_group() {
+        let mut buf = b("a\nb\nc\nd\n");
+        let x = Bookmark { mnemonic: None, group: Some("X".into()) };
+        let k = Bookmark { mnemonic: Mnemonic::letter('k'), group: None };
+        buf.bookmarks.insert(1, x.clone());
+        buf.bookmarks.insert(2, k.clone());
+        buf.goto_line(2, 0);
+        buf.backspace();
+        assert_eq!(buf.bookmarks.iter().map(|(l, b)| (*l, b.clone())).collect::<Vec<_>>(), vec![(1, k.clone())]);
+        // Undo splits the text again; the merged bookmark stays with line 1 (marks are not in the undo log).
+        assert!(buf.undo());
+        assert_eq!(buf.bookmarks.iter().map(|(l, b)| (*l, b.clone())).collect::<Vec<_>>(), vec![(1, k.clone())]);
+        // The other way round: a plain bookmark joining a lettered line never replaces it.
+        let mut buf = b("a\nb\nc\n");
+        buf.bookmarks.insert(1, k.clone());
+        buf.bookmarks.insert(2, x);
+        buf.goto_line(2, 0);
+        buf.backspace();
+        assert_eq!(buf.bookmarks.iter().map(|(l, b)| (*l, b.clone())).collect::<Vec<_>>(), vec![(1, k)]);
     }
 
     fn bps(buf: &Buffer) -> Vec<usize> {

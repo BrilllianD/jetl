@@ -247,8 +247,8 @@ theme_fields! {
         bracket_3,
         /// The carets other than the primary one (which is the terminal cursor).
         secondary_caret,
-        /// Gutter glyph of a bookmarked line (◆, or a numbered one's digit
-        /// drawn reversed).
+        /// Gutter glyph of a bookmarked line (◆, or its mnemonic (digit or
+        /// letter) drawn reversed).
         bookmark,
         /// Gutter glyph (●) of a breakpoint that is verified or not yet sent.
         breakpoint,

@@ -70,6 +70,11 @@ impl Dispatcher {
         if self.pending.is_empty() { None } else { Some(self.pending.iter().map(|c| c.display()).collect::<Vec<_>>().join(" ")) }
     }
 
+    /// Whether a chord is half typed and not timed out: its next key belongs to the keymap.
+    pub fn chord_open(&self) -> bool {
+        !self.pending.is_empty() && self.pending_at.is_some_and(|at| at.elapsed() <= self.chord_timeout)
+    }
+
     pub fn reset(&mut self) {
         self.pending.clear();
         self.pending_at = None;

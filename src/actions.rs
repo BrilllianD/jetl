@@ -316,10 +316,16 @@ pub enum EditorAction {
     NavForward,
     ToggleBookmark,
     ShowBookmarks,
-    /// Ctrl+F11: choose a digit for the caret line's bookmark.
+    /// Ctrl+F11: choose a digit or letter for the caret line's bookmark.
     ToggleNumberedBookmark,
     /// Ctrl+0..9: jump to the bookmark with this digit.
     GotoNumberedBookmark(u8),
+    /// Alt+B then a letter: jump to the bookmark with this letter (`'A'` to `'Z'`).
+    GotoLetterBookmark(char),
+    /// Move the caret line's bookmark to a group (making one on a line without).
+    MoveBookmarkToGroup,
+    /// Rename a bookmark group.
+    RenameBookmarkGroup,
     /// Ctrl+F8: toggle a breakpoint on every caret's line.
     ToggleBreakpoint,
     LineEndingLf,
@@ -1068,7 +1074,9 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.nav_forward" => "Navigate forward", Editor(E::NavForward);
         "editor.toggle_bookmark" => "Toggle bookmark on the caret line", Editor(E::ToggleBookmark);
         "editor.show_bookmarks" => "Show bookmarks", Editor(E::ShowBookmarks);
-        "editor.toggle_numbered_bookmark" => "Toggle numbered bookmark (a digit) on the caret line", Editor(E::ToggleNumberedBookmark);
+        "editor.toggle_numbered_bookmark" => "Toggle mnemonic bookmark (a digit or letter) on the caret line", Editor(E::ToggleNumberedBookmark);
+        "editor.move_bookmark_to_group" => "Move the caret line's bookmark to a group (adds one when the line has none)", Editor(E::MoveBookmarkToGroup);
+        "editor.rename_bookmark_group" => "Rename a bookmark group", Editor(E::RenameBookmarkGroup);
         "debug.toggle_breakpoint" => "Toggle breakpoint on each caret's line; a live debug session gets the change", Editor(E::ToggleBreakpoint);
         "editor.goto_bookmark_0" => "Go to bookmark 0", Editor(E::GotoNumberedBookmark(0));
         "editor.goto_bookmark_1" => "Go to bookmark 1", Editor(E::GotoNumberedBookmark(1));
@@ -1080,6 +1088,32 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "editor.goto_bookmark_7" => "Go to bookmark 7", Editor(E::GotoNumberedBookmark(7));
         "editor.goto_bookmark_8" => "Go to bookmark 8", Editor(E::GotoNumberedBookmark(8));
         "editor.goto_bookmark_9" => "Go to bookmark 9", Editor(E::GotoNumberedBookmark(9));
+        "editor.goto_bookmark_a" => "Go to bookmark A", Editor(E::GotoLetterBookmark('A'));
+        "editor.goto_bookmark_b" => "Go to bookmark B", Editor(E::GotoLetterBookmark('B'));
+        "editor.goto_bookmark_c" => "Go to bookmark C", Editor(E::GotoLetterBookmark('C'));
+        "editor.goto_bookmark_d" => "Go to bookmark D", Editor(E::GotoLetterBookmark('D'));
+        "editor.goto_bookmark_e" => "Go to bookmark E", Editor(E::GotoLetterBookmark('E'));
+        "editor.goto_bookmark_f" => "Go to bookmark F", Editor(E::GotoLetterBookmark('F'));
+        "editor.goto_bookmark_g" => "Go to bookmark G", Editor(E::GotoLetterBookmark('G'));
+        "editor.goto_bookmark_h" => "Go to bookmark H", Editor(E::GotoLetterBookmark('H'));
+        "editor.goto_bookmark_i" => "Go to bookmark I", Editor(E::GotoLetterBookmark('I'));
+        "editor.goto_bookmark_j" => "Go to bookmark J", Editor(E::GotoLetterBookmark('J'));
+        "editor.goto_bookmark_k" => "Go to bookmark K", Editor(E::GotoLetterBookmark('K'));
+        "editor.goto_bookmark_l" => "Go to bookmark L", Editor(E::GotoLetterBookmark('L'));
+        "editor.goto_bookmark_m" => "Go to bookmark M", Editor(E::GotoLetterBookmark('M'));
+        "editor.goto_bookmark_n" => "Go to bookmark N", Editor(E::GotoLetterBookmark('N'));
+        "editor.goto_bookmark_o" => "Go to bookmark O", Editor(E::GotoLetterBookmark('O'));
+        "editor.goto_bookmark_p" => "Go to bookmark P", Editor(E::GotoLetterBookmark('P'));
+        "editor.goto_bookmark_q" => "Go to bookmark Q", Editor(E::GotoLetterBookmark('Q'));
+        "editor.goto_bookmark_r" => "Go to bookmark R", Editor(E::GotoLetterBookmark('R'));
+        "editor.goto_bookmark_s" => "Go to bookmark S", Editor(E::GotoLetterBookmark('S'));
+        "editor.goto_bookmark_t" => "Go to bookmark T", Editor(E::GotoLetterBookmark('T'));
+        "editor.goto_bookmark_u" => "Go to bookmark U", Editor(E::GotoLetterBookmark('U'));
+        "editor.goto_bookmark_v" => "Go to bookmark V", Editor(E::GotoLetterBookmark('V'));
+        "editor.goto_bookmark_w" => "Go to bookmark W", Editor(E::GotoLetterBookmark('W'));
+        "editor.goto_bookmark_x" => "Go to bookmark X", Editor(E::GotoLetterBookmark('X'));
+        "editor.goto_bookmark_y" => "Go to bookmark Y", Editor(E::GotoLetterBookmark('Y'));
+        "editor.goto_bookmark_z" => "Go to bookmark Z", Editor(E::GotoLetterBookmark('Z'));
         "editor.line_ending_lf" => "Convert line endings to LF", Editor(E::LineEndingLf);
         "editor.line_ending_crlf" => "Convert line endings to CRLF", Editor(E::LineEndingCrlf);
         "editor.set_language" => "Set the file's language (highlighting)", Editor(E::SetLanguage);

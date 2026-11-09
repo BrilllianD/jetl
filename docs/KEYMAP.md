@@ -114,6 +114,32 @@ position report.
 | `Alt+B 8` | `editor.goto_bookmark_8` | Go to bookmark 8 |
 | `Ctrl+9` * | `editor.goto_bookmark_9` | Go to bookmark 9 |
 | `Alt+B 9` | `editor.goto_bookmark_9` | Go to bookmark 9 |
+| `Alt+B A` | `editor.goto_bookmark_a` | Go to bookmark A |
+| `Alt+B B` | `editor.goto_bookmark_b` | Go to bookmark B |
+| `Alt+B C` | `editor.goto_bookmark_c` | Go to bookmark C |
+| `Alt+B D` | `editor.goto_bookmark_d` | Go to bookmark D |
+| `Alt+B E` | `editor.goto_bookmark_e` | Go to bookmark E |
+| `Alt+B F` | `editor.goto_bookmark_f` | Go to bookmark F |
+| `Alt+B G` | `editor.goto_bookmark_g` | Go to bookmark G |
+| `Alt+B H` | `editor.goto_bookmark_h` | Go to bookmark H |
+| `Alt+B I` | `editor.goto_bookmark_i` | Go to bookmark I |
+| `Alt+B J` | `editor.goto_bookmark_j` | Go to bookmark J |
+| `Alt+B K` | `editor.goto_bookmark_k` | Go to bookmark K |
+| `Alt+B L` | `editor.goto_bookmark_l` | Go to bookmark L |
+| `Alt+B M` | `editor.goto_bookmark_m` | Go to bookmark M |
+| `Alt+B N` | `editor.goto_bookmark_n` | Go to bookmark N |
+| `Alt+B O` | `editor.goto_bookmark_o` | Go to bookmark O |
+| `Alt+B P` | `editor.goto_bookmark_p` | Go to bookmark P |
+| `Alt+B Q` | `editor.goto_bookmark_q` | Go to bookmark Q |
+| `Alt+B R` | `editor.goto_bookmark_r` | Go to bookmark R |
+| `Alt+B S` | `editor.goto_bookmark_s` | Go to bookmark S |
+| `Alt+B T` | `editor.goto_bookmark_t` | Go to bookmark T |
+| `Alt+B U` | `editor.goto_bookmark_u` | Go to bookmark U |
+| `Alt+B V` | `editor.goto_bookmark_v` | Go to bookmark V |
+| `Alt+B W` | `editor.goto_bookmark_w` | Go to bookmark W |
+| `Alt+B X` | `editor.goto_bookmark_x` | Go to bookmark X |
+| `Alt+B Y` | `editor.goto_bookmark_y` | Go to bookmark Y |
+| `Alt+B Z` | `editor.goto_bookmark_z` | Go to bookmark Z |
 | `Alt+F1` | `tree.select_in_project` | Select in Project |
 | `Alt+H` | `git.file_history` | Git: show history for the file (editor) or the selected entry (Project tree) |
 | `Alt+0` | `git.commit_box` | Git: open commit window |
@@ -228,7 +254,7 @@ position report.
 | `Ctrl+Alt+Right` | `editor.nav_forward` | Navigate forward |
 | `F11` | `editor.toggle_bookmark` | Toggle bookmark on the caret line |
 | `Shift+F11` | `editor.show_bookmarks` | Show bookmarks |
-| `Ctrl+F11` | `editor.toggle_numbered_bookmark` | Toggle numbered bookmark (a digit) on the caret line |
+| `Ctrl+F11` | `editor.toggle_numbered_bookmark` | Toggle mnemonic bookmark (a digit or letter) on the caret line |
 | `Ctrl+F8` | `debug.toggle_breakpoint` | Toggle breakpoint on each caret's line; a live debug session gets the change |
 | `Ctrl+Alt+Z` | `editor.revert_change` | Revert the change at the caret to HEAD |
 | `Alt+N` | `editor.diff_next_file` | Diff tab: show the next file |
@@ -712,6 +738,8 @@ Reachable from Find Action (F1) or by binding them in `keymap.toml`.
 | `editor.clone_caret_above` | Clone caret above |
 | `editor.clone_caret_below` | Clone caret below |
 | `editor.toggle_soft_wrap` | Soft-wrap the active editor (on or off) |
+| `editor.move_bookmark_to_group` | Move the caret line's bookmark to a group (adds one when the line has none) |
+| `editor.rename_bookmark_group` | Rename a bookmark group |
 | `editor.line_ending_lf` | Convert line endings to LF |
 | `editor.line_ending_crlf` | Convert line endings to CRLF |
 | `editor.set_language` | Set the file's language (highlighting) |

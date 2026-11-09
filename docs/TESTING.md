@@ -54,7 +54,7 @@ rows; run it in release:
 on ratatui's `TestBackend` and compares them as text with
 [`insta`](https://insta.rs) against `src/app/snapshots/*.snap`. They cover
 split panes, carets, occurrences, folding, soft wrap, bookmarks, breakpoints in the gutter, the
-numbered bookmark chooser and the bookmarks list with closed files, the
+mnemonic bookmark chooser, letter bookmarks in the gutter, the bookmarks list with closed files and with groups, the Move to Group chooser, the
 editor's find/replace bar, the project tree and its context menu, the Settings window (page tree, Bool, number and
 choice rows, pending markers), the Git
 window's Commit tab (also at 80 columns, its diff header cut before the
@@ -1087,29 +1087,37 @@ sleep 2; /tmp/tm.sh send-keys -t jetl C-M-s; sleep 0.3; /tmp/tm.sh capture-pane 
   `touch $C/config.toml`: no new notification.
 - `/tmp/tm.sh kill-server`.
 
-### Scenario: numbered bookmarks
+### Scenario: mnemonic bookmarks and groups
 
-At 80x24 and at 120x40, on the scratch project `$T` above with an 80-line
-`docs/notes.md` (`seq 1 80 | sed 's/^/line /' > $T/docs/notes.md`), opened as
-`jetl $T/docs/notes.md`. tmux does not pass Ctrl+digit, so the jumps use the
-legacy fallback Alt+B then the digit:
+At 80x24 and at 120x40 (`new-session -d -s jetl -x 80 -y 24`, then `-x 120 -y 40`),
+on the scratch project `$T=/tmp/jt22` above with an 80-line `docs/notes.md`
+(`seq 1 80 | sed 's/^/line /' > $T/docs/notes.md`), opened as
+`jetl $T/docs/notes.md`, with `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and
+`XDG_CACHE_HOME` under `/tmp/jt22-home` and a `config.toml` holding `[lsp]`
+`enabled = false` and `[ui]` `toolbar = false`. `/tmp/tm.sh` is
+`exec /usr/bin/tmux -L jetl-s22 "$@"`. tmux does not pass Ctrl+digit, so the
+jumps use Alt+B then the mnemonic:
 
-```sh
-/tmp/tm.sh send-keys -t jetl C-g; /tmp/tm.sh send-keys -t jetl -l 20; /tmp/tm.sh send-keys -t jetl Enter
-/tmp/tm.sh send-keys -t jetl C-F11      # Numbered Bookmark: ten digit buttons inside the box, [ 1 ] selected
-/tmp/tm.sh send-keys -t jetl 3          # the gutter of line 20 shows 3 (reversed: capture -e has ESC[7m)
-/tmp/tm.sh send-keys -t jetl C-n; /tmp/tm.sh send-keys -t jetl -l main.rs; /tmp/tm.sh send-keys -t jetl Enter
-/tmp/tm.sh send-keys -t jetl M-b 3      # back in notes.md, Ln 20
-/tmp/tm.sh send-keys -t jetl C-M-Left   # main.rs again
-/tmp/tm.sh send-keys -t jetl M-b 3 C-w  # close notes.md
-/tmp/tm.sh send-keys -t jetl M-b 3      # notes.md reopens at Ln 20 with its 3
-/tmp/tm.sh send-keys -t jetl S-F11      # the list shows "3 docs/notes.md:20 line 20"
-/tmp/tm.sh send-keys -t jetl Escape C-w C-q
-```
+1. `C-g`, `20`, `Enter`, `C-F11`: the title is `Mnemonic Bookmark`, the message
+   names digits and letters, and the ten buttons fit.
+2. `k`: the gutter of line 20 shows `K`, reversed (`capture-pane -e` has `ESC[7m` before it).
+3. `C-g` `40` `Enter`, `C-F11`, `3`: line 40 shows a reversed `3`.
+4. `C-n` `main.rs` `Enter`, then `M-b` `k`: back in notes.md, `Ln 20`; `M-b` `3`: `Ln 40`.
+5. On line 40, F1, `move bookmark to group`, Enter: the chooser lists `Bookmarks` and
+   `New Group…`. Down, Enter, type `API`, Enter. Shift+F11 lists
+   `Bookmarks: K docs/notes.md:20 line 20` and `API: 3 docs/notes.md:40 line 40`; Escape.
+6. F1, `rename bookmark group`, Enter, Enter on `API`, Ctrl+A, type `Net`, Enter:
+   Shift+F11 now reads `Net: 3 ...`; Escape.
+7. `C-w` closes notes.md; `M-b` `k` reopens it at `Ln 20` with its `K`; `C-q`.
+8. Start jetl again on `$T` (notes.md closed): `M-b` `3` opens notes.md at line 40;
+   Shift+F11 still shows `Net: 3 ...` and `Bookmarks: K ...`.
+9. In the session file under `$XDG_STATE_HOME/jetl/sessions/`, `jq` shows lines 19 and 39
+   in `files[0].bookmarks`, `bookmark_letters` `[["K",19]]`, `bookmark_digits` `[[3,39]]`
+   and `bookmark_groups` `[["Net",39]]`.
+10. `/tmp/tm.sh kill-server`; no `tmux -L jetl-s22` and no `jetl` process is left.
 
-Start jetl again on `$T` (notes.md closed): Alt+B 3 opens it at line 20
-with the 3 in the gutter. Ctrl+F11 then 3 on that line removes the
-bookmark; 3 on another line moves it there.
+Ctrl+F11 then the same mnemonic on its line removes the bookmark; the same
+letter on another line moves it there.
 
 ### Scenario: breakpoints in the gutter
 

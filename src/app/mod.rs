@@ -1091,8 +1091,11 @@ impl App {
                 return;
             }
         }
+        // The panels below take typed keys for their filters and fields; the second key of a chord is the
+        // keymap's (Alt+B then a letter from the Project window).
+        let chord_open = self.dispatcher.chord_open();
         // And for the Find window's query and replacement fields.
-        if self.focus.is(PanelId::Find) && key.kind != crossterm::event::KeyEventKind::Release {
+        if self.focus.is(PanelId::Find) && key.kind != crossterm::event::KeyEventKind::Release && !chord_open {
             let mut cx = ctx!(self);
             let used = self.find.handle_key(key, &mut cx);
             let fx = cx.effects;
@@ -1103,12 +1106,16 @@ impl App {
             }
         }
         // And for the tree's speed search.
-        if self.focus.is(PanelId::Project) && key.kind != crossterm::event::KeyEventKind::Release && self.project.handle_key(key) {
+        if self.focus.is(PanelId::Project)
+            && key.kind != crossterm::event::KeyEventKind::Release
+            && !chord_open
+            && self.project.handle_key(key)
+        {
             self.dispatcher.reset();
             return;
         }
         // And for the Local History window's filter.
-        if self.focus.is(PanelId::LocalHistory) && key.kind != crossterm::event::KeyEventKind::Release {
+        if self.focus.is(PanelId::LocalHistory) && key.kind != crossterm::event::KeyEventKind::Release && !chord_open {
             let mut cx = ctx!(self);
             let used = self.history_panel.handle_key(key, &mut cx);
             let fx = cx.effects;
@@ -1119,7 +1126,11 @@ impl App {
             }
         }
         // And for the Tasks window's filter.
-        if self.focus.is(PanelId::Tasks) && key.kind != crossterm::event::KeyEventKind::Release && self.tasks.handle_key(key, &self.yman) {
+        if self.focus.is(PanelId::Tasks)
+            && key.kind != crossterm::event::KeyEventKind::Release
+            && !chord_open
+            && self.tasks.handle_key(key, &self.yman)
+        {
             self.dispatcher.reset();
             return;
         }
@@ -1241,9 +1252,14 @@ impl App {
                 self.focus.set(PanelId::Editor);
                 self.editor.handle_action(a, &mut cx)
             }
-            // So does a jump to a numbered bookmark that exists.
-            Action::Editor(a @ EditorAction::GotoNumberedBookmark(d)) => {
-                if self.editor.has_digit(*d) && !self.editor.merge_active() {
+            // So does a jump to a mnemonic bookmark that exists.
+            Action::Editor(a @ (EditorAction::GotoNumberedBookmark(_) | EditorAction::GotoLetterBookmark(_))) => {
+                let m = match a {
+                    EditorAction::GotoNumberedBookmark(d) => crate::editor::Mnemonic::digit(*d),
+                    EditorAction::GotoLetterBookmark(c) => crate::editor::Mnemonic::letter(*c),
+                    _ => None,
+                };
+                if m.is_some_and(|m| self.editor.has_mnemonic(m)) && !self.editor.merge_active() {
                     self.focus.set(PanelId::Editor);
                 }
                 self.editor.handle_action(a, &mut cx)

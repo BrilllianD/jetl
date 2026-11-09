@@ -3,7 +3,7 @@
 pub mod blame;
 mod bookmarks;
 mod breakpoints;
-pub use bookmarks::BookmarkTarget;
+pub use bookmarks::{Bookmark, BookmarkTarget, DEFAULT_GROUP, Mnemonic, group_name};
 pub use breakpoints::{BreakpointEntry, ExecutionPoint, breakpoint_glyph};
 pub mod brackets;
 pub(crate) mod breadcrumbs;
@@ -198,9 +198,9 @@ pub struct Editor {
     /// A closed file being reopened by back/forward or a numbered
     /// bookmark, and where to put the caret once it loads.
     pending_nav: Option<(PathBuf, nav::PendingAt)>,
-    /// Bookmarks of files without a tab: path to line and digit, as in
+    /// Bookmarks of files without a tab: path to line and bookmark, as in
     /// `Buffer::bookmarks` (see `bookmarks.rs`).
-    closed_bookmarks: std::collections::BTreeMap<PathBuf, std::collections::BTreeMap<usize, Option<u8>>>,
+    closed_bookmarks: std::collections::BTreeMap<PathBuf, std::collections::BTreeMap<usize, Bookmark>>,
     /// Breakpoint lines and their specs of files without a tab (see `breakpoints.rs`); a breakpoint's state is
     /// never kept.
     closed_breakpoints: std::collections::BTreeMap<PathBuf, std::collections::BTreeMap<usize, buffer::BreakpointSpec>>,
@@ -477,12 +477,14 @@ impl Editor {
         let le = setup.settings.end_of_line.filter(|_| setup.mtime.is_none() && text.is_empty());
         let mut buf = Buffer::from_text(id, None, text, lossy);
         let last = buf.rope.len_lines() - 1;
-        for (line, digit) in parked {
+        for (line, bookmark) in parked {
             // Lines past the end (the file shrank) land on the last one; a
-            // digit wins over a plain bookmark there.
-            let slot = buf.bookmarks.entry(line.min(last)).or_insert(digit);
-            if slot.is_none() {
-                *slot = digit;
+            // mnemonic wins over a plain bookmark there (`Bookmark::merge`).
+            match buf.bookmarks.entry(line.min(last)) {
+                std::collections::btree_map::Entry::Vacant(e) => {
+                    e.insert(bookmark);
+                }
+                std::collections::btree_map::Entry::Occupied(mut e) => e.get_mut().merge(bookmark),
             }
         }
         for (line, spec) in parked_breakpoints {
@@ -1175,11 +1177,27 @@ impl Editor {
                 return true;
             }
             E::ToggleNumberedBookmark => {
-                self.choose_digit(cx);
+                self.choose_mnemonic(cx);
                 return true;
             }
             E::GotoNumberedBookmark(d) => {
-                self.goto_digit(*d, cx);
+                if let Some(m) = Mnemonic::digit(*d) {
+                    self.goto_mnemonic(m, cx);
+                }
+                return true;
+            }
+            E::GotoLetterBookmark(c) => {
+                if let Some(m) = Mnemonic::letter(*c) {
+                    self.goto_mnemonic(m, cx);
+                }
+                return true;
+            }
+            E::MoveBookmarkToGroup => {
+                self.choose_group(cx);
+                return true;
+            }
+            E::RenameBookmarkGroup => {
+                self.choose_group_to_rename(cx);
                 return true;
             }
             E::ToggleBreakpoint => {
@@ -1538,6 +1556,9 @@ impl Editor {
             | E::ToggleNumberedBookmark
             | E::ToggleBreakpoint
             | E::GotoNumberedBookmark(_)
+            | E::GotoLetterBookmark(_)
+            | E::MoveBookmarkToGroup
+            | E::RenameBookmarkGroup
             | E::LineEndingLf
             | E::LineEndingCrlf
             | E::SetLanguage

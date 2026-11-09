@@ -1,6 +1,7 @@
 //! Dialog answers.
 
 use super::{AfterSave, App, Ctx};
+use crate::editor::{Mnemonic, group_name};
 use crate::event::Level;
 use crate::files::ops::{FsOp, check_name};
 use crate::git::model::BranchOp;
@@ -215,9 +216,43 @@ impl App {
                     self.focus.set(PanelId::Editor);
                 }
             }
-            (DialogId::BookmarkDigit(id, line), DialogResult::Button(d)) => {
-                if let Ok(d) = u8::try_from(d) {
-                    self.editor.set_bookmark_digit(id, line, d);
+            (DialogId::BookmarkMnemonic(id, line), DialogResult::Button(d)) => {
+                if let Some(m) = u8::try_from(d).ok().and_then(Mnemonic::digit) {
+                    self.editor.set_bookmark_mnemonic(id, line, m);
+                }
+            }
+            (DialogId::BookmarkMnemonic(id, line), DialogResult::Letter(c)) => {
+                if let Some(m) = Mnemonic::letter(c) {
+                    self.editor.set_bookmark_mnemonic(id, line, m);
+                }
+            }
+            (DialogId::BookmarkGroup { buffer, line, groups }, DialogResult::Choice(i)) => {
+                if let Some(g) = groups.get(i) {
+                    self.editor.move_bookmark_to_group(buffer, line, group_name(g).ok().flatten());
+                } else if i == groups.len() {
+                    self.dialog = Some(Dialog::input(
+                        DialogId::NewBookmarkGroup { buffer, line },
+                        "New Bookmark Group",
+                        "Name of the new group:",
+                        "",
+                        "Create",
+                    ));
+                }
+            }
+            (DialogId::NewBookmarkGroup { buffer, line }, DialogResult::Text(t)) => match group_name(&t) {
+                Ok(group) => self.editor.move_bookmark_to_group(buffer, line, group),
+                Err(e) => self.notify(Level::Warn, e),
+            },
+            (DialogId::RenameBookmarkGroupPick(groups), DialogResult::Choice(i)) => {
+                if let Some(old) = groups.get(i) {
+                    let message = format!("New name of '{old}':");
+                    self.dialog =
+                        Some(Dialog::input(DialogId::RenameBookmarkGroup(old.clone()), "Rename Bookmark Group", &message, old, "Rename"));
+                }
+            }
+            (DialogId::RenameBookmarkGroup(old), DialogResult::Text(t)) => {
+                if let Err(e) = self.editor.rename_bookmark_group(&old, &t) {
+                    self.notify(Level::Warn, e);
                 }
             }
             (DialogId::LineEnding(id), DialogResult::Choice(i)) => {

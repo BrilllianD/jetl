@@ -876,6 +876,29 @@ async fn editor_bookmarks() {
     assert_snapshot!("editor_bookmarks", snapshot(&term, &marks, None));
 }
 
+#[tokio::test]
+async fn editor_letter_bookmarks() {
+    let mut fx = stable_app("letter-bookmarks");
+    let app = &mut fx.app;
+    load(app, "notes.log", PLAIN);
+    draw_editor(app, 40, 8);
+    // A plain bookmark on line 1, digit 3 on line 3, letter K on line 4 and
+    // letter A on line 6, which has a breakpoint too; the caret ends on line 2.
+    editor(app, EditorAction::ToggleBookmark);
+    for (down, mnemonic) in [(2, '3'), (1, 'k'), (2, 'a')] {
+        moves(app, Motion::Down, down);
+        editor(app, EditorAction::ToggleNumberedBookmark);
+        app.handle_key(KeyEvent::new(KeyCode::Char(mnemonic), KeyModifiers::NONE));
+    }
+    set_breakpoints(app, &[(5, BpState::Verified)]);
+    moves(app, Motion::Up, 4);
+    let term = draw_editor(app, 40, 8);
+    // The letter is drawn reversed like a digit; the breakpoint hides the A.
+    let mut marks = vec![Mark::style('B', "bookmark", app.theme.bookmark), Mark::style('P', "breakpoint", app.theme.breakpoint)];
+    marks.extend(editor_marks(&app.theme));
+    assert_snapshot!("editor_letter_bookmarks", snapshot(&term, &marks, None));
+}
+
 /// `notes.log` with an lcov report: line 1 hit 3 times, 2 not hit, 3 hit once, 4 not hit, 6 hit twice;
 /// lines 5 and 7 are not listed. The report is older than the file's edits only if they come later.
 fn load_coverage_fixture(app: &mut App) {
@@ -1054,7 +1077,7 @@ async fn editor_fold_hides_breakpoints() {
     load(app, "notes.log", PLAIN);
     set_breakpoints(app, &[(1, BpState::Idle), (2, BpState::Failed)]);
     let b = app.editor.active_buffer_mut().unwrap();
-    b.bookmarks.insert(2, None);
+    b.bookmarks.insert(2, crate::editor::Bookmark::default());
     b.toggle_fold(0);
     moves(app, Motion::Down, 1);
     let term = draw_editor(app, 40, 8);
@@ -1244,6 +1267,48 @@ async fn bookmarks_dialog_with_closed_files() {
     let term = draw_app(app, 80, 24);
     let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap())];
     assert_snapshot!("bookmarks_dialog_with_closed_files", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn bookmarks_dialog_with_groups() {
+    let mut fx = stable_app("bookmarks-dialog-groups");
+    let app = &mut fx.app;
+    // notes.log: a plain bookmark on line 1 and K on line 2 in API; other.log,
+    // closed: a plain one on line 1 in later and 2 on line 2 in API.
+    load(app, "notes.log", PLAIN);
+    editor(app, EditorAction::ToggleBookmark);
+    moves(app, Motion::Down, 1);
+    editor(app, EditorAction::ToggleNumberedBookmark);
+    app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+    let id = app.editor.active_buffer().unwrap().id;
+    app.editor.move_bookmark_to_group(id, 1, Some("API".into()));
+    let other = load(app, "other.log", PLAIN);
+    let id = app.editor.active_buffer().unwrap().id;
+    app.editor.move_bookmark_to_group(id, 0, Some("later".into()));
+    moves(app, Motion::Down, 1);
+    editor(app, EditorAction::ToggleNumberedBookmark);
+    app.handle_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
+    app.editor.move_bookmark_to_group(id, 1, Some("API".into()));
+    app.editor.force_close(app.editor.index_of(&other).unwrap());
+    editor(app, EditorAction::ShowBookmarks);
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap())];
+    assert_snapshot!("bookmarks_dialog_with_groups", snapshot(&term, &marks, None));
+}
+
+#[tokio::test]
+async fn bookmark_group_dialog() {
+    let mut fx = stable_app("bookmark-group-dialog");
+    let app = &mut fx.app;
+    load(app, "notes.log", PLAIN);
+    let id = app.editor.active_buffer().unwrap().id;
+    app.editor.move_bookmark_to_group(id, 0, Some("later".into()));
+    moves(app, Motion::Down, 2);
+    app.editor.move_bookmark_to_group(id, 2, Some("API".into()));
+    editor(app, EditorAction::MoveBookmarkToGroup);
+    let term = draw_app(app, 80, 24);
+    let marks = [Mark::bg('L', "selected", app.theme.list_selected.bg.unwrap())];
+    assert_snapshot!("bookmark_group_dialog", snapshot(&term, &marks, None));
 }
 
 const WRAPPED: &str = "short\nthe quick brown fox jumps over the lazy dog héllo 世界 again and again\n\ttabbed line that wraps after the tab and more words\nend\n";

@@ -162,13 +162,13 @@
 # modified Insert key too. Scratch Files has no key (File menu, Find Action).
 "ctrl-alt-shift-insert" = "editor.new_scratch"
 "ctrl-alt-shift-f12" = "app.debug_panic"
-# Numbered bookmarks (Ctrl+F11 sets one), JetBrains-style. Ctrl+digit needs
+# Mnemonic bookmarks (Ctrl+F11 sets a digit or a letter), JetBrains-style. Ctrl+digit needs
 # the kitty protocol for 0-3, 8 and 9: legacy terminals send Ctrl+0, 1 and 9
 # as plain digits, Ctrl+2 as Ctrl+Space, Ctrl+3 as Esc and Ctrl+8 as
 # Backspace. Alt+B then the digit works everywhere. Legacy terminals send
 # Ctrl+/ and Ctrl+7 as the same byte, read as Ctrl+/ (Comment with Line
 # Comment), so bookmark 7 is Alt+B 7 there; with the kitty protocol Ctrl+7
-# jumps everywhere.
+# jumps everywhere. Letters jump only through Alt+B then the letter.
 "ctrl-0" = "editor.goto_bookmark_0"
 "ctrl-1" = "editor.goto_bookmark_1"
 "ctrl-2" = "editor.goto_bookmark_2"
@@ -189,6 +189,32 @@
 "alt-b 7" = "editor.goto_bookmark_7"
 "alt-b 8" = "editor.goto_bookmark_8"
 "alt-b 9" = "editor.goto_bookmark_9"
+"alt-b a" = "editor.goto_bookmark_a"
+"alt-b b" = "editor.goto_bookmark_b"
+"alt-b c" = "editor.goto_bookmark_c"
+"alt-b d" = "editor.goto_bookmark_d"
+"alt-b e" = "editor.goto_bookmark_e"
+"alt-b f" = "editor.goto_bookmark_f"
+"alt-b g" = "editor.goto_bookmark_g"
+"alt-b h" = "editor.goto_bookmark_h"
+"alt-b i" = "editor.goto_bookmark_i"
+"alt-b j" = "editor.goto_bookmark_j"
+"alt-b k" = "editor.goto_bookmark_k"
+"alt-b l" = "editor.goto_bookmark_l"
+"alt-b m" = "editor.goto_bookmark_m"
+"alt-b n" = "editor.goto_bookmark_n"
+"alt-b o" = "editor.goto_bookmark_o"
+"alt-b p" = "editor.goto_bookmark_p"
+"alt-b q" = "editor.goto_bookmark_q"
+"alt-b r" = "editor.goto_bookmark_r"
+"alt-b s" = "editor.goto_bookmark_s"
+"alt-b t" = "editor.goto_bookmark_t"
+"alt-b u" = "editor.goto_bookmark_u"
+"alt-b v" = "editor.goto_bookmark_v"
+"alt-b w" = "editor.goto_bookmark_w"
+"alt-b x" = "editor.goto_bookmark_x"
+"alt-b y" = "editor.goto_bookmark_y"
+"alt-b z" = "editor.goto_bookmark_z"
 
 [editor]
 "enter" = "editor.newline"

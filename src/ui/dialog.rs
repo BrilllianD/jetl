@@ -177,9 +177,25 @@ pub enum DialogId {
     GotoLine,
     /// Item `i` goes to bookmark `.0[i]`.
     Bookmarks(Vec<crate::editor::BookmarkTarget>),
-    /// Ctrl+F11: button `d` gives digit `d` to the bookmark on line `.1`
-    /// of buffer `.0`.
-    BookmarkDigit(crate::editor::buffer::BufferId, usize),
+    /// Ctrl+F11: button `d` gives digit `d`, a letter key `Letter(c)` that
+    /// letter, to the bookmark on line `.1` of buffer `.0`.
+    BookmarkMnemonic(crate::editor::buffer::BufferId, usize),
+    /// Move Bookmark to Group: item `i < groups.len()` is group `groups[i]`
+    /// (`groups[0]` is the default group), item `groups.len()` is New Group….
+    BookmarkGroup {
+        buffer: crate::editor::buffer::BufferId,
+        line: usize,
+        groups: Vec<String>,
+    },
+    /// The name of a new group for the bookmark on `line` of `buffer`.
+    NewBookmarkGroup {
+        buffer: crate::editor::buffer::BufferId,
+        line: usize,
+    },
+    /// Rename Bookmark Group: item `i` is group `.0[i]`.
+    RenameBookmarkGroupPick(Vec<String>),
+    /// The new name of the group `.0`.
+    RenameBookmarkGroup(String),
     /// Line ending of the buffer: item 0 is LF, 1 is CRLF.
     LineEnding(crate::editor::buffer::BufferId),
     /// Language of the buffer: item 0 is plain text, `i` is `LANGUAGES[i - 1]`.
@@ -387,6 +403,8 @@ pub enum DialogResult {
     /// The answer of an input dialog with a check row: the text and the check.
     TextChecked(String, bool),
     Choice(usize),
+    /// An upper-case ASCII letter, from a Confirm dialog with letter keys.
+    Letter(char),
     NewTask(crate::yman::cli::NewTask),
     Rebase(crate::git::rebase::RebasePlan),
     Cancel,
@@ -404,6 +422,8 @@ pub struct Dialog {
     /// Up and Down walk earlier answers (input dialogs that opt in with
     /// [`Dialog::with_history`]). Boxed like `paths`.
     history: Option<Box<InputHistory>>,
+    /// A letter key answers `DialogResult::Letter` (a Confirm dialog that opts in with [`Dialog::with_letter_keys`]).
+    letter_keys: bool,
     button_rects: Vec<Rect>,
     body_rect: Rect,
     input_rect: Rect,
@@ -437,6 +457,7 @@ impl Dialog {
             kind: DialogKind::Confirm { buttons: buttons.iter().map(|s| s.to_string()).collect(), selected: 0 },
             paths: None,
             history: None,
+            letter_keys: false,
             button_rects: vec![],
             body_rect: Rect::default(),
             input_rect: Rect::default(),
@@ -454,6 +475,7 @@ impl Dialog {
             kind: DialogKind::Input { input: TextInput::new(false).with_text(initial), ok: ok.into(), check: None },
             paths: None,
             history: None,
+            letter_keys: false,
             button_rects: vec![],
             body_rect: Rect::default(),
             input_rect: Rect::default(),
@@ -467,6 +489,13 @@ impl Dialog {
         }
         self
     }
+    /// A letter key (Shift allowed, no Ctrl or Alt) answers `DialogResult::Letter` with the upper-case letter,
+    /// before the first-letter accelerators; for a Confirm dialog, no effect on another kind.
+    pub fn with_letter_keys(mut self) -> Self {
+        self.letter_keys = true;
+        self
+    }
+
     /// Let Up and Down walk `items` (newest first) in an input dialog, which
     /// starts with the newest one selected when it was empty; no effect on
     /// another kind or without items.
@@ -492,6 +521,7 @@ impl Dialog {
             kind: DialogKind::Choice { items, list, filter: TextInput::new(false) },
             paths: None,
             history: None,
+            letter_keys: false,
             button_rects: vec![],
             body_rect: Rect::default(),
             input_rect: Rect::default(),
@@ -508,6 +538,7 @@ impl Dialog {
             kind: DialogKind::NewTask(Box::new(form)),
             paths: None,
             history: None,
+            letter_keys: false,
             button_rects: vec![],
             body_rect: Rect::default(),
             input_rect: Rect::default(),
@@ -526,6 +557,7 @@ impl Dialog {
             kind: DialogKind::Rebase(Box::new(form)),
             paths: None,
             history: None,
+            letter_keys: false,
             button_rects: vec![],
             body_rect: Rect::default(),
             input_rect: Rect::default(),
@@ -542,6 +574,7 @@ impl Dialog {
             kind: DialogKind::KeyCapture(Box::new(crate::ui::key_capture::KeyCaptureForm::new(initial))),
             paths: None,
             history: None,
+            letter_keys: false,
             button_rects: vec![],
             body_rect: Rect::default(),
             input_rect: Rect::default(),
@@ -598,6 +631,7 @@ impl Dialog {
         if let DialogKind::KeyCapture(f) = &mut self.kind {
             return f.handle_key(key);
         }
+        let letter_keys = self.letter_keys;
         match &mut self.kind {
             DialogKind::Confirm { buttons, selected } => match key.code {
                 KeyCode::Esc => Some(DialogResult::Cancel),
@@ -609,6 +643,10 @@ impl Dialog {
                 KeyCode::Right | KeyCode::Tab => {
                     *selected = (*selected + 1) % buttons.len();
                     None
+                }
+                KeyCode::Char(c) if letter_keys && c.is_ascii_alphabetic() => {
+                    (!key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT))
+                        .then(|| DialogResult::Letter(c.to_ascii_uppercase()))
                 }
                 KeyCode::Char(c) => {
                     // First-letter accelerators, e.g. Y/N/C.
@@ -1050,6 +1088,24 @@ mod tests {
 
     fn list(names: &[&str]) -> PathHint {
         PathHint::List(names.iter().map(|s| s.to_string()).collect())
+    }
+
+    #[test]
+    fn letter_keys_answer_letters_only_when_asked() {
+        let ev = |c, mods| KeyEvent::new(KeyCode::Char(c), mods);
+        let mut d = Dialog::confirm(DialogId::Info, "T", "", &["0", "1"]).with_letter_keys();
+        assert!(matches!(d.handle_key(ev('q', KeyModifiers::NONE)), Some(DialogResult::Letter('Q'))));
+        assert!(matches!(d.handle_key(ev('Q', KeyModifiers::SHIFT)), Some(DialogResult::Letter('Q'))));
+        assert!(d.handle_key(ev('q', KeyModifiers::CONTROL)).is_none());
+        assert!(d.handle_key(ev('q', KeyModifiers::ALT)).is_none());
+        assert!(matches!(d.handle_key(ev('1', KeyModifiers::NONE)), Some(DialogResult::Button(1))));
+        let mut d = Dialog::confirm(DialogId::Info, "T", "", &["0", "1"]);
+        assert!(d.handle_key(ev('q', KeyModifiers::NONE)).is_none());
+        // With the flag a letter wins over a button's first letter.
+        let mut d = Dialog::confirm(DialogId::Info, "T", "", &["Yes", "No"]).with_letter_keys();
+        assert!(matches!(d.handle_key(ev('y', KeyModifiers::NONE)), Some(DialogResult::Letter('Y'))));
+        let mut d = Dialog::confirm(DialogId::Info, "T", "", &["Yes", "No"]);
+        assert!(matches!(d.handle_key(ev('y', KeyModifiers::NONE)), Some(DialogResult::Button(0))));
     }
 
     #[test]

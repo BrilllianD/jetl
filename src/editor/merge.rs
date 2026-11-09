@@ -964,7 +964,10 @@ impl Editor {
             | E::NavForward
             | E::ShowBookmarks
             | E::ToggleNumberedBookmark
-            | E::GotoNumberedBookmark(_) => cx.notify(Level::Info, BUSY),
+            | E::GotoNumberedBookmark(_)
+            | E::GotoLetterBookmark(_)
+            | E::MoveBookmarkToGroup
+            | E::RenameBookmarkGroup => cx.notify(Level::Info, BUSY),
             E::Save | E::SaveAs | E::Format => cx.notify(Level::Info, "Apply (Ctrl+Enter) saves the merge result"),
             _ => return false,
         }

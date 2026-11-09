@@ -78,10 +78,16 @@ pub struct Session {
     /// Numbered bookmarks of files without a tab.
     #[serde(default)]
     pub closed_bookmarks: Vec<SessionBookmark>,
-    /// Plain bookmarks of files without a tab (a field of its own, so
-    /// sessions stay readable by builds that know only numbered ones).
+    /// Bookmarks without a digit of files without a tab, lettered ones included (a field of its own, so
+    /// sessions stay readable by builds that know only numbered ones, which keep a letter as a plain bookmark).
     #[serde(default)]
     pub closed_plain_bookmarks: Vec<SessionClosedFile>,
+    /// The lettered bookmarks of files without a tab; their lines are also in `closed_plain_bookmarks`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub closed_bookmark_letters: Vec<SessionLetterBookmark>,
+    /// The group of the closed bookmarks outside the default group, digit, letter or plain.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub closed_bookmark_groups: Vec<SessionGroupBookmark>,
     /// Breakpoint lines of files without a tab, with their specs in `specs`; never their state.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub closed_breakpoints: Vec<SessionClosedFile>,
@@ -277,6 +283,60 @@ pub struct SessionBookmark {
     pub line: usize,
 }
 
+/// A lettered bookmark of a file without a tab.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionLetterBookmark {
+    pub letter: char,
+    pub path: PathBuf,
+    /// 0-based.
+    pub line: usize,
+}
+
+/// A bookmark of a file without a tab that is in a named group.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionGroupBookmark {
+    pub group: String,
+    pub path: PathBuf,
+    /// 0-based.
+    pub line: usize,
+}
+
+/// The bookmarks of closed files a session lists, merged per (path, line): plain first, then digits, then
+/// letters; a group entry sets the group of a bookmark that exists and never makes one.
+fn closed_bookmarks_of(session: &Session) -> Vec<(PathBuf, usize, crate::editor::Bookmark)> {
+    use crate::editor::{Bookmark, Mnemonic, group_name};
+    let mut merged: std::collections::BTreeMap<(PathBuf, usize), Bookmark> = Default::default();
+    let mut put = |path: &Path, line: usize, bookmark: Bookmark| match merged.entry((path.to_path_buf(), line)) {
+        std::collections::btree_map::Entry::Vacant(e) => {
+            e.insert(bookmark);
+        }
+        std::collections::btree_map::Entry::Occupied(mut e) => e.get_mut().merge(bookmark),
+    };
+    for f in &session.closed_plain_bookmarks {
+        for &line in &f.lines {
+            put(&f.path, line, Bookmark::default());
+        }
+    }
+    for b in &session.closed_bookmarks {
+        if let Some(m) = Mnemonic::digit(b.digit) {
+            put(&b.path, b.line, Bookmark { mnemonic: Some(m), group: None });
+        }
+    }
+    for b in &session.closed_bookmark_letters {
+        if let Some(m) = Mnemonic::letter(b.letter) {
+            put(&b.path, b.line, Bookmark { mnemonic: Some(m), group: None });
+        }
+    }
+    for g in &session.closed_bookmark_groups {
+        if let (Some(b), Ok(group)) = (merged.get_mut(&(g.path.clone(), g.line)), group_name(&g.group)) {
+            b.group = group;
+        }
+    }
+    merged.into_iter().map(|((path, line), b)| (path, line, b)).collect()
+}
+
 /// The editor's split tree and the focused group.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionSplits {
@@ -449,6 +509,12 @@ pub struct SessionFile {
     /// before numbered bookmarks have none.
     #[serde(default)]
     pub bookmark_digits: Vec<(u8, usize)>,
+    /// The lettered ones among `bookmarks`: (letter, line).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bookmark_letters: Vec<(char, usize)>,
+    /// The ones among `bookmarks` outside the default group: (group, line).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bookmark_groups: Vec<(String, usize)>,
     /// Lines with a breakpoint, 0-based; never their state.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub breakpoints: Vec<usize>,
@@ -674,6 +740,8 @@ impl App {
                 scroll_col: b.view.scroll_col,
                 bookmarks,
                 bookmark_digits: b.digits(),
+                bookmark_letters: b.letters(),
+                bookmark_groups: b.grouped(),
                 breakpoints: b.breakpoints.keys().copied().collect(),
                 breakpoint_specs: session_specs(b.breakpoints.iter().map(|(l, m)| (*l, &m.spec))),
                 pinned: pinned.contains(&b.id),
@@ -809,12 +877,17 @@ impl App {
             self.editor.closed_digits().into_iter().map(|(digit, path, line)| SessionBookmark { digit, path, line }).collect();
         let mut closed_plain_bookmarks: Vec<SessionClosedFile> = Vec::new();
         // By path then line, so one entry per file.
-        for (path, line, _) in self.editor.closed_bookmarks().into_iter().filter(|(_, _, d)| d.is_none()) {
+        let not_digit = |m: &Option<crate::editor::Mnemonic>| !matches!(m, Some(crate::editor::Mnemonic::Digit(_)));
+        for (path, line, _) in self.editor.closed_bookmarks().into_iter().filter(|(_, _, b)| not_digit(&b.mnemonic)) {
             match closed_plain_bookmarks.last_mut() {
                 Some(f) if f.path == path => f.lines.push(line),
                 _ => closed_plain_bookmarks.push(SessionClosedFile { path, lines: vec![line], specs: vec![] }),
             }
         }
+        let closed_bookmark_letters =
+            self.editor.closed_letters().into_iter().map(|(letter, path, line)| SessionLetterBookmark { letter, path, line }).collect();
+        let closed_bookmark_groups =
+            self.editor.closed_groups().into_iter().map(|(group, path, line)| SessionGroupBookmark { group, path, line }).collect();
         Session {
             root,
             files,
@@ -825,6 +898,8 @@ impl App {
             splits,
             closed_bookmarks,
             closed_plain_bookmarks,
+            closed_bookmark_letters,
+            closed_bookmark_groups,
             closed_breakpoints: self
                 .editor
                 .closed_breakpoint_marks()
@@ -1028,6 +1103,8 @@ impl App {
             self.editor.restore_view(i, (f.line, f.col), (f.scroll_line, f.scroll_col), &f.folds, f.wrap);
             self.editor.buffers[i].set_bookmarks(&f.bookmarks);
             self.editor.restore_digits(i, &f.bookmark_digits);
+            self.editor.restore_letters(i, &f.bookmark_letters);
+            self.editor.buffers[i].set_bookmark_groups(&f.bookmark_groups);
             self.editor.buffers[i].set_breakpoints(&f.breakpoints);
             self.editor.buffers[i].restore_breakpoint_specs(&loaded_specs(&f.breakpoint_specs));
             if f.pinned {
@@ -1060,10 +1137,7 @@ impl App {
             return;
         }
         self.open_editor_set(&session.editor_set(), files);
-        let numbered = session.closed_bookmarks.iter().map(|b| (b.path.clone(), b.line, Some(b.digit)));
-        let plain = session.closed_plain_bookmarks.iter().flat_map(|f| f.lines.iter().map(|&l| (f.path.clone(), l, None)));
-        let closed: Vec<_> = numbered.chain(plain).collect();
-        self.editor.restore_closed_bookmarks(&closed);
+        self.editor.restore_closed_bookmarks(&closed_bookmarks_of(&session));
         let breakpoints: Vec<_> = session
             .closed_breakpoints
             .iter()
@@ -1128,6 +1202,15 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::editor::Bookmark;
+
+    fn plain() -> Bookmark {
+        Bookmark::default()
+    }
+
+    fn digit(d: u8) -> Bookmark {
+        Bookmark { mnemonic: crate::editor::Mnemonic::digit(d), group: None }
+    }
 
     fn temp_dir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("jetl-test-session-{name}-{}", std::process::id()));
@@ -1155,8 +1238,10 @@ mod tests {
                     col: 4,
                     scroll_line: 2,
                     scroll_col: 0,
-                    bookmarks: vec![3, 40],
+                    bookmarks: vec![3, 40, 50],
                     bookmark_digits: vec![(7, 40)],
+                    bookmark_letters: vec![('K', 3)],
+                    bookmark_groups: vec![("API".into(), 3)],
                     breakpoints: vec![2, 40],
                     breakpoint_specs: vec![SessionBreakpointSpec { line: 40, condition: Some("n > 1".into()), ..Default::default() }],
                     pinned: true,
@@ -1171,6 +1256,8 @@ mod tests {
                     scroll_col: 3,
                     bookmarks: vec![],
                     bookmark_digits: vec![],
+                    bookmark_letters: vec![],
+                    bookmark_groups: vec![],
                     breakpoints: vec![],
                     breakpoint_specs: vec![],
                     pinned: false,
@@ -1230,6 +1317,8 @@ mod tests {
             }),
             closed_bookmarks: vec![SessionBookmark { digit: 2, path: root.join("src/lib.rs"), line: 12 }],
             closed_plain_bookmarks: vec![SessionClosedFile { path: root.join("src/lib.rs"), lines: vec![3, 40], specs: vec![] }],
+            closed_bookmark_letters: vec![SessionLetterBookmark { letter: 'Q', path: root.join("src/lib.rs"), line: 40 }],
+            closed_bookmark_groups: vec![SessionGroupBookmark { group: "API".into(), path: root.join("src/lib.rs"), line: 12 }],
             closed_breakpoints: vec![SessionClosedFile { path: root.join("src/lib.rs"), lines: vec![5], specs: vec![] }],
             watches: vec!["a".into(), "b.c".into()],
             exception_filters: BTreeMap::new(),
@@ -1514,9 +1603,9 @@ mod tests {
         app.editor.open_text(path.clone(), text, false, &app.theme);
         app.editor.buffers[0].set_bookmarks(&[1, 3]);
         let id = app.editor.buffers[0].id;
-        app.editor.set_bookmark_digit(id, 1, 5);
+        app.editor.set_bookmark_mnemonic(id, 1, crate::editor::Mnemonic::Digit(5));
         let gone = app.workspace.root.join("gone.txt");
-        app.editor.restore_closed_bookmarks(&[(gone.clone(), 4, Some(2)), (gone.clone(), 1, None), (gone.clone(), 7, None)]);
+        app.editor.restore_closed_bookmarks(&[(gone.clone(), 4, digit(2)), (gone.clone(), 1, plain()), (gone.clone(), 7, plain())]);
         let b = &mut app.editor.buffers[0];
         let fold = crate::editor::fold::Fold { start: 0, end: b.rope.line_to_char(2) + 3 };
         assert!(b.view.folds.collapse(fold, &b.rope));
@@ -1539,10 +1628,149 @@ mod tests {
         let b = &fresh.editor.buffers[0];
         assert_eq!(b.bookmarks.keys().copied().collect::<Vec<_>>(), vec![1]);
         assert_eq!(b.digits(), vec![(5, 1)]);
-        assert_eq!(fresh.editor.closed_bookmarks(), vec![(gone.clone(), 1, None), (gone.clone(), 4, Some(2)), (gone, 7, None)]);
+        assert_eq!(fresh.editor.closed_bookmarks(), vec![(gone.clone(), 1, plain()), (gone.clone(), 4, digit(2)), (gone, 7, plain())]);
         assert_eq!(b.view.folds.hidden().first(), Some(&(1..3)), "the fold is back");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&fresh_dir);
+    }
+
+    fn marked(m: Option<crate::editor::Mnemonic>, group: Option<&str>) -> Bookmark {
+        Bookmark { mnemonic: m, group: group.map(String::from) }
+    }
+
+    /// A session with letters and groups, from an app with a.txt open and gone.txt closed.
+    fn lettered_session(name: &str) -> (Session, crate::app::App, PathBuf) {
+        use crate::editor::Mnemonic;
+        let (mut app, dir) = crate::app::tests::test_app(name);
+        let path = app.workspace.root.join("a.txt");
+        app.editor.open_text(path, "l0\nl1\nl2\nl3\nl4\nl5\n", false, &app.theme);
+        app.editor.buffers[0].set_bookmarks(&[1, 3, 4]);
+        let id = app.editor.buffers[0].id;
+        app.editor.set_bookmark_mnemonic(id, 1, Mnemonic::Letter('K'));
+        app.editor.set_bookmark_mnemonic(id, 3, Mnemonic::Digit(5));
+        app.editor.move_bookmark_to_group(id, 1, Some("API".into()));
+        app.editor.move_bookmark_to_group(id, 4, Some("later".into()));
+        let gone = app.workspace.root.join("gone.txt");
+        app.editor.restore_closed_bookmarks(&[
+            (gone.clone(), 4, marked(Mnemonic::letter('q'), Some("API"))),
+            (gone.clone(), 1, plain()),
+            (gone.clone(), 7, marked(Mnemonic::digit(2), Some("later"))),
+        ]);
+        (app.session(), app, dir)
+    }
+
+    #[tokio::test]
+    async fn letters_and_groups_survive_a_session_round_trip() {
+        use crate::editor::Mnemonic;
+        let (session, app, dir) = lettered_session("session-letters");
+        let gone = app.workspace.root.join("gone.txt");
+        let f = &session.files[0];
+        assert_eq!(f.bookmarks, vec![1, 3, 4]);
+        assert_eq!(f.bookmark_digits, vec![(5, 3)]);
+        assert_eq!(f.bookmark_letters, vec![('K', 1)]);
+        assert_eq!(f.bookmark_groups, vec![("API".to_string(), 1), ("later".to_string(), 4)]);
+        assert_eq!(session.closed_bookmarks, vec![SessionBookmark { digit: 2, path: gone.clone(), line: 7 }]);
+        assert_eq!(session.closed_plain_bookmarks, vec![SessionClosedFile { path: gone.clone(), lines: vec![1, 4], specs: vec![] }]);
+        assert_eq!(session.closed_bookmark_letters, vec![SessionLetterBookmark { letter: 'Q', path: gone.clone(), line: 4 }]);
+        assert_eq!(
+            session.closed_bookmark_groups,
+            vec![
+                SessionGroupBookmark { group: "API".into(), path: gone.clone(), line: 4 },
+                SessionGroupBookmark { group: "later".into(), path: gone.clone(), line: 7 },
+            ]
+        );
+        // Through the file, into a fresh app.
+        session.save(&app.paths.sessions_dir()).unwrap();
+        let loaded = Session::load(&app.paths.sessions_dir(), &app.workspace.root).unwrap();
+        assert_eq!(loaded, session);
+        let (mut fresh, fresh_dir) = crate::app::tests::test_app("session-letters-2");
+        fresh.workspace.root = app.workspace.root.clone();
+        let generation = fresh.workspace.generation;
+        fresh.session_loaded(generation, loaded, vec![Ok(b"l0\nl1\nl2\nl3\nl4\nl5\n".to_vec())]);
+        let got: Vec<_> = fresh.editor.buffers[0].bookmarks.iter().map(|(l, b)| (*l, b.clone())).collect();
+        let want: Vec<_> = app.editor.buffers[0].bookmarks.iter().map(|(l, b)| (*l, b.clone())).collect();
+        assert_eq!(got, want);
+        assert_eq!(got[0], (1, marked(Mnemonic::letter('k'), Some("API"))));
+        assert_eq!(fresh.editor.closed_bookmarks(), app.editor.closed_bookmarks());
+        assert_eq!(
+            fresh.editor.closed_bookmarks(),
+            vec![
+                (gone.clone(), 1, plain()),
+                (gone.clone(), 4, marked(Mnemonic::letter('q'), Some("API"))),
+                (gone, 7, marked(Mnemonic::digit(2), Some("later"))),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&fresh_dir);
+    }
+
+    #[tokio::test]
+    async fn session_without_letters_or_groups_writes_no_new_keys() {
+        let (mut app, dir) = crate::app::tests::test_app("session-no-letters");
+        let path = app.workspace.root.join("a.txt");
+        app.editor.open_text(path, "l0\nl1\nl2\n", false, &app.theme);
+        app.editor.buffers[0].set_bookmarks(&[0, 2]);
+        let id = app.editor.buffers[0].id;
+        app.editor.set_bookmark_mnemonic(id, 2, crate::editor::Mnemonic::Digit(3));
+        let gone = app.workspace.root.join("gone.txt");
+        app.editor.restore_closed_bookmarks(&[(gone.clone(), 4, digit(2)), (gone, 1, plain())]);
+        let json = serde_json::to_string(&app.session()).unwrap();
+        for key in ["bookmark_letters", "bookmark_groups", "closed_bookmark_letters", "closed_bookmark_groups"] {
+            assert!(!json.contains(key), "{key} in {json}");
+        }
+        assert!(json.contains("bookmark_digits") && json.contains("closed_plain_bookmarks"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn older_builds_keep_every_bookmark_of_a_newer_session() {
+        let (session, app, dir) = lettered_session("session-older-build");
+        let mut json = serde_json::to_value(&session).unwrap();
+        // The file, as a build that knows none of the new keys reads it.
+        json["files"][0].as_object_mut().unwrap().remove("bookmark_letters").unwrap();
+        json["files"][0].as_object_mut().unwrap().remove("bookmark_groups").unwrap();
+        for key in ["closed_bookmark_letters", "closed_bookmark_groups"] {
+            json.as_object_mut().unwrap().remove(key).unwrap();
+        }
+        let old: Session = serde_json::from_value(json).unwrap();
+        let (mut fresh, fresh_dir) = crate::app::tests::test_app("session-older-build-2");
+        fresh.workspace.root = app.workspace.root.clone();
+        let generation = fresh.workspace.generation;
+        fresh.session_loaded(generation, old, vec![Ok(b"l0\nl1\nl2\nl3\nl4\nl5\n".to_vec())]);
+        let open: Vec<_> = fresh.editor.buffers[0].bookmarks.iter().map(|(l, b)| (*l, b.clone())).collect();
+        assert_eq!(open, vec![(1, plain()), (3, digit(5)), (4, plain())], "every line is a bookmark; the letter and groups are gone");
+        let gone = fresh.workspace.root.join("gone.txt");
+        assert_eq!(fresh.editor.closed_bookmarks(), vec![(gone.clone(), 1, plain()), (gone.clone(), 4, plain()), (gone, 7, digit(2))]);
+        // The newer file with keys it does not know loads.
+        let mut json = serde_json::to_value(&session).unwrap();
+        json["future"] = serde_json::json!(1);
+        json["files"][0]["future"] = serde_json::json!(1);
+        let newer: Session = serde_json::from_value(json).unwrap();
+        assert_eq!(newer, session);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&fresh_dir);
+    }
+
+    #[tokio::test]
+    async fn bad_letters_and_groups_in_a_session_are_skipped() {
+        use crate::editor::Mnemonic;
+        let (mut app, dir) = crate::app::tests::test_app("session-bad-letters");
+        let path = app.workspace.root.join("a.txt");
+        let json = serde_json::json!({
+            "root": app.workspace.root,
+            "files": [{
+                "path": path,
+                "bookmarks": [0, 1, 2],
+                "bookmark_letters": [["1", 0], ["k", 1], ["K", 2], ["Q", 9]],
+                "bookmark_groups": [["a\u{1}b", 0], ["Bookmarks", 1], ["X", 5]],
+            }],
+        });
+        let session: Session = serde_json::from_value(json).unwrap();
+        let generation = app.workspace.generation;
+        app.session_loaded(generation, session, vec![Ok(b"a\nb\nc".to_vec())]);
+        let got: Vec<_> = app.editor.buffers[0].bookmarks.iter().map(|(l, b)| (*l, b.clone())).collect();
+        assert_eq!(got, vec![(0, plain()), (1, marked(Mnemonic::letter('K'), None)), (2, plain())]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn cond_spec(line: usize, text: &str) -> SessionBreakpointSpec {
@@ -1891,7 +2119,7 @@ mod tests {
         let generation = app.workspace.generation;
         app.session_loaded(generation, session, vec![Ok(b"a\nb\nc\n".to_vec())]);
         let b = &app.editor.buffers[0];
-        assert_eq!(b.bookmarks.iter().map(|(l, d)| (*l, *d)).collect::<Vec<_>>(), vec![(1, None), (2, None)]);
+        assert_eq!(b.bookmarks.iter().map(|(l, d)| (*l, d.clone())).collect::<Vec<_>>(), vec![(1, plain()), (2, plain())]);
         assert!(app.editor.closed_digits().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
