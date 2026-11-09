@@ -178,6 +178,14 @@ pub enum AppMsg {
         /// `Err`: the message and the index file's mtime when the load began.
         result: Result<Box<crate::symbols::scip::ScipIndex>, (String, Option<std::time::SystemTime>)>,
     },
+    /// The lcov report named by `[coverage] lcov`, read and parsed in `spawn_blocking`;
+    /// tagged with the workspace generation and the load's seq (`CoverageState::seq`).
+    /// `Ok(None)`: the file does not exist.
+    Coverage {
+        generation: u64,
+        seq: u64,
+        result: Result<Option<crate::coverage::Coverage>, String>,
+    },
     /// An off-thread palette filter (`Palette::refilter` for large sources):
     /// candidate indices, best first, of filter `seq`; tagged with the
     /// workspace generation. Cancelled filters send nothing.

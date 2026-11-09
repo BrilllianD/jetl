@@ -234,6 +234,10 @@ theme_fields! {
         tab_dirty,
         line_number,
         line_number_current,
+        /// Line numbers of lines the `[coverage] lcov` report covers (hits > 0): only the foreground is used.
+        coverage_covered,
+        /// Line numbers of lines the report lists with 0 hits: only the foreground is used.
+        coverage_uncovered,
         bracket_match,
         /// Bracket pair colours (`editor.bracket_pair_colours`), depth 0, 3, 6…: only the foreground is used.
         bracket_1,
@@ -966,6 +970,21 @@ mod tests {
             let rfg = t.ruler.fg.unwrap_or_else(|| panic!("{name} ansi256={ansi256}: no ruler fg"));
             assert_ne!(rfg, t.bg, "{name} ansi256={ansi256} ruler");
             assert_ne!(rfg, t.current_line_bg, "{name} ansi256={ansi256} ruler");
+        }
+    }
+
+    #[test]
+    fn coverage_colours_differ_from_line_numbers() {
+        for (name, ansi256, t) in every_test_theme() {
+            let covered = t.coverage_covered.fg.unwrap_or_else(|| panic!("{name} ansi256={ansi256}: no coverage_covered fg"));
+            let uncovered = t.coverage_uncovered.fg.unwrap_or_else(|| panic!("{name} ansi256={ansi256}: no coverage_uncovered fg"));
+            assert_ne!(covered, uncovered, "{name} ansi256={ansi256}");
+            for (key, fg) in [("covered", covered), ("uncovered", uncovered)] {
+                assert_ne!(Some(fg), t.line_number.fg, "{name} ansi256={ansi256} {key} vs line_number");
+                assert_ne!(Some(fg), t.line_number_current.fg, "{name} ansi256={ansi256} {key} vs line_number_current");
+                assert_ne!(fg, t.bg, "{name} ansi256={ansi256} {key} vs bg");
+                assert_ne!(fg, t.current_line_bg, "{name} ansi256={ansi256} {key} vs current_line_bg");
+            }
         }
     }
 

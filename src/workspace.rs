@@ -630,6 +630,7 @@ impl App {
         self.scip.index = None;
         self.scip.failed_mtime = None;
         self.load_scip();
+        self.coverage_restart();
         crate::tui::set_title(&root);
         self.editor.clear_nav();
         self.history_root_changed();

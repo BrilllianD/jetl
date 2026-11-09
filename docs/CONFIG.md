@@ -261,7 +261,24 @@ snapshot_unsaved_secs = 0      # every this many seconds, snapshot unsaved edits
 [index]
 scip = ""                      # SCIP index file relative to the root (e.g. "index.scip"); "" = none
 scip_command = ""              # shell command that writes the index (run.build_scip_index); "" = none
+
+[coverage]
+lcov = "lcov.info"             # an lcov report (cargo llvm-cov --lcov --output-path lcov.info, pytest --cov --cov-report=lcov, c8 --reporter=lcov), relative to the root or absolute; "" = none
 ```
+
+Coverage (`[coverage] lcov`): only the `SF:` and `DA:` records of the report are
+read. The line numbers of lines it lists are drawn in `coverage_covered` (hits
+above 0) or `coverage_uncovered` (0 hits); a folded header takes the uncovered
+colour when a line it hides is uncovered, and the caret line keeps
+`line_number_current`. Since only the line numbers change colour, nothing shows
+with line numbers off. A buffer with unsaved changes, or a file newer than the
+report (or changed since it was loaded), shows none. jetl does not run a
+coverage tool. The report is read again when it changes on disk, when the key
+changes, after a project switch, and at start; a report outside the project root
+is not watched, so it is read again on View > Coverage, when the terminal regains
+focus and when the key changes. View > Coverage (`coverage.toggle`) hides and
+shows the colours (not saved). A report above 256 MiB is refused with one
+warning.
 
 SCIP index (`[index] scip`): build one with `rust-analyzer scip . --output
 index.scip` (other indexers: scip-typescript, scip-python, scip-java,
@@ -1370,12 +1387,13 @@ and a resolved change with `merge_resolved_bg`.
 
 Style fields: `border border_focused title title_focused strip_item
 strip_item_active strip_drop status_accent tab tab_active tab_dirty line_number
-line_number_current bracket_match bracket_1 bracket_2 bracket_3 secondary_caret bookmark breakpoint breakpoint_unverified debug_execution_arrow fold_placeholder git_added git_modified git_deleted git_untracked
+line_number_current coverage_covered coverage_uncovered bracket_match bracket_1 bracket_2 bracket_3 secondary_caret bookmark breakpoint breakpoint_unverified debug_execution_arrow fold_placeholder git_added git_modified git_deleted git_untracked
 git_conflicted git_ignored popup_border list_selected list_selected_unfocused
 dim error warn info diag_error diag_warn diag_info diag_hint lightbulb indent_guide ruler inlay_hint inline_blame breadcrumbs sticky_scroll splitter`.
 `strip_drop` marks the drop target while a tool strip button is dragged; fg and bg are used.
 `breakpoint` is the gutter's `●`, `breakpoint_unverified` its `○`, for a breakpoint the adapter has not verified or has refused.
 `debug_execution_arrow` is the `▶` on the line a paused program is on, drawn before a breakpoint or bookmark on that line, and `debug_execution_line_bg` is that line's background. `debug_frame_line_bg` is the line of a stack frame chosen in the Debug window, when it is not the line the program is paused on.
+`coverage_covered` and `coverage_uncovered` colour the line numbers of covered and uncovered lines (`[coverage] lcov`); only their foreground is used.
 `indent_guide` colours the indent guides (`editor.indent_guides`); only its
 foreground is used.
 `ruler` colours the column rulers (`editor.rulers`); only its foreground is used.

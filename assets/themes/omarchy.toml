@@ -45,6 +45,8 @@ tab_active = { fg = "{{bright_foreground}}", bg = "{{background}}", bold = true 
 tab_dirty = "{{yellow}}"
 line_number = "{{mix foreground background 55}}"
 line_number_current = "{{foreground}}"
+coverage_covered = "{{green}}"
+coverage_uncovered = "{{red}}"
 bracket_match = { bg = "{{mix background accent 30}}", bold = true }
 bracket_1 = "{{yellow}}"
 bracket_2 = "{{magenta}}"

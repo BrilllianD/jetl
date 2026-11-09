@@ -504,6 +504,8 @@ pub struct RenderOpts<'a> {
     pub execution_line: Option<usize>,
     /// The 0-based line of the stack frame chosen in the Debug window, when it is in this buffer's file.
     pub frame_line: Option<usize>,
+    /// This buffer's line coverage (`[coverage] lcov`), `None` when hidden, absent, stale or the buffer is dirty.
+    pub coverage: Option<&'a crate::coverage::FileCoverage>,
 }
 
 /// How far a blank line looks up and down for the non-blank lines that set
@@ -730,7 +732,12 @@ pub fn render(buf: &mut Buffer, screen: &mut Screen, area: Rect, o: &RenderOpts)
         let span = line..=folded.map_or(line, |(_, last)| last);
         // A fold's header shows the arrow and the background of the line it hides.
         let on_execution = o.execution_line.is_some_and(|l| span.contains(&l));
-        let num_style = if is_cur { theme.line_number_current } else { theme.line_number };
+        // The caret line keeps its own style; coverage only recolours the digits of the other lines.
+        let num_style = if is_cur {
+            theme.line_number_current
+        } else {
+            o.coverage.and_then(|c| c.state(span.clone())).map_or(theme.line_number, |s| s.number_style(theme))
+        };
         if let Some(b) = buf.blame.as_ref().filter(|b| b.column) {
             let label = match b.commit_at(line) {
                 Some(c) if row.seg == 0 => Some(super::blame::label(c)),
@@ -1205,6 +1212,7 @@ mod tests {
             decor: Some(&decor),
             execution_line: None,
             frame_line: None,
+            coverage: None,
         };
         let area = Rect::new(0, 0, 20, 5);
         let mut screen = Screen::empty(area);
@@ -1246,6 +1254,7 @@ mod tests {
                 decor: Some(&decor),
                 execution_line: Some(line),
                 frame_line: None,
+                coverage: None,
             };
             let mut screen = Screen::empty(area);
             let out = render(&mut buf, &mut screen, area, &o);
@@ -1309,6 +1318,7 @@ mod tests {
             decor: None,
             execution_line: None,
             frame_line: None,
+            coverage: None,
         };
         let area = Rect::new(0, 0, 40, 3);
         let mut screen = Screen::empty(area);
@@ -1356,6 +1366,7 @@ mod tests {
             decor: None,
             execution_line: None,
             frame_line: None,
+            coverage: None,
         }
     }
 
@@ -1630,6 +1641,58 @@ mod tests {
         let mut screen = Screen::empty(area);
         let out = render(buf, &mut screen, area, o);
         (screen, out.text_area)
+    }
+
+    fn covered(c: &crate::coverage::Coverage) -> Option<&crate::coverage::FileCoverage> {
+        c.file(std::path::Path::new("/t"))
+    }
+
+    #[test]
+    fn coverage_colours_only_the_line_numbers() {
+        let theme = Theme::default();
+        let c = crate::coverage::Coverage::parse("SF:/t\nDA:1,2\nDA:2,0\nDA:4,0\nend_of_record\n", std::path::Path::new("/"));
+        let mut buf = Buffer::from_text(1, None, "a\nb\nc\nd\ne\n", false);
+        buf.view.set_sel(Selection::point(4));
+        buf.breakpoints.insert(0, Default::default());
+        let plain = resize_opts(&theme);
+        let on = RenderOpts { coverage: covered(&c), ..resize_opts(&theme) };
+        let (a, ta) = draw_with(&mut buf, &plain, 30, 6);
+        let (b, tb) = draw_with(&mut buf, &on, 30, 6);
+        assert_eq!(ta.x, tb.x, "the gutter keeps its width");
+        let digits = ta.x - 4;
+        let num_x = digits - 1;
+        assert_eq!(b[(num_x, 0)].symbol(), "1");
+        assert_eq!(b[(num_x, 0)].fg, theme.coverage_covered.fg.unwrap(), "hits > 0");
+        assert_eq!(b[(num_x, 1)].fg, theme.coverage_uncovered.fg.unwrap(), "0 hits");
+        assert_eq!(b[(num_x, 2)].fg, theme.line_number_current.fg.unwrap(), "the caret line keeps its own style");
+        assert_eq!(b[(num_x, 3)].fg, theme.coverage_uncovered.fg.unwrap());
+        assert_eq!(b[(num_x, 4)].fg, theme.line_number.fg.unwrap(), "unlisted");
+        for y in 0..5 {
+            for x in 0..30u16 {
+                if x < digits {
+                    continue;
+                }
+                assert_eq!(a[(x, y)], b[(x, y)], "cell ({x},{y}) outside the digits");
+            }
+        }
+    }
+
+    #[test]
+    fn coverage_skips_wrapped_rows() {
+        let theme = Theme::default();
+        let c = crate::coverage::Coverage::parse("SF:/t\nDA:1,3\nend_of_record\n", std::path::Path::new("/"));
+        let text = format!("{}\nz\n", "y".repeat(25));
+        let mut buf = Buffer::from_text(1, None, &text, false);
+        buf.view.wrap.on = true;
+        buf.view.set_sel(Selection::point(text.len() - 1));
+        let o = RenderOpts { coverage: covered(&c), ..resize_opts(&theme) };
+        let (_, probe) = draw_with(&mut buf, &o, 40, 6);
+        let w = probe.x + 20;
+        let (screen, ta) = draw_with(&mut buf, &o, w, 6);
+        let digits = ta.x - 4;
+        assert_eq!(screen[(digits - 1, 0)].fg, theme.coverage_covered.fg.unwrap());
+        assert_eq!(screen[(digits + 2, 1)].symbol(), "↪");
+        assert_eq!(screen[(digits + 2, 1)].fg, theme.line_number.fg.unwrap());
     }
 
     #[test]

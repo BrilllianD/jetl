@@ -183,6 +183,7 @@ pub const MAIN_MENU: &[(&str, char, &[Row])] = &[
             Item("Git Blame", "editor.toggle_blame"),
             Item("Soft-Wrap", "editor.toggle_soft_wrap"),
             Item("Inlay Hints", "lsp.toggle_inlay_hints"),
+            Item("Coverage", "coverage.toggle"),
             Item("Markdown Preview", "markdown.preview"),
             Sep,
             Item("Compare with Clipboard", "editor.compare_with_clipboard"),
@@ -620,6 +621,13 @@ mod tests {
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 1)).unwrap();
         term.draw(|f| b.render(f, f.area(), &Theme::default())).unwrap();
         assert!(!b.contains(3, 0) && !b.contains(3, 2));
+    }
+
+    #[test]
+    fn view_menu_has_coverage_after_inlay_hints() {
+        let (_, _, rows) = MAIN_MENU.iter().find(|m| m.0 == "View").unwrap();
+        let at = rows.iter().position(|r| matches!(r, Item("Inlay Hints", "lsp.toggle_inlay_hints"))).unwrap();
+        assert!(matches!(rows[at + 1], Item("Coverage", "coverage.toggle")));
     }
 
     #[test]

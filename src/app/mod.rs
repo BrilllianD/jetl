@@ -47,6 +47,7 @@ mod clipboard;
 mod compare;
 mod completion;
 mod config_reload;
+mod coverage;
 mod debug;
 mod dialogs;
 mod doc_highlight;
@@ -271,6 +272,8 @@ pub struct App {
     pub symbols: crate::symbols::index::SymbolIndex,
     /// The SCIP index of `[index] scip` (`load_scip`).
     pub scip: crate::symbols::scip::ScipState,
+    /// The lcov report's load state (`[coverage] lcov`, `app/coverage.rs`).
+    pub coverage: coverage::CoverageState,
     /// When the open Go to Symbol palette last got the index (it is fed at
     /// most every `SYMBOLS_FEED` while batches arrive).
     symbols_fed: Option<Instant>,
@@ -478,6 +481,7 @@ impl App {
             event_log: Default::default(),
             symbols: Default::default(),
             scip: Default::default(),
+            coverage: Default::default(),
             symbols_fed: None,
             pending_goto: None,
             pending_conflicts: false,
@@ -547,6 +551,7 @@ impl App {
         // The symbol index follows the file index.
         app.refresh_file_index();
         app.load_scip();
+        app.load_coverage();
         app.sync_file_icons();
         app
     }
@@ -853,6 +858,7 @@ impl App {
             }
             Event::FocusGained => {
                 self.yman.refresh();
+                self.coverage_focus_gained();
                 // The watcher reports outside changes as they happen.
                 if self.watcher.is_none() {
                     self.dirty_frame = true;
@@ -1503,6 +1509,7 @@ impl App {
             AppAction::DeleteLayout => self.delete_layout(),
             AppAction::ToggleZen => self.toggle_zen(),
             AppAction::ToggleToolbar => self.toggle_toolbar(),
+            AppAction::ToggleCoverage => self.toggle_coverage(),
             AppAction::TogglePinned { tw } => {
                 if let Some(tw) = tw.or(self.focus.current.tool_window()) {
                     let next = if self.layout.view_mode(tw) == ViewMode::Pinned { ViewMode::Unpinned } else { ViewMode::Pinned };

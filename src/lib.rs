@@ -1,6 +1,7 @@
 pub mod actions;
 pub mod app;
 pub mod config;
+pub mod coverage;
 pub mod dap;
 pub mod dispatch;
 pub mod doctor;

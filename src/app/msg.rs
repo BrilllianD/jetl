@@ -65,6 +65,7 @@ impl App {
                 self.hierarchy_index_answer(generation, tree, node, children)
             }
             AppMsg::Scip { generation, seq, result } => self.scip_loaded(generation, seq, result),
+            AppMsg::Coverage { generation, seq, result } => self.coverage_loaded(generation, seq, result),
             AppMsg::PaletteFiltered { generation, seq, rows } => self.palette_filtered(generation, seq, rows),
             AppMsg::Dependencies { generation, seq, report } => self.dependencies_checked(generation, seq, report),
             AppMsg::RecentProjects { seq, version, roots, error } => self.recent_projects_loaded(seq, version, roots, error),

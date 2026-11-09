@@ -41,6 +41,8 @@ tab_active = { fg = "#e6edf3", bg = "#0d1117", bold = true }
 tab_dirty = "#d29922"
 line_number = "#6e7681"
 line_number_current = "#e6edf3"
+coverage_covered = "#56d364"
+coverage_uncovered = "#f85149"
 bracket_match = { bg = "#193b25", bold = true }
 bracket_1 = "#e3b341"
 bracket_2 = "#d2a8ff"

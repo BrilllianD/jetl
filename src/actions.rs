@@ -90,6 +90,8 @@ pub enum AppAction {
     ToggleZen,
     /// Show or hide the toolbar row: flips `[ui] toolbar` in `config.toml`.
     ToggleToolbar,
+    /// Show or hide line coverage from [coverage] lcov (View > Coverage).
+    ToggleCoverage,
     Escape,
     OpenPalette(PaletteKind),
     /// Recent Locations: the caret history in the Locations palette, newest first.
@@ -913,6 +915,7 @@ pub static REGISTRY: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         "tool_window.move_right_bottom" => "Move the active tool window to Right Bottom", App(AppAction::MoveToolWindow { tw: None, dock: Dock { side: Side::Right, split: true } });
         "app.zen" => "Toggle Zen mode (editor text only)", App(AppAction::ToggleZen);
         "app.toggle_toolbar" => "Show or hide the toolbar", App(AppAction::ToggleToolbar);
+        "coverage.toggle" => "Coverage: show or hide line coverage from the [coverage] lcov file", App(AppAction::ToggleCoverage);
         "palette.files" => "Go to file", App(AppAction::OpenPalette(PaletteKind::Files));
         "palette.actions" => "Find action", App(AppAction::OpenPalette(PaletteKind::Actions));
         "palette.search_everywhere" => "Search everywhere", App(AppAction::OpenPalette(PaletteKind::Everywhere));

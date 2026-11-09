@@ -876,6 +876,68 @@ async fn editor_bookmarks() {
     assert_snapshot!("editor_bookmarks", snapshot(&term, &marks, None));
 }
 
+/// `notes.log` with an lcov report: line 1 hit 3 times, 2 not hit, 3 hit once, 4 not hit, 6 hit twice;
+/// lines 5 and 7 are not listed. The report is older than the file's edits only if they come later.
+fn load_coverage_fixture(app: &mut App) {
+    let path = load(app, "notes.log", PLAIN);
+    let root = app.workspace.root.clone();
+    let lcov = root.join("lcov.info");
+    std::fs::write(&lcov, "SF:notes.log\nDA:1,3\nDA:2,0\nDA:3,1\nDA:4,0\nDA:6,2\nend_of_record\n").unwrap();
+    let past = std::time::SystemTime::now() - std::time::Duration::from_secs(100);
+    std::fs::File::options().write(true).open(&path).unwrap().set_modified(past).unwrap();
+    app.editor.set_coverage(crate::coverage::load(&lcov, &root).unwrap());
+}
+
+fn coverage_marks(app: &App) -> Vec<Mark> {
+    // By glyph: the caret line's colour is the text colour, and the uncovered colour is the breakpoint's.
+    let t = &app.theme;
+    let mut marks = vec![
+        Mark::style_on('B', "breakpoint", t.breakpoint, "●○"),
+        Mark::style_on('K', "bookmark", t.bookmark, "◆"),
+        Mark::style_on('L', "current line number", t.line_number_current, DIGITS),
+        Mark::style_on('V', "covered line number", Style::default().fg(t.coverage_covered.fg.unwrap()), DIGITS),
+        Mark::style_on('X', "uncovered line number", Style::default().fg(t.coverage_uncovered.fg.unwrap()), DIGITS),
+    ];
+    marks.extend(editor_marks(t));
+    marks
+}
+
+const DIGITS: &str = "0123456789";
+
+#[tokio::test]
+async fn editor_coverage() {
+    let mut fx = stable_app("coverage");
+    let app = &mut fx.app;
+    load_coverage_fixture(app);
+    set_breakpoints(app, &[(3, BpState::Verified)]);
+    moves(app, Motion::Down, 5);
+    editor(app, EditorAction::ToggleBookmark);
+    moves(app, Motion::Up, 5);
+    let term = draw_editor(app, 40, 9);
+    assert_snapshot!("editor_coverage", snapshot(&term, &coverage_marks(app), None));
+}
+
+#[tokio::test]
+async fn editor_coverage_folded() {
+    let mut fx = stable_app("coverage-folded");
+    let app = &mut fx.app;
+    load_coverage_fixture(app);
+    editor(app, EditorAction::FoldCollapse);
+    moves(app, Motion::Down, 1);
+    let term = draw_editor(app, 40, 9);
+    assert_snapshot!("editor_coverage_folded", snapshot(&term, &coverage_marks(app), None));
+}
+
+#[tokio::test]
+async fn editor_coverage_dirty() {
+    let mut fx = stable_app("coverage-dirty");
+    let app = &mut fx.app;
+    load_coverage_fixture(app);
+    editor(app, EditorAction::InsertChar('x'));
+    let term = draw_editor(app, 40, 9);
+    assert_snapshot!("editor_coverage_dirty", snapshot(&term, &coverage_marks(app), None));
+}
+
 fn set_breakpoints(app: &mut App, marks: &[(usize, BpState)]) {
     let b = app.editor.active_buffer_mut().unwrap();
     for &(line, state) in marks {

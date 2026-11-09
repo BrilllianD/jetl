@@ -481,6 +481,13 @@ pub static SETTINGS: &[Setting] = &[
         Kind::Text,
         |c| s(&c.index.scip_command)
     ),
+    row!(
+        "coverage.lcov",
+        "Coverage report (lcov)",
+        "An lcov report (cargo llvm-cov --lcov, pytest-cov, c8), relative to the project root or absolute: covered line numbers are drawn in coverage_covered, uncovered ones in coverage_uncovered. Empty: none.",
+        Kind::Text,
+        |c| s(&c.coverage.lcov)
+    ),
 ];
 
 /// Title of the keyless page that shows `doctor::probe`'s report (`ui::settings`).
@@ -543,7 +550,7 @@ pub static PAGES: &[Page] = &[
     page!("Files", None, ["files.show_hidden", "files.show_ignored", "files.watch", "files.hot_exit"]),
     page!("Tools", None, []),
     page!("Terminal", Some(12), ["terminal.shell", "terminal.args", "terminal.scrollback"]),
-    page!("Run", Some(12), ["run.tasks", "run.configs", "run.debug", "debug.adapters", "debug.inline_values"]),
+    page!("Run", Some(12), ["run.tasks", "run.configs", "run.debug", "debug.adapters", "debug.inline_values", "coverage.lcov"]),
     page!("Clipboard", Some(12), ["clipboard.paste_command", "clipboard.copy_command"]),
     page!(
         "Local History",

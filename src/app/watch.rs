@@ -60,6 +60,7 @@ impl App {
             self.load_run_tasks();
             self.run_configs_file_changed();
         }
+        self.coverage_fs_changed(&changes.paths);
         for path in changes.paths {
             match self.editor.on_disk_change(&path) {
                 DiskChange::None => {}

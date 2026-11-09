@@ -347,6 +347,9 @@ impl App {
             self.scip.failed_mtime = None;
             self.load_scip();
         }
+        if diff.has("coverage.lcov") {
+            self.coverage_restart();
+        }
         if diff.has_section("run") {
             self.load_run_tasks();
         }
@@ -423,6 +426,32 @@ mod tests {
     fn last(app: &App) -> (Level, String) {
         let n = app.notifications.last().expect("a notification");
         (n.level, n.text.clone())
+    }
+
+    #[tokio::test]
+    async fn coverage_lcov_reloads_live() {
+        use crate::app::tests::{handle_next, load};
+        assert_eq!(crate::config::reload::class_of("coverage.lcov"), Some(crate::config::reload::ReloadClass::Live));
+        let (mut app, dir) = test_app("coverage-live");
+        let a = load(&mut app, "a.rs", "fn a() {}\n");
+        std::fs::create_dir_all(app.workspace.root.join("cov")).unwrap();
+        let out = app.workspace.root.join("cov/out.info");
+        std::fs::write(&out, "SF:a.rs\nDA:1,1\nend_of_record\n").unwrap();
+        let past = std::time::SystemTime::now() - Duration::from_secs(100);
+        std::fs::File::options().write(true).open(&a).unwrap().set_modified(past).unwrap();
+        let before = app.coverage.seq;
+        write(&app, "config.toml", &format!("[coverage]\nlcov = \"cov/out.info\"\n{NO_LSP}"));
+        reload(&mut app, &[ConfigFile::Config]);
+        assert!(app.editor.coverage().is_none());
+        assert!(app.coverage.seq > before);
+        let seq = app.coverage.seq;
+        handle_next(&mut app, move |m| matches!(m, AppMsg::Coverage { seq: s, .. } if *s == seq)).await;
+        assert!(app.editor.coverage().unwrap().file(&a).is_some());
+        write(&app, "config.toml", &format!("[coverage]\nlcov = \"\"\n{NO_LSP}"));
+        reload(&mut app, &[ConfigFile::Config]);
+        assert!(app.editor.coverage().is_none());
+        assert!(!app.coverage.loading);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

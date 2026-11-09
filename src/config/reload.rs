@@ -6,7 +6,8 @@
 //! `Live`, applied in `App::apply_config` or `Editor::apply_config`).
 
 use super::{
-    ClipboardConfig, Config, EditorConfig, FilesConfig, FormatConfig, GitConfig, IndexConfig, KeymapConfig, UiConfig, WorktreeConfig,
+    ClipboardConfig, Config, CoverageConfig, EditorConfig, FilesConfig, FormatConfig, GitConfig, IndexConfig, KeymapConfig, UiConfig,
+    WorktreeConfig,
 };
 use crate::dap::config::DebugConfig;
 use crate::history::LocalHistoryConfig;
@@ -214,6 +215,9 @@ sections! {
         scip => Live,
         scip_command => Live,
     }
+    coverage: CoverageConfig {
+        lcov => Live,
+    }
 }
 
 #[cfg(test)]
@@ -272,8 +276,8 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), KEYS.len());
         // 21 editor, 9 ui, 3 git, 2 worktree, 1 keymap, 4 files, 2 clipboard,
-        // 3 format, 3 run, 3 terminal, 11 lsp, 2 debug, 5 local_history, 2 index.
-        assert_eq!(KEYS.len(), 71);
+        // 3 format, 3 run, 3 terminal, 11 lsp, 2 debug, 5 local_history, 2 index, 1 coverage.
+        assert_eq!(KEYS.len(), 72);
     }
 
     #[test]

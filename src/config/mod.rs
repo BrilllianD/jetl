@@ -132,6 +132,7 @@ pub struct Config {
     pub debug: crate::dap::config::DebugConfig,
     pub local_history: crate::history::LocalHistoryConfig,
     pub index: IndexConfig,
+    pub coverage: CoverageConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -314,6 +315,20 @@ pub struct IndexConfig {
     pub scip_command: String,
 }
 
+/// Line coverage from an lcov report (`coverage.rs`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct CoverageConfig {
+    /// An lcov report, relative to the project root or absolute; empty: none.
+    pub lcov: String,
+}
+
+impl Default for CoverageConfig {
+    fn default() -> Self {
+        Self { lcov: "lcov.info".into() }
+    }
+}
+
 /// External formatters (`editor::format`): the buffer text goes in on
 /// stdin and the formatted text comes back on stdout.
 #[derive(Debug, Clone, Deserialize)]
@@ -453,6 +468,13 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn coverage_lcov_parses() {
+        assert_eq!(Config::default().coverage.lcov, "lcov.info");
+        let cfg = Config::parse("[coverage]\nlcov = \"/abs/x.info\"\n").unwrap();
+        assert_eq!(cfg.coverage.lcov, "/abs/x.info");
+    }
+
     #[test]
     fn index_scip_command_parses() {
         assert_eq!(Config::default().index.scip_command, "");

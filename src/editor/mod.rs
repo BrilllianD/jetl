@@ -205,6 +205,8 @@ pub struct Editor {
     closed_breakpoints: std::collections::BTreeMap<PathBuf, std::collections::BTreeMap<usize, buffer::BreakpointSpec>>,
     /// Where a paused debug session is, drawn in every view of that file.
     execution_point: Option<ExecutionPoint>,
+    /// The lcov report's line coverage (`[coverage] lcov`); `App` sets it.
+    coverage: Option<crate::coverage::Coverage>,
     /// The line of a stack frame chosen in the Debug window, drawn in every view of that file.
     selected_frame: Option<ExecutionPoint>,
     /// The last copy made at several carets: the clipboard text and each
@@ -307,6 +309,7 @@ impl Editor {
             closed_bookmarks: Default::default(),
             closed_breakpoints: Default::default(),
             execution_point: None,
+            coverage: None,
             selected_frame: None,
             multi_clip: None,
             column_mode: false,
@@ -1885,6 +1888,20 @@ impl Editor {
         }
     }
 
+    /// Set (or drop) the loaded lcov report; `render_group` looks a buffer's file up in it.
+    pub fn set_coverage(&mut self, c: Option<crate::coverage::Coverage>) {
+        self.coverage = c;
+    }
+
+    pub fn coverage(&self) -> Option<&crate::coverage::Coverage> {
+        self.coverage.as_ref()
+    }
+
+    /// Hide the coverage of `path` until the report is loaded again; true when the report listed it.
+    pub fn coverage_mark_stale(&mut self, path: &Path) -> bool {
+        self.coverage.as_mut().is_some_and(|c| c.mark_stale(path))
+    }
+
     /// Draw the groups over the centre: `tabs` (one row, none in zen mode)
     /// above `area`. Each group gets a tab bar of that height over its text.
     /// The focused group is drawn last, so its tab stays the live view of
@@ -2020,6 +2037,13 @@ impl Editor {
         let execution_line =
             self.execution_point.as_ref().filter(|p| self.buffers[i].path.as_deref() == Some(p.path.as_path())).map(|p| p.line);
         let frame_line = self.selected_frame.as_ref().filter(|p| self.buffers[i].path.as_deref() == Some(p.path.as_path())).map(|p| p.line);
+        let coverage = {
+            let b = &self.buffers[i];
+            self.coverage
+                .as_ref()
+                .filter(|_| decor.is_none() && b.preview.is_none() && b.patch.is_none() && !b.dirty())
+                .and_then(|c| b.path.as_deref().and_then(|p| c.file(p)))
+        };
         let opts = RenderOpts {
             focused,
             tab_width: self.tab_display(&self.buffers[i]),
@@ -2041,6 +2065,7 @@ impl Editor {
             decor,
             execution_line,
             frame_line,
+            coverage,
         };
         let crumbs_on = self.breadcrumbs && self.merge.is_none();
         let sticky_on = self.sticky_scroll && self.merge.is_none();

@@ -62,7 +62,7 @@ toggles), its Log (also with two commits selected, and the Log's commit context 
 (diagnostic underlines in the editor too), the lightbulb in the gutter, the main menu bar, confirm,
 input and choice dialogs, the hover and completion popups, toasts, the
 palettes (Scratch Files and Recent Projects included), the conflict resolver (filler rows included), the patch tab, the crash
-recovery dialogs, the Save As prompt and its path completion list, and the Find results tab (with its find bar).
+recovery dialogs, the Save As prompt and its path completion list, and the Find results tab (with its find bar), and coverage colours on the line numbers.
 
 Things that depend on the clock are given as data: the Log tab's commits
 carry their relative dates as `git log` formatted them, toasts expire on
@@ -3349,6 +3349,44 @@ Setup as above.
 5. Click on a ruler cell: the caret goes to that line's end (or the virtual column), as before.
 6. Set `rulers = []`: the rulers disappear without a restart.
 7. Repeat at 80x24.
+
+### Scenario: coverage from lcov
+
+Run from outside the repo, on the private socket `jt-cov`.
+
+```sh
+cargo build --no-default-features --features lang-rust
+H=/tmp/jt-cov-home T=/tmp/jt-cov; rm -rf $T $H; mkdir -p $T/src $H/config/jetl
+printf '[lsp]\nenabled = false\n' > $H/config/jetl/config.toml
+printf 'fn main() {\n    let x = 1;\n    if x > 1 {\n        println!("big");\n    }\n    println!("done");\n}\n' > $T/src/main.rs
+git -C $T init -q && git -C $T add . && git -C $T -c user.name=t -c user.email=t@t commit -qm init
+sed -i 's/"done"/"done!"/' $T/src/main.rs        # a git mark on line 6, before the report
+sleep 1
+printf 'TN:\nSF:src/main.rs\nFN:1,main\nFNDA:1,main\nDA:1,1\nDA:2,1\nDA:3,1\nDA:4,0\nDA:6,1\nLF:5\nLH:4\nend_of_record\n' > $T/lcov.info
+tm() { /usr/bin/tmux -L jt-cov "$@"; }
+tm -f /dev/null new-session -d -s cov -x 120 -y 40 \
+  "COLORTERM=truecolor XDG_CONFIG_HOME=$H/config XDG_STATE_HOME=$H/state XDG_CACHE_HOME=$H/cache $PWD/target/debug/jetl $T/src/main.rs 2>/tmp/jt-cov-stderr.txt"
+sleep 2; tm capture-pane -t cov -p; tm capture-pane -t cov -e -p | sed -n '1,12p'
+```
+
+1. `capture-pane -e`: the digits of lines 2, 3 and 6 share one fg (`coverage_covered`) and line 4 has
+   another (`coverage_uncovered`); lines 5 and 7 have the plain line-number fg; line 1 (the caret)
+   has the current-line-number style; line 6 still shows the git mark `▎` in the diff column.
+2. Press Down 3 times: line 4 has the current style, and line 1 is covered.
+3. Toggle a breakpoint on line 4 (Run > Toggle Breakpoint): `●` in the mark column, the digits
+   stay uncovered.
+4. Type `x`: every coverage colour goes. Ctrl+Z: they come back.
+5. Type `x` and Ctrl+S: the colours go and stay gone (the file is newer than the report). Then,
+   from a second shell, rewrite the report (the printf above with `DA:4,2`): within about a second
+   the colours return, and line 4 is covered.
+6. Find Action (F1), type `coverage`, Enter: toast `Coverage hidden`, no colours. Again: toast
+   `Coverage: 1 file from lcov.info`, colours back.
+7. `rm $T/lcov.info`: the colours go and no toast appears. Then `mkdir $T/cov`, write the report as
+   `$T/cov/out.info`, and append `[coverage]\nlcov = "cov/out.info"\n` to the config: the colours
+   return without a restart.
+8. Repeat steps 1 to 6 at 80x24 (`tm kill-server`, then a new session with `-x 80 -y 24`). The
+   gutter width is the same as with coverage hidden.
+9. Clean up: `tm kill-server`; `tm ls` must fail (no server); `rm -rf $T $H /tmp/jt-cov-stderr.txt`.
 
 ### Scenario: bracket pair colours
 

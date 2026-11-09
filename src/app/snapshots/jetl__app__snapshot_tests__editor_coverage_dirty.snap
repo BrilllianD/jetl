@@ -1,0 +1,16 @@
+---
+source: src/app/snapshot_tests.rs
+expression: "snapshot(&term, &coverage_marks(app), None)"
+---
+40x9 cursor=(8,1)
+00  *notes.log ×
+01   1  ▾ xalpha beta gamma
+02   2    │ two indented
+03   3    │ three indented
+04   4    four
+05   5
+06   6    six: the last line of the file
+07   7
+08
+-- marks: B=breakpoint K=bookmark L=current line number V=covered line number X=uncovered line number C=caret S=selection F=fold O=occurrence
+01   L    OOOOOO
