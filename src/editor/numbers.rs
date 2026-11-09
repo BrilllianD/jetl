@@ -270,4 +270,12 @@ mod tests {
         assert!(b.step_numbers(1));
         assert_eq!(b.text(), "a 10\r\nb\r\n");
     }
+
+    #[test]
+    fn a_caret_past_the_line_text_counts_from_its_end() {
+        // Between the `\r` and the `\n`: one char past the line's text.
+        let mut b = buf("a 9\r\nb\r\n", &[4]);
+        assert!(b.step_numbers(1));
+        assert_eq!(b.text(), "a 10\r\nb\r\n");
+    }
 }
