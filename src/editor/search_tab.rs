@@ -27,10 +27,6 @@ use crate::config::theme::Theme;
 use crate::event::{Effect, Level, Mouse};
 use crate::files::find::{Batch, Hit, MAX_HITS, Search, SearchSpec};
 
-/// Chars before a preview on a hit line: the right-aligned line number, a
-/// colon and a space.
-const PREFIX_CHARS: usize = 8;
-
 /// Where a tab's search stands.
 #[derive(Debug)]
 pub(crate) enum RunState {
@@ -153,14 +149,17 @@ pub(crate) fn layout(spec: &SearchSpec, root: &Path, hits: &[Hit], state: &RunSt
             let last = (j..end).take_while(|&k| same(k)).last().unwrap_or(j);
             let preview: String = h.preview.chars().map(|c| if c == '\n' || c == '\r' { ' ' } else { c }).collect();
             let preview_len = preview.chars().count();
-            let text = format!("{:>6}: {preview}", h.line + 1);
+            // The line number right-aligned to six, a colon and a space; wider from line 1,000,000.
+            let prefix = format!("{:>6}: ", h.line + 1);
+            let pre = prefix.chars().count();
+            let text = format!("{prefix}{preview}");
             let start = b.chars;
             b.out.rows.push((b.line, RowTarget::Hit { matches: Vec::new() }));
             let mut matches = Vec::new();
             let mut merged: Vec<Range<usize>> = Vec::new();
             for (k, hit) in hits.iter().enumerate().take(last + 1).skip(j) {
-                let s = (hit.preview_col + PREFIX_CHARS).min(PREFIX_CHARS + preview_len);
-                let e = (hit.preview_col + hit.len + PREFIX_CHARS).min(PREFIX_CHARS + preview_len);
+                let s = (hit.preview_col + pre).min(pre + preview_len);
+                let e = (hit.preview_col + hit.len + pre).min(pre + preview_len);
                 matches.push((s..e, k));
                 if s < e {
                     match merged.last_mut() {
@@ -169,7 +168,7 @@ pub(crate) fn layout(spec: &SearchSpec, root: &Path, hits: &[Hit], state: &RunSt
                     }
                 }
             }
-            b.out.spans.push((start..start + PREFIX_CHARS, Paint::LineNo));
+            b.out.spans.push((start..start + pre, Paint::LineNo));
             b.out.spans.extend(merged.into_iter().map(|m| (start + m.start..start + m.end, Paint::Match)));
             if let Some((_, RowTarget::Hit { matches: slot })) = b.out.rows.last_mut() {
                 *slot = matches;
@@ -237,7 +236,7 @@ impl SearchTab {
                 Some(Search { root: self.root.clone(), show_hidden, show_ignored, query, seq: self.seq, cancel: self.cancel.clone() })
             }
             Err(e) => {
-                self.state = RunState::Failed(e.lines().last().unwrap_or("invalid pattern").trim().to_string());
+                self.state = RunState::Failed(crate::files::find::pattern_error(&e));
                 None
             }
         };
@@ -528,6 +527,16 @@ mod tests {
         let l = layout(&spec("foo"), Path::new("/r"), &[h], &done(1));
         assert_eq!(l.text.lines().nth(4).unwrap(), "     1: a foo");
         assert_eq!(l.rows[1].1, RowTarget::Hit { matches: vec![(10..13, 0)] });
+    }
+
+    #[test]
+    fn layout_widens_the_prefix_from_line_a_million() {
+        let l = layout(&spec("foo"), Path::new("/r"), &[hit("/r/a.txt", 1_234_566, 2, "a foo")], &done(1));
+        assert_eq!(l.text.lines().nth(4).unwrap(), "1234567: a foo");
+        assert_eq!(l.rows[1].1, RowTarget::Hit { matches: vec![(11..14, 0)] });
+        let rope = ropey::Rope::from_str(&l.text);
+        let painted: Vec<(String, Paint)> = l.spans.iter().skip(3).map(|(r, p)| (rope.slice(r.clone()).to_string(), *p)).collect();
+        assert_eq!(painted, [("1234567: ".to_string(), Paint::LineNo), ("foo".to_string(), Paint::Match)]);
     }
 
     fn tab_with_sample() -> SearchTab {

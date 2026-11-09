@@ -160,6 +160,11 @@ impl Search {
     }
 }
 
+/// A pattern error from [`SearchSpec::query`] cut to one line: its last line, trimmed.
+pub(crate) fn pattern_error(e: &str) -> String {
+    e.lines().last().unwrap_or("invalid pattern").trim().to_string()
+}
+
 /// Whether a file's bytes look binary (a NUL byte in the first 8 KiB).
 pub(crate) fn is_binary(bytes: &[u8]) -> bool {
     bytes[..bytes.len().min(8192)].contains(&0)

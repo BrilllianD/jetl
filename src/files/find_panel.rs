@@ -272,7 +272,7 @@ impl FindPanel {
         let query = match self.search_query() {
             Ok(q) => q,
             Err(e) => {
-                self.error = Some(e.lines().last().unwrap_or("invalid pattern").trim().to_string());
+                self.error = Some(crate::files::find::pattern_error(&e));
                 return;
             }
         };

@@ -25,7 +25,7 @@ impl App {
             return self.notify(Level::Info, "Type a query in the Find window first");
         }
         if let Err(e) = spec.query() {
-            return self.notify(Level::Error, format!("Find in Files: {}", e.lines().last().unwrap_or("invalid pattern").trim()));
+            return self.notify(Level::Error, format!("Find in Files: {}", crate::files::find::pattern_error(&e)));
         }
         let cx = ctx!(self);
         let (_, run) = self.editor.open_search_tab(spec, &cx);

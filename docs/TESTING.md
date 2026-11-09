@@ -315,6 +315,7 @@ cat > /tmp/tm-s17.sh <<'EOT'
 exec /usr/bin/tmux -L jetl-s17 "$@"
 EOT
 chmod +x /tmp/tm-s17.sh
+cargo build --no-default-features --features lang-rust
 H=/tmp/jt-s17-home; T=/tmp/jt-s17; rm -rf $H $T; mkdir -p $H/config/jetl $H/state $T/src
 printf '[lsp]\nenabled = false\n[ui]\ntoolbar = false\n' > $H/config/jetl/config.toml
 printf 'no\nfoo here\n' > $T/a.txt; printf 'let foo = 1;\nfoo(foo);\n' > $T/src/b.rs
@@ -349,8 +350,8 @@ see the whole tab at 80x24.
 - `C-q`: no unsaved-changes dialog and exit status 0. `$H/state/jetl/hot_exit` and
   `$H/state/jetl/recovery` do not exist, and `grep -c 'Find:' $H/state/jetl/sessions/*.json`
   prints 0.
-- On a big tree (jetl itself with the query `fn`) the status reads `10000+ matches in 258
-  files; stopped at 10000; ...` within a second, and Down and F5 stay responsive.
+- On a big tree (jetl itself with the query `fn`) the status reads `10000+ matches in N
+  files; stopped at 10000; ...` (N is however many files the tree holds) within a second, and Down and F5 stay responsive.
 
 ### Scenario: rename without a language server
 
