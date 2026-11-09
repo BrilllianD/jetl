@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-09
+
 ### Added
 
 - Mnemonic bookmarks with letters as well as digits, and bookmark groups: Ctrl+F11 takes a digit button or a letter key (either case) for the caret line, a letter is unique in the session like a digit, Alt+B then the letter jumps to it (also from a tool window, the editor's find bar and the commit message box, and it reopens a closed file), and the gutter shows the letter reversed like a digit. Navigate > Move Bookmark to Group… and Rename Bookmark Group… (Find Action too, no keys) put bookmarks into named groups (`New Group…` adds one; a group lasts while a bookmark is in it); Shift+F11 lists the bookmarks group by group once a named group exists. Letters and groups follow edits, closing and reopening a file, renames and sessions. Sessions only gain fields (`bookmark_letters`, `bookmark_groups`, `closed_bookmark_letters`, `closed_bookmark_groups`); an older build reading such a session keeps every bookmark, the lettered ones as plain bookmarks, and loses the letters and groups only if it saves the file again.
@@ -864,7 +866,8 @@ First release.
   for Phase 11).
 - No 3-pane conflict resolver; conflicted files show as `U` and are resolved in the editor.
 
-[Unreleased]: https://bitbucket.org/BrilllianD/jetl-ide/branches/compare/HEAD..v0.10.0
+[Unreleased]: https://bitbucket.org/BrilllianD/jetl-ide/branches/compare/HEAD..v0.11.0
+[0.11.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.11.0/
 [0.10.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.10.0/
 [0.9.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.9.0/
 [0.8.0]: https://bitbucket.org/BrilllianD/jetl-ide/src/v0.8.0/
